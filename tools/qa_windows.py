@@ -61,7 +61,7 @@ def round_(i):
     chk("display config restored", topo() == before, "%s" % topo())
     chk("autostart/task removed by emergency(pause)", not tasks() and not runkey())
     g.kill(); time.sleep(2)  # 关闭 GUI 实例，避免其内存状态覆盖
-    setcfg(home, last_test_at=datetime.now().isoformat())
+    setcfg(home, last_test_at=datetime.now().isoformat(), last_test_ok=True, last_test_night_ok=True, last_recovery_at=datetime.now().isoformat(), autostart=True)  # emergency 清除了测试结果与自启配置（v3.0.1 设计），此处模拟再次通过测试
     run(exe, "--action", "activate", "--start", "21:00", "--end", "07:00", env=env)
     chk("autostart re-register", tasks() and runkey())
     run(exe, "--action", "uninstall", env=env); time.sleep(2)
