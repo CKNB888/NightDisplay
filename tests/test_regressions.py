@@ -406,3 +406,14 @@ def test_transition_frames_cover_full_progress():
     assert frames[-1] == (10, 10, 2)
     assert [step for step, _, _ in frames] == list(range(1, 11))
     assert all(1 <= dots <= 4 for _, _, dots in frames)
+
+
+def test_environment_report_does_not_install_or_raise():
+    from nightdisplay import app
+
+    report = app.environment_report()
+    assert report["pure_black"] is True
+    assert isinstance(report["available_modes"], list)
+    assert report["ready_mode"] in ("auto", "virtual_only", "overlay", "screen_off", "")
+    assert "virtual_display" in report
+    assert "registry_writable" in report
