@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           pyinstaller --onefile --windowed --name NightDisplay nightdisplay.py
-          ./dist/NightDisplay.exe --action status; echo "exit=$?"
+          ./dist/NightDisplay.exe --action status; cat "$LOCALAPPDATA/NightDisplay/status.txt"
           mkdir out && cp dist/NightDisplay.exe README.md out/ && cp -r legacy out/
           cd out && 7z a ../${{ matrix.name }}.zip .
       - name: Build macOS

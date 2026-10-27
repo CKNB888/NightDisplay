@@ -451,7 +451,16 @@ def gui():
     root.mainloop()
 
 
+def _fix_stdout():
+    for st in (sys.stdout, sys.stderr):
+        try:
+            st.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def main():
+    _fix_stdout()
     ap = argparse.ArgumentParser(prog=APP)
     ap.add_argument("--action", choices=["gui", "night", "day", "reconcile", "emergency", "pause", "status"], default="gui")
     ap.add_argument("--mode", choices=["ScreenOff", "VirtualOnly"])
@@ -478,8 +487,14 @@ def main():
         elif a.action == "pause":
             pause()
         elif a.action == "status":
-            print(status_text())
+            txt = status_text()
+            if sys.stdout:
+                print(txt)
+            ensure_home()
+            with open(os.path.join(HOME, "status.txt"), "w", encoding="utf-8") as f:
+                f.write(txt)
     except Exception as e:
+        import traceback; traceback.print_exc()
         log("错误(%s): %s" % (a.action, e))
         return 1
 
