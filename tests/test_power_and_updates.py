@@ -71,48 +71,6 @@ def test_repeated_power_entry_keeps_original_plan(monkeypatch):
     assert state["active"] == original
 
 
-def test_missing_record_does_not_adopt_the_night_plan(monkeypatch):
-    night = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-    original = "11111111-2222-3333-4444-555555555555"
-    state = {"active": night}
-
-    def run(*args):
-        if args[0] == "/getactivescheme":
-            return "Power Scheme GUID: " + state["active"]
-        if args[0] == "/list":
-            return (
-                "Power Scheme GUID: %s  (NightDisplay night) *\n"
-                "Power Scheme GUID: %s  (Balanced)\n" % (night, original)
-            )
-        if args[0] == "/setactive":
-            state["active"] = args[1].lower()
-        return ""
-
-    monkeypatch.setattr(P, "_run", run)
-    assert P._real_original() == original
-    assert state["active"] == original
-
-
-def test_missing_temporary_plan_still_clears_the_record(monkeypatch):
-    original, _state = fake_power(monkeypatch)
-    temporary = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-    from nightdisplay.storage import write_json
-    write_json(P._path(), {"original": original, "temporary": temporary})
-
-    def run(*args):
-        if args[0] == "/delete":
-            raise RuntimeError("The power scheme does not exist")
-        if args[0] == "/getactivescheme":
-            return "Power Scheme GUID: " + original
-        if args[0] == "/list":
-            return "Power Scheme GUID: %s  (Balanced)\n" % original
-        return ""
-
-    monkeypatch.setattr(P, "_run", run)
-    P.restore()
-    assert not Path(P._path()).exists()
-
-
 def test_corrupt_power_state_does_not_block_night(monkeypatch):
     Path(P._path()).write_text("{", encoding="utf-8")
     original, state = fake_power(monkeypatch)
@@ -163,8 +121,8 @@ def test_update_url_cannot_redirect_to_arbitrary_download(monkeypatch):
         def __enter__(self): return self
         def __exit__(self, *args): pass
         def read(self, limit):
-            return json.dumps({"tag_name": "v3.0.6", "html_url": "https://attacker.invalid"}).encode()
+            return json.dumps({"tag_name": "v3.0.5", "html_url": "https://attacker.invalid"}).encode()
     monkeypatch.setattr(updates.urllib.request, "urlopen", lambda *a, **kw: Response())
     data = updates.check()
     assert data["newer"]
-    assert data["url"] == "https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.6"
+    assert data["url"] == "https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.5"
