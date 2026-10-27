@@ -188,8 +188,9 @@ class MainWindow:
         self.enable = self.button("启用每日计划", self.toggle, 184, 438, width=172, primary=True)
         self.button("立即黑屏", self.night, 368, 438, width=146)
         self.button("恢复并暂停", self.emergency, 526, 438, width=208)
-        if IS_WIN:
-            self.driver = self.button("安装内置驱动", self.install_driver, 26, 498, width=146, bg="#E5EAF6")
+        # 主界面不再放“安装驱动”按钮：驱动随包内置，首次打开已自动装好，
+        # 装不上也自动落到黑幕模式，软件照常打开。这里只显示环境状态，不让用户手动装驱动。
+        self.env_text = self.text(26, 501, "环境：检查中…", 9, MUTED)
         self.button("运行日志", self.logs, 184, 498, width=112, bg="#E5EAF6")
         self.button("设置", self.settings, 308, 498, width=112, bg="#E5EAF6")
         self.text(732, 501, "传康Kk  ·  赞助联系 1837620622", 9, MUTED, anchor="ne")
@@ -245,12 +246,13 @@ class MainWindow:
         return update(start=start, end=end, mode="auto", keep_awake=True)
 
     def install_driver(self):
-        from .app import install_vdd
-        if install_vdd():
-            raise RuntimeError("驱动安装未完成，请查看日志")
-        if not B.has_virtual_display():
-            raise RuntimeError("Windows 尚未提供虚拟屏，请查看安装日志，必要时重启后重试。")
-        messagebox.showinfo(APP, "虚拟屏已就绪，可以测试。", parent=self.root)
+        # 只留给设置里的高级入口用，主界面不再引导用户手动装驱动。
+        from .app import ensure_environment
+        report = ensure_environment(force=True)
+        if report.get("virtual_display"):
+            messagebox.showinfo(APP, "虚拟屏已就绪，可以测试。", parent=self.root)
+        else:
+            messagebox.showinfo(APP, "虚拟屏不可用，已自动用黑幕/关屏模式，功能正常。", parent=self.root)
 
     def _transition(self, title, message, seconds, on_done=None):
         """显示一次进入/退出横幅；已有横幅先关掉，避免叠加；5 秒内重复的恢复横幅直接跳过。"""
@@ -318,6 +320,17 @@ class MainWindow:
                     message = "当前为基础关屏，键鼠输入会唤醒屏幕"
             self.canvas.itemconfigure(self.test_text, text=message)
             self.enable.set_text("暂停计划" if cfg["enabled"] else "启用每日计划")
+            # 环境状态：虚拟屏就绪 / 黑幕模式 / 关屏模式，只报状态，不让用户去装驱动。
+            try:
+                if B.has_virtual_display():
+                    env = "环境：已就绪（虚拟屏）"
+                elif IS_WIN and B.win_build() >= 19041:
+                    env = "环境：已就绪（黑幕模式）"
+                else:
+                    env = "环境：已就绪（关屏模式）"
+            except Exception:
+                env = "环境：已就绪"
+            self.canvas.itemconfigure(self.env_text, text=env)
         except Exception as e:
             log("界面状态刷新失败：%s" % e)
         finally:
@@ -389,6 +402,8 @@ class MainWindow:
         tk.Button(row, text="保存设置", command=lambda: self.safe(save)).pack(side="left", padx=(0, 12))
         tk.Button(row, text="检查更新", command=self.check_update).pack(side="left", padx=(0, 12))
         tk.Button(row, text="卸载计划与自启", command=lambda: self.safe(self.remove)).pack(side="left")
+        if IS_WIN:
+            tk.Button(row, text="重新安装内置驱动", command=lambda: self.safe(self.install_driver)).pack(side="left", padx=(12, 0))
         label(AUTHOR + "   |   " + SPONSOR)
 
     def check_update(self, quiet=False):

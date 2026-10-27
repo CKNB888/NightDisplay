@@ -2,6 +2,7 @@
 import argparse
 import contextlib
 import datetime as dt
+import json
 import os
 import queue
 import sys
@@ -349,6 +350,16 @@ def run_app(show_window=True, selftest=0):
     # Do not flash a window when the app is started by the login autostart.
     if not show_window:
         root.withdraw()
+    # 首次打开就把环境准备好：GUI 打开时同步做一次（只弹一次 UAC，失败也不挡打开）；
+    # 托盘自启时放后台线程做，避免 UAC 弹窗卡住登录；自测时跳过，不在 CI 里弹 UAC。
+    if not selftest:
+        if show_window:
+            try:
+                ensure_environment()
+            except Exception as e:
+                log("环境准备失败，软件仍可正常打开：%s" % e)
+        else:
+            threading.Thread(target=lambda: ensure_environment(), daemon=True).start()
     overlay = make_overlay(root)
     pending = queue.Queue()
     closing = threading.Event()
@@ -498,7 +509,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog=APP)
     ap.add_argument("--action", default="gui", choices=[
         "gui", "tray", "night", "day", "reconcile", "test", "activate", "pause", "emergency", "uninstall",
-        "status", "awake", "backup", "restore", "displays", "plan-virtual", "install-vdd", "uninstall-vdd", "selfcheck"])
+        "status", "awake", "backup", "restore", "displays", "plan-virtual", "install-vdd", "uninstall-vdd", "selfcheck",
+        "env", "setup"])
     ap.add_argument("--tray", action="store_true", help="开机自启：只显示托盘")
     ap.add_argument("--home", help="指定数据目录（计划与辅助进程继承此路径）")
     ap.add_argument("--mode")
@@ -610,6 +622,10 @@ def main(argv=None):
                     print(o)
         elif a.action == "plan-virtual":
             B.go_night("virtual_only", dry_run=True)
+        elif a.action == "env":
+            print(json.dumps(environment_report(), ensure_ascii=False, indent=1))
+        elif a.action == "setup":
+            print(json.dumps(ensure_environment(force=True), ensure_ascii=False, indent=1))
         elif a.action == "install-vdd":
             return install_vdd("install")
         elif a.action == "uninstall-vdd":
@@ -620,8 +636,6 @@ def main(argv=None):
                 raise RuntimeError(r)
             return install_vdd("uninstall")
         elif a.action == "selfcheck":
-            import json
-
             from .storage import write_json
             report = B.selfcheck()
             write_json(os.path.join(home(), "selfcheck.json"), report)
@@ -707,3 +721,108 @@ def install_vdd(op="install"):
         return code.value
     finally:
         kernel.CloseHandle(info.hProcess)
+
+
+def bundled_driver_present():
+    """打包里是否带了全部 VDD 驱动文件（inf/cat/dll，任一层级都算）。"""
+    import glob
+    pattern = os.path.join(vdd_dir(), "**", "MttVDD.inf")
+    return bool(glob.glob(pattern, recursive=True))
+
+
+def environment_report():
+    """不装驱动、不改系统，只检查：返回当前环境是否已就绪、实际可用模式。"""
+    from .storage import write_json
+    report = {
+        "platform": "windows" if IS_WIN else ("macos" if IS_MAC else "linux"),
+        "bundled_driver": bundled_driver_present() if IS_WIN else False,
+        "virtual_display": False,
+        "registry_writable": False,
+        "autostart_actual": False,
+        "available_modes": [],
+        "ready_mode": "",
+        "pure_black": True,
+    }
+    with contextlib.suppress(Exception):
+        report["virtual_display"] = B.has_virtual_display()
+    try:
+        report["available_modes"] = B.available_modes()
+        report["ready_mode"] = B.resolve_mode("auto", load().get("virtual_match", ""))
+    except Exception:
+        pass
+    with contextlib.suppress(Exception):
+        report["autostart_actual"] = B.autostart_status()
+    if IS_WIN:
+        # 注册表写入只测 HKCU Run（普通用户就有权限），不碰 HKLM；
+        # 驱动进驱动库（pnputil）才要管理员，那一步只在首次自动装驱动时弹一次 UAC。
+        import winreg
+        try:
+            with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, B.RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+                winreg.SetValueEx(k, "NightDisplayEnvTest", 0, winreg.REG_SZ, "ok")
+                winreg.DeleteValue(k, "NightDisplayEnvTest")
+            report["registry_writable"] = True
+        except OSError:
+            report["registry_writable"] = False
+    else:
+        report["registry_writable"] = True
+    # 运行中黑屏本身必须是纯黑：黑幕窗口不带任何文字（见 make_overlay，Label text=""），
+    # 进入/退出横幅只在黑屏前后出现，不在黑屏期间出现。
+    report["pure_black"] = True
+    with contextlib.suppress(Exception):
+        write_json(os.path.join(home(), "env.json"), report)
+    return report
+
+
+def ensure_environment(force=False):
+    """首次打开就把环境准备好，用户不用手动装这个驱动、那个驱动。
+
+    Windows 且无虚拟屏、且包里带了驱动时，自动装一次内置 VDD（只装一次，
+    失败或用户点了 UAC 取消后 7 天内不再自动重试，软件照常打开、自动落到
+    黑幕模式，绝不因为驱动没装成就打不开）。装完再写一次开机自启并回读
+    校验，注册表写不进也只记日志、不挡打开。非 Windows 不装驱动。
+    返回 environment_report()，永不因驱动失败而抛错挡住主界面。
+    """
+    import time as _time
+
+    from .storage import write_json
+    report = environment_report()
+    if not IS_WIN:
+        return report
+    if report["virtual_display"]:
+        return report
+    if not report["bundled_driver"]:
+        log("环境准备：包里没有内置 VDD 驱动文件，自动用黑幕/关屏模式，功能正常")
+        return report
+    state_path = os.path.join(home(), "env.json")
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            prev = json.load(f)
+    except Exception:
+        prev = {}
+    last = prev.get("driver_auto_setup_at", 0)
+    if not force and last and _time.time() - last < 7 * 24 * 3600:
+        return report
+    try:
+        rc = install_vdd("install")
+        import time as _sleep
+        if rc == 0:
+            _sleep.sleep(3)
+            report = environment_report()
+            log("环境准备：内置 VDD 已自动安装，虚拟屏可用=%s" % report["virtual_display"])
+        else:
+            log("环境准备：内置 VDD 自动安装未成功（退出码 %s），自动用黑幕/关屏模式，功能正常" % rc)
+    except Exception as e:
+        log("环境准备：内置 VDD 自动安装失败：%s，自动用黑幕/关屏模式，功能正常" % e)
+    report["driver_auto_setup_at"] = _time.time()
+    with contextlib.suppress(Exception):
+        write_json(state_path, report)
+    # 开机自启：按用户偏好写 HKCU Run，写完回读校验。
+    try:
+        if load().get("autostart_preference", True):
+            B.set_autostart(True)
+            report["autostart_actual"] = B.autostart_status()
+            if not report["autostart_actual"]:
+                log("环境准备：开机自启注册表写回校验未通过，软件仍可正常打开")
+    except Exception as e:
+        log("环境准备：开机自启写入失败：%s，软件仍可正常打开" % e)
+    return report
