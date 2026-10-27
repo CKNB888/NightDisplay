@@ -3,6 +3,7 @@ import contextlib
 import queue
 import re
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox
@@ -44,6 +45,85 @@ def glass_background(width=760, height=560):
     for box in ((26, 106, 734, 282), (26, 302, 734, 416)):
         pd.rounded_rectangle(box, radius=24, fill=(255, 255, 255, 174), outline=(255, 255, 255, 235), width=1)
     return Image.alpha_composite(image, panels).convert("RGB")
+
+
+def transition_frames(seconds, step_ms=250):
+    """纯逻辑：横幅动画每一帧的进度和圆点数，便于不依赖 Tk 测试。"""
+    steps = max(1, int(seconds * 1000 / step_ms))
+    return [(i + 1, steps, (i % 4) + 1) for i in range(steps)]
+
+
+class TransitionBanner:
+    """进入/退出时的全屏前置提示横幅：不是黑幕本身，是在黑屏前后告诉用户“这是 NightDisplay 在操作”。
+
+    放在黑屏之前显示（进入时），放在恢复之后显示（退出时），这样它永远不会被黑幕、
+    关屏盖住。动画只有圆点滚动 + 进度条 + 倒计时，不拦截键盘鼠标，到时间自动淡出销毁。
+    """
+
+    def __init__(self, root, title, message, seconds=2.5, on_done=None):
+        self.root, self.on_done = root, on_done
+        self.seconds, self.frames = seconds, transition_frames(seconds)
+        self.index = 0
+        self.window = tk.Toplevel(root)
+        self.window.overrideredirect(True)
+        self.window.attributes("-topmost", True)
+        with contextlib.suppress(tk.TclError):
+            self.window.attributes("-alpha", 0.95)
+        width, height = 520, 150
+        x = (root.winfo_screenwidth() - width) // 2
+        y = (root.winfo_screenheight() - height) // 2
+        self.window.geometry("%dx%d+%d+%d" % (width, height, x, y))
+        frame = tk.Frame(self.window, bg="#24324A", padx=24, pady=18)
+        frame.pack(fill="both", expand=True)
+        self.title_label = tk.Label(frame, text=title, font=(FONT, 14, "bold"), fg="white", bg="#24324A", anchor="w")
+        self.title_label.pack(anchor="w")
+        self.message_label = tk.Label(frame, text=message, font=(FONT, 11), fg="#D7E0F2", bg="#24324A", anchor="w", wraplength=460, justify="left")
+        self.message_label.pack(anchor="w", pady=(8, 12))
+        self.bar = tk.Canvas(frame, width=460, height=10, bg="#3A4A66", highlightthickness=0)
+        self.bar.pack(anchor="w")
+        self.bar_rect = self.bar.create_rectangle(0, 0, 0, 10, fill="#4169E1", outline="")
+        self.count_label = tk.Label(frame, text="", font=(FONT, 10), fg="#9FB2D6", bg="#24324A", anchor="w")
+        self.count_label.pack(anchor="w", pady=(8, 0))
+        self.window.update_idletasks()
+        self._tick()
+
+    def _tick(self):
+        if not self.window.winfo_exists():
+            return
+        step, total, dots = self.frames[self.index]
+        self.bar.coords(self.bar_rect, 0, 0, 460 * step / total, 10)
+        remaining = max(0.0, self.seconds - step * 0.25)
+        self.count_label.config(text="●" * dots + "○" * (4 - dots) + "  还剩 %.1f 秒" % remaining if remaining else "●" * dots + "○" * (4 - dots))
+        # 圆点每 250ms 滚一格，进度条同步走完；用 after 而不是 sleep，不卡主界面。
+        self.index += 1
+        if self.index < len(self.frames):
+            self.window.after(250, self._tick)
+        else:
+            self.window.after(250, self.close)
+
+    def close(self):
+        if not self.window.winfo_exists():
+            return
+        with contextlib.suppress(tk.TclError):
+            self.window.attributes("-alpha", 0.6)
+        self.window.after(200, self._destroy)
+
+    def _destroy(self):
+        if self.window.winfo_exists():
+            self.window.destroy()
+        if self.on_done:
+            self.on_done()
+
+
+def show_transition(root, title, message, seconds=2.5, on_done=None):
+    """安全地显示一次横幅：Tk 不可用时返回 None，不让提示本身把主流程拖垮。"""
+    try:
+        return TransitionBanner(root, title, message, seconds, on_done)
+    except Exception as e:
+        log("进入/退出提示横幅显示失败：%s" % e)
+        if on_done:
+            on_done()
+        return None
 
 
 class Button(tk.Canvas):
@@ -106,14 +186,17 @@ class MainWindow:
         self.button("保存时间", self.save_times, 560, 355, width=148, bg="#ECF2F8")
         self.button("测试 15 秒", self.test, 26, 438, width=146)
         self.enable = self.button("启用每日计划", self.toggle, 184, 438, width=172, primary=True)
-        self.button("立即黑屏", lambda: self.act({"action": "night", "mode": "auto"}), 368, 438, width=146)
-        self.button("恢复并暂停", lambda: self.act("emergency"), 526, 438, width=208)
+        self.button("立即黑屏", self.night, 368, 438, width=146)
+        self.button("恢复并暂停", self.emergency, 526, 438, width=208)
         if IS_WIN:
             self.driver = self.button("安装内置驱动", self.install_driver, 26, 498, width=146, bg="#E5EAF6")
         self.button("运行日志", self.logs, 184, 498, width=112, bg="#E5EAF6")
         self.button("设置", self.settings, 308, 498, width=112, bg="#E5EAF6")
         self.text(732, 501, "传康Kk  ·  赞助联系 1837620622", 9, MUTED, anchor="ne")
         self.unlock_text = self.text(732, 522, "解锁：C + K", 9, MUTED, anchor="ne")
+        self._last_state = None
+        self._last_banner_at = 0.0
+        self._banner = None
         self.refresh()
         self._fade()
         self.root.after(3000, lambda: self.check_update(quiet=True))
@@ -169,9 +252,39 @@ class MainWindow:
             raise RuntimeError("Windows 尚未提供虚拟屏，请查看安装日志，必要时重启后重试。")
         messagebox.showinfo(APP, "虚拟屏已就绪，可以测试。", parent=self.root)
 
+    def _transition(self, title, message, seconds, on_done=None):
+        """显示一次进入/退出横幅；已有横幅先关掉，避免叠加；5 秒内重复的恢复横幅直接跳过。"""
+        now = time.monotonic()
+        if "已恢复" in title and now - self._last_banner_at < 5:
+            if on_done:
+                on_done()
+            return None
+        self._last_banner_at = now
+        if self._banner is not None and self._banner.window.winfo_exists():
+            self._banner.window.destroy()
+        self._banner = show_transition(self.root, title, message, seconds, on_done)
+        return self._banner
+
     def test(self):
         self.save_times()
-        return self.act({"action": "test", "mode": "auto", "seconds": 15})
+        # 先在正常屏幕上告诉用户“测试要开始了”，横幅走完再切黑屏；恢复流程在启动测试前
+        # 就已经排好，横幅本身不占用测试的 15 秒。
+        self._transition("NightDisplay 正在运行", "正在启动测试：本地屏幕即将变黑，远程照常可用，15 秒后自动恢复。", 2.5,
+                         lambda: self.safe(lambda: self.act({"action": "test", "mode": "auto", "seconds": 15})))
+
+    def night(self):
+        self._transition("NightDisplay 正在运行", "正在进入夜间模式：本地屏幕即将变黑，远程照常可用。按住 C + K 可解锁。", 2.5,
+                         lambda: self.safe(lambda: self.act({"action": "night", "mode": "auto"})))
+
+    def emergency(self):
+        # 恢复不能等横幅：先恢复显示，屏幕回来后再弹退出横幅，用户才能在亮屏上看到它。
+        result = self.act("emergency")
+        if isinstance(result, str) and result.startswith("error:"):
+            raise RuntimeError(result[6:].strip())
+        if result == "locked":
+            raise RuntimeError("请按住 C+K，或使用“恢复并暂停”")
+        self._transition("NightDisplay 已恢复", "已恢复显示，每日计划已暂停。这次黑屏是 NightDisplay 的操作，不是电脑故障。", 3.0)
+        return result
 
     def toggle(self):
         from .app import activate, pause
@@ -185,6 +298,12 @@ class MainWindow:
     def refresh(self, schedule=True):
         try:
             cfg = load()
+            # 夜间 -> 白天是一次退出：不管是测试自动恢复、定时恢复还是组合键解锁，
+            # 都在亮屏后弹一次退出横幅，让用户知道黑屏结束了、是谁恢复的。
+            # 此时 state 已是 day，黑屏锁已解除，横幅本身不带任何按钮、不解锁，同一轮恢复只弹一次。
+            if self._last_state == "night" and cfg["state"] == "day":
+                self._transition("NightDisplay 已恢复", "已恢复显示。这次黑屏是 NightDisplay 的操作，不是电脑故障。", 3.0)
+            self._last_state = cfg["state"]
             from .chord import fmt
             self.canvas.itemconfigure(self.unlock_text, text="解锁：" + fmt(cfg.get("unlock_chord") or ["C", "K"]))
             self.canvas.itemconfigure(self.state_text, text="夜间运行中" if cfg["state"] == "night" else "屏幕正常显示")

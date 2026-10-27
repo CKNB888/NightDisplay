@@ -162,6 +162,8 @@ def validate_config(cfg):
         if cfg.get(key) and cfg[key] not in ("auto", "virtual_only", "overlay", "screen_off"):
             raise ValueError("未知测试模式")
     if cfg.get("virtual_match"):
+        if len(cfg["virtual_match"]) > 120:
+            raise ValueError("虚拟屏匹配规则过长（最多 120 字符）")
         try:
             re.compile(cfg["virtual_match"])
         except re.error as e:

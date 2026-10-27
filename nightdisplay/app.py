@@ -664,8 +664,19 @@ def install_vdd(op="install"):
     extra = {"install": [], "uninstall": ["-Uninstall"], "status": ["-Status"]}[op]
     argv = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
             "-Source", vdd_dir(), "-LogDirectory", os.path.join(home(), "logs")] + extra
+    def _print_vdd_log_tail():
+        try:
+            with open(os.path.join(home(), "logs", "install_vdd.log"), encoding="utf-8", errors="replace") as f:
+                tail = f.read()[-3000:]
+            if tail:
+                print("install_vdd 日志尾部：\n" + tail, file=sys.stderr)
+        except OSError:
+            pass
     if op == "status" or ctypes.windll.shell32.IsUserAnAdmin():
-        return subprocess.call(["powershell"] + argv, timeout=300)
+        rc = subprocess.call(["powershell"] + argv, timeout=300)
+        if rc:
+            _print_vdd_log_tail()
+        return rc
     args = subprocess.list2cmdline(argv)
     from ctypes import wintypes as T
     class ExecuteInfo(ctypes.Structure):
@@ -691,6 +702,8 @@ def install_vdd(op="install"):
         if not kernel.GetExitCodeProcess(info.hProcess, ctypes.byref(code)):
             raise RuntimeError("无法读取驱动安装结果")
         log("驱动%s结束，退出码 %s" % (op, code.value))
+        if code.value:
+            _print_vdd_log_tail()
         return code.value
     finally:
         kernel.CloseHandle(info.hProcess)
