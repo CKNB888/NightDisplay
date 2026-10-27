@@ -3,7 +3,7 @@
 > 每天到点让电脑**本地屏幕变黑**，电脑保持开机，**UU 远程 / ToDesk / RustDesk 等远程软件照常连接操作**；到点自动恢复。
 > 适合一体机、办公室电脑、家里常开的主机：晚上不亮屏、不被旁人看到，远程随时能用。
 
-作者：**传康kk**（GitHub [@CKNB888](https://github.com/CKNB888)） ｜ **赞助 / 联系：传康kk，1837620622**
+作者：**传康Kk**（GitHub [@CKNB888](https://github.com/CKNB888)） ｜ **赞助 / 联系：传康Kk，1837620622**
 
 [下载最新版本（Releases）](https://github.com/CKNB888/NightDisplay/releases/latest)
 
@@ -134,5 +134,5 @@ MIT，见 [LICENSE](LICENSE)。第三方参考与商标说明见 [NOTICE.md](NOT
 
 ## 作者与赞助
 
-- 作者：传康kk（GitHub：[CKNB888](https://github.com/CKNB888)）
-- **赞助 / 联系：传康kk，1837620622**
+- 作者：传康Kk（GitHub：[CKNB888](https://github.com/CKNB888)）
+- **赞助 / 联系：传康Kk，1837620622**

@@ -4,7 +4,7 @@ version = "2.0.0"
 description = "每天定时让本地屏幕变黑、远程照常可用（Windows/macOS/Linux）"
 readme = "README.md"
 license = { text = "MIT" }
-authors = [{ name = "传康kk", email = "CKNB888@users.noreply.github.com" }]
+authors = [{ name = "传康Kk", email = "CKNB888@users.noreply.github.com" }]
 requires-python = ">=3.9"
 optional-dependencies = { tray = ["pystray", "pillow"] }
 urls = { Homepage = "https://github.com/CKNB888/NightDisplay" }
