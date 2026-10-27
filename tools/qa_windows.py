@@ -1,5 +1,6 @@
 """Exercise the packaged Windows exe; no fabricated test-success records."""
 import ctypes
+import datetime as dt
 import json
 import os
 import shutil
@@ -79,20 +80,27 @@ def round_test(source, number):
         st = load()["state"]; now = active_targets()
         assert st == "day" and now == before, ("after test", st, now, before)
         events.append("PASS: real timed test + verified display recovery")
-        # A daytime test interval prevents automatic reconciliation racing the test.
-        run("--action", "activate", "--start", "20:00", "--end", "10:30")
-        assert has_tasks() and has_runkey()
+        # QA must not be time-of-day dependent: the old fixed 20:00-10:30 window
+        # meant a run after 10:30 UTC had the GUI's 5s reconcile (want=day)
+        # undo the manual night before C+K could fire, so no chord log ever
+        # appeared and the empty C+K assert hid the real mismatch. Use a window
+        # covering right now, so reconcile keeps night and only C+K restores it.
+        _now = dt.datetime.now()
+        _start = (_now - dt.timedelta(hours=1)).strftime("%H:%M")
+        _end = (_now + dt.timedelta(hours=2)).strftime("%H:%M")
+        run("--action", "activate", "--start", _start, "--end", _end)
+        assert has_tasks() and has_runkey(), ("activate tasks/runkey", has_tasks(), has_runkey())
         run("--action", "night", "--mode", "virtual_only")
-        assert load()["state"] == "night" and W.verify_virtual_only()
+        assert load()["state"] == "night" and W.verify_virtual_only(), ("after night", load()["state"], W.verify_virtual_only())
         run("--action", "day", expected=2)
         press_chord()
         wait_for(lambda: load()["state"] == "day")
-        assert active_targets() == before
+        assert active_targets() == before, ("C+K unlock targets", active_targets(), before)
         events.append("PASS: C+K unlock + original targets")
         run("--action", "night", "--mode", "virtual_only")
         run("--action", "emergency")
-        assert load()["state"] == "day" and not load()["enabled"]
-        assert not has_tasks() and not has_runkey() and active_targets() == before
+        assert load()["state"] == "day" and not load()["enabled"], ("after emergency", load()["state"], load()["enabled"])
+        assert not has_tasks() and not has_runkey() and active_targets() == before, ("emergency cleanup", has_tasks(), has_runkey(), active_targets(), before)
         assert not (root / "state" / "night-power.json").exists()
         events.append("PASS: emergency removes tasks, run key and temporary power scheme")
         run("--action", "uninstall")
