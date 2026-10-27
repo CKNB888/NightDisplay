@@ -282,7 +282,7 @@ def main(argv=None):
         if a.delay:
             time.sleep(a.delay)
         if a.action == "status":
-            print(B.status_text())
+            save(load()); print(B.status_text())
         elif a.action == "awake":
             B.win_awake_loop(a.seconds) if IS_WIN else time.sleep(a.seconds)
         elif a.action == "night":
