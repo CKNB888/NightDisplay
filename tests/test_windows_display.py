@@ -1,4 +1,7 @@
-import sys, pytest, struct
+import sys
+
+import pytest
+
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows only")
 
 def test_sizes_against_api():

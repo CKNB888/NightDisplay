@@ -1,8 +1,32 @@
-# -*- coding: utf-8 -*-
 """各平台动作：夜间/白天、模式选择、防睡眠、系统计划任务。"""
-import os, platform, shlex, subprocess, sys, datetime as dt
+import contextlib
+import functools
+import os
+import platform
+import re
+import shlex
+import subprocess
+import sys
+import threading
+import time
+import uuid
 
-from .core import IS_WIN, IS_MAC, IS_LINUX, log, load, save, update, save_backup, load_backup, home, parse_hm, seconds_until, ranges, boundaries, next_switch
+from .core import (
+    IS_LINUX,
+    IS_MAC,
+    IS_WIN,
+    boundaries,
+    home,
+    load,
+    load_backup,
+    log,
+    next_switch,
+    parse_hm,
+    ranges,
+    save_backup,
+    update,
+)
+from .storage import file_lock, write_json
 
 MODES = {
     "auto": "自动（最接近 UU 关闭显示屏）",
@@ -12,9 +36,21 @@ MODES = {
 }
 
 
+def serialized(fn):
+    @functools.wraps(fn)
+    def call(*args, **kwargs):
+        with file_lock(os.path.join(home(), "actions.lock")):
+            return fn(*args, **kwargs)
+    return call
+
+
 def available_modes():
     if IS_WIN:
-        return ["auto", "virtual_only", "overlay", "screen_off"]
+        # WDA_EXCLUDEFROMCAPTURE is only available on Windows 10 2004+.
+        modes = ["auto", "virtual_only", "screen_off"]
+        if win_build() >= 19041:
+            modes.insert(2, "overlay")
+        return modes
     if IS_LINUX:
         return ["auto", "virtual_only", "screen_off"]
     return ["auto", "screen_off"]
@@ -31,10 +67,11 @@ def has_virtual_display(match=""):
     try:
         if IS_WIN:
             from . import win_display as W
-            return any(W.is_virtual(d, match) for d in W.describe())
+            return any(d["available"] and W.is_virtual(d, match) for d in W.describe())
         if IS_LINUX:
-            from . import linux_display as L
             import re
+
+            from . import linux_display as L
             return any(o["connected"] and re.search(match or L.VIRTUAL_RE, o["name"]) for o in L.query())
     except Exception as e:
         log("检测虚拟屏失败: %s" % e)
@@ -57,7 +94,7 @@ def resolve_reason(match=""):
             return "未找到 xrandr（请安装 x11-xserver-utils），降级为基础关屏"
         return "未检测到虚拟屏（VIRTUAL*/DUMMY*/evdi），降级为基础关屏"
     if IS_WIN:
-        return "未检测到虚拟屏，" + ("降级为防窥黑幕" if win_build() >= 19041 else "系统低于 Win10 2004，降级为基础关屏")
+        return "未检测到虚拟屏，" + ("使用防窥黑幕" if win_build() >= 19041 else "使用基础关屏（输入会唤醒）")
     return "macOS 暂无内置虚拟屏，使用基础关屏"
 
 
@@ -83,12 +120,45 @@ def _sys_encoding():
     return "utf-8"
 
 
-def run(cmd, check=True):
+_native_lock = threading.RLock()
+
+
+def native_env():
+    env = dict(os.environ)
+    if getattr(sys, "frozen", False):
+        for key in ("LD_LIBRARY_PATH", "LIBPATH"):
+            if key + "_ORIG" in env:
+                env[key] = env[key + "_ORIG"]
+            else:
+                env.pop(key, None)
+    return env
+
+
+@contextlib.contextmanager
+def native_launch():
+    with _native_lock:
+        if IS_WIN and getattr(sys, "frozen", False):
+            import ctypes
+            ctypes.windll.kernel32.SetDllDirectoryW.argtypes = [ctypes.c_wchar_p]
+            ctypes.windll.kernel32.SetDllDirectoryW(None)
+            try:
+                yield
+            finally:
+                ctypes.windll.kernel32.SetDllDirectoryW(sys._MEIPASS)
+        else:
+            yield
+
+
+def run(cmd, check=True, timeout=60):
     kw = {"creationflags": 0x08000000} if IS_WIN else {}
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, encoding=_sys_encoding(), errors="replace", **kw)
-    except FileNotFoundError:
-        raise RuntimeError("找不到命令 %s" % cmd[0])
+        with native_launch():
+            p = subprocess.run(cmd, capture_output=True, text=True, encoding=_sys_encoding(), errors="replace",
+                               timeout=timeout, env=native_env(), **kw)
+    except FileNotFoundError as e:
+        raise RuntimeError("找不到命令 %s" % cmd[0]) from e
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("%s 超过 %s 秒未响应" % (cmd[0], timeout)) from e
     if check and p.returncode:
         raise RuntimeError("%s 失败(%s): %s" % (cmd[0], p.returncode, (p.stderr or p.stdout).strip()))
     return p
@@ -99,58 +169,49 @@ _awake_proc = None
 
 def keep_awake(on, seconds=12 * 3600):
     global _awake_proc
-    if _awake_proc and _awake_proc.poll() is None:
-        _awake_proc.terminate(); _awake_proc = None
+    # Revoke the previous helper's token. Never kill a PID read from disk:
+    # executable names cannot distinguish a reused Python/caffeinate PID.
+    token = uuid.uuid4().hex if on else ""
+    update(awake_token=token)
     pidf = os.path.join(home(), "awake.pid")
     if os.path.exists(pidf):
-        try:
-            pid, name = (open(pidf).read().strip().split(":", 1) + [""])[:2]
-            if name and _proc_matches(int(pid), name):
-                os.kill(int(pid), 15)
-            else:
-                log("保持唤醒 pid %s 已不是本程序进程，跳过结束" % pid)
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(OSError):
             os.remove(pidf)
-        except OSError:
-            pass
     if not on:
         log("已停止保持唤醒")
         return True
-    if IS_WIN:
-        cmd = self_cmd() + ["--action", "awake", "--seconds", str(seconds)]
-    elif IS_MAC:
-        cmd = ["/usr/bin/caffeinate", "-i", "-s", "-t", str(seconds)]
-    else:
-        cmd = ["systemd-inhibit", "--what=sleep:idle", "--who=NightDisplay", "--why=夜间黑屏期间保持开机",
-               "--mode=block", "sleep", str(seconds)]
+    cmd = self_cmd() + ["--action", "awake", "--seconds", str(seconds), "--awake-token", token]
     try:
         _awake_proc = spawn_detached(cmd)
-        open(pidf, "w").write("%s:%s" % (_awake_proc.pid, os.path.basename(cmd[0])))
+        ready_path = os.path.join(home(), "awake-ready.json")
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            try:
+                import json
+                with open(ready_path, encoding="utf-8") as f:
+                    ready = json.load(f)
+                if ready.get("token") == token:
+                    break
+            except (OSError, ValueError):
+                pass
+            if _awake_proc.poll() is not None:
+                update(awake_token="")
+                raise RuntimeError("保持唤醒启动失败，请查看日志")
+            time.sleep(0.1)
+        else:
+            update(awake_token="")
+            raise RuntimeError("保持唤醒启动超时，未继续黑屏")
         log("保持唤醒：%s (pid %s)" % (cmd[0], _awake_proc.pid))
         return True
-    except FileNotFoundError:
-        log("警告：找不到 %s，无法阻止睡眠" % cmd[0])
-        return False
-
-def _proc_matches(pid, name):
-    """确认 pid 仍是我们启动的进程（防 PID 复用误杀）。"""
-    name = name.lower().replace(".exe", "")
-    try:
-        if IS_WIN:
-            p = run(["tasklist", "/FI", "PID eq %d" % pid, "/FO", "CSV", "/NH"], check=False)
-            return name in (p.stdout or "").lower()
-        if os.path.exists("/proc/%d/cmdline" % pid):
-            return name in open("/proc/%d/cmdline" % pid, "rb").read().decode(errors="replace").lower()
-        p = run(["ps", "-p", str(pid), "-o", "command="], check=False)
-        return name in (p.stdout or "").lower()
-    except Exception:
-        return False
-
+    except FileNotFoundError as e:
+        update(awake_token="")
+        raise RuntimeError("找不到 %s，无法阻止睡眠" % cmd[0]) from e
 
 def spawn_detached(cmd):
     kw = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+    if getattr(sys, "frozen", False):
+        # Timed recovery must keep its own extracted files after the GUI exits.
+        kw["env"] = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
     if IS_WIN:
         kw["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED|NEW_GROUP|NO_WINDOW
     else:
@@ -158,17 +219,78 @@ def spawn_detached(cmd):
     return subprocess.Popen(cmd, **kw)
 
 
-def win_awake_loop(seconds):
-    """Windows：本进程持有 ES_SYSTEM_REQUIRED 直到超时或被结束。"""
-    import ctypes, time
-    r = ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x1)
-    log("SetThreadExecutionState(ES_CONTINUOUS|ES_SYSTEM_REQUIRED) -> 0x%x，最多 %s 秒" % (r & 0xFFFFFFFF, seconds))
-    end = time.time() + seconds
-    while time.time() < end:
-        time.sleep(min(60, seconds))
-        if load().get("state") != "night":  # 白天了就退出（onefile 下 kill 不一定命中子进程）
-            break
-    return r
+def awake_loop(seconds, token=""):
+    """Own any child by its live Popen handle; exit when the token is revoked."""
+    child = None
+    if token and load().get("awake_token") != token:
+        return
+    try:
+        if IS_WIN:
+            import ctypes
+            flags = 0x80000003 if load().get("night_mode") in ("virtual_only", "overlay") else 0x80000001
+            if not ctypes.windll.kernel32.SetThreadExecutionState(flags):
+                raise RuntimeError("Windows 拒绝阻止系统睡眠")
+        elif IS_MAC:
+            child = subprocess.Popen(["/usr/bin/caffeinate", "-i", "-s", "-t", str(seconds)], env=native_env())
+        else:
+            child = subprocess.Popen(["systemd-inhibit", "--what=sleep:idle", "--who=NightDisplay",
+                                      "--why=NightDisplay", "--mode=block", "sleep", str(seconds)], env=native_env())
+        if child is not None:
+            time.sleep(0.2)
+            if child.poll() is not None and child.returncode:
+                raise RuntimeError("保持唤醒进程启动失败")
+        end = time.monotonic() + seconds
+        heartbeat = 0
+        while time.monotonic() < end:
+            if token and load().get("awake_token") != token:
+                break
+            if token and time.monotonic() >= heartbeat:
+                write_json(os.path.join(home(), "awake-ready.json"), {"token": token, "at": time.time()})
+                heartbeat = time.monotonic() + 5
+            if child is not None and child.poll() is not None:
+                if child.returncode:
+                    raise RuntimeError("保持唤醒进程退出，代码 %s" % child.returncode)
+                break
+            time.sleep(min(0.25, max(0, end - time.monotonic())))
+    finally:
+        if child is not None and child.poll() is None:
+            child.terminate()
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                child.kill(); child.wait()
+        if IS_WIN:
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+
+
+def ensure_night():
+    """Repair resume/display changes without replacing the daytime backup."""
+    c = load()
+    if c.get("state") != "night" or c.get("recovery_pending"):
+        return
+    if c.get("night_mode") == "virtual_only":
+        if IS_WIN:
+            from . import win_display as display
+        else:
+            from . import linux_display as display
+        match = c.get("virtual_match", "")
+        if IS_WIN:
+            from . import win_power
+            win_power.enter()
+        if not display.verify_virtual_only(match):
+            display.apply_virtual_only(match, log)
+            if not display.verify_virtual_only(match):
+                raise RuntimeError("夜间输出已改变，无法重新确认只有虚拟屏")
+    if c.get("keep_awake"):
+        try:
+            import json
+            with open(os.path.join(home(), "awake-ready.json"), encoding="utf-8") as f:
+                ready = json.load(f)
+            healthy = ready.get("token") == c.get("awake_token") and 0 <= time.time() - ready["at"] < 15
+        except (OSError, ValueError, KeyError, TypeError):
+            healthy = False
+        if not healthy:
+            keep_awake(True, next_switch(c)[1] + 600 if c.get("enabled") else 6 * 3600)
 
 
 # ---------- 显示动作 ----------
@@ -177,6 +299,8 @@ def _backup_display():
     if IS_WIN:
         from . import win_display as W
         b = W.backup_active()
+        if b.get("displays") and all(W.is_virtual(d) for d in b["displays"]):
+            raise RuntimeError("当前只剩虚拟屏，不能覆盖正常显示备份；请先应急恢复实体屏")
     elif IS_LINUX:
         from . import linux_display as L
         b = L.backup()
@@ -189,7 +313,14 @@ def _backup_display():
 
 def restore_display(log_=None):
     lg = log_ or log
-    b = load_backup("display")
+    try:
+        b = load_backup("display")
+    except (ValueError, OSError) as e:
+        lg("显示备份不可读，尝试系统恢复：%s" % e)
+        b = None
+    if b is not None and not isinstance(b, dict):
+        lg("显示备份格式不正确，尝试系统恢复")
+        b = None
     if IS_WIN:
         from . import win_display as W
         return W.restore(b, lg)
@@ -230,60 +361,115 @@ def screen_on():
         L.screen_on()
 
 
+@serialized
 def go_night(mode, overlay_cb=None, dry_run=False):
+    if mode == "auto" and not dry_run:
+        chosen = resolve_mode(mode, load().get("virtual_match", ""))
+        candidates = [chosen]
+        if IS_WIN and chosen == "virtual_only" and win_build() >= 19041 and overlay_cb:
+            candidates.append("overlay")
+        if "screen_off" not in candidates:
+            candidates.append("screen_off")
+        for candidate in candidates:
+            try:
+                return _go_night(candidate, overlay_cb, dry_run)
+            except Exception as e:
+                if load().get("state") == "night" or load().get("recovery_pending"):
+                    raise
+                log("%s 失败：%s，尝试下一种兼容方式" % (candidate, e))
+                if candidate == candidates[-1]:
+                    raise
+    return _go_night(mode, overlay_cb, dry_run)
+
+
+def _go_night(mode, overlay_cb=None, dry_run=False):
     """进入夜间。overlay_cb: GUI 进程提供的黑幕回调。返回实际模式。"""
     cfg = load()
     real = resolve_mode(mode, cfg.get("virtual_match", ""))
+    if not dry_run and cfg.get("state") == "night":
+        if real == cfg.get("night_mode"):
+            return real
+        raise RuntimeError("请先恢复显示，再切换夜间模式")
     log("进入夜间：设置模式=%s，实际模式=%s" % (mode, real))
     if real == "virtual_only":
-        if cfg.get("state") != "night" and not dry_run:
+        if not dry_run:
             _backup_display()  # 只在白天状态备份，避免把夜间配置当成“正常”
+            update(night_mode=real, recovery_pending=True)
         try:
             if IS_WIN:
                 from . import win_display as W
+                if not dry_run:
+                    W.plan_virtual_only(cfg.get("virtual_match", ""))
+                    from . import win_power
+                    win_power.enter()
                 W.apply_virtual_only(cfg.get("virtual_match", ""), log, dry_run=dry_run)
                 if not dry_run:
-                    import time; time.sleep(3)
+                    time.sleep(3)
                     if not W.verify_virtual_only(cfg.get("virtual_match", "")):
                         raise RuntimeError("应用后检查失败：仍有实体屏处于活动状态")
             else:
                 from . import linux_display as L
                 L.apply_virtual_only(cfg.get("virtual_match", ""), log, dry_run=dry_run)
+                if not dry_run and not L.verify_virtual_only(cfg.get("virtual_match", "")):
+                    raise RuntimeError("应用后检查失败：仍有实体屏处于活动状态")
         except Exception as e:
             log("仅虚拟屏失败，立即回滚: %s" % e)
             if not dry_run:
-                restore_display()
+                try:
+                    restore_display()
+                    if IS_WIN:
+                        from . import win_power
+                        win_power.restore()
+                    update(state="day", night_mode="", recovery_pending=False)
+                except Exception as recovery:
+                    update(state="night", night_mode=real)
+                    raise RuntimeError("切换失败且回滚失败：%s；%s" % (e, recovery)) from e
             raise
     elif real == "overlay":
         if overlay_cb is None:
             raise RuntimeError("防窥黑幕需要托盘程序在运行")
         if not dry_run and overlay_cb(True) is not True:
-            try:
+            with contextlib.suppress(Exception):
                 overlay_cb(False)
-            except Exception:
-                pass
             raise RuntimeError("防窥黑幕未能确认显示（窗口未创建或排除采集失败），未进入夜间")
     elif real == "screen_off":
         if not dry_run:
             screen_off()
-    if cfg.get("keep_awake", True) and not dry_run:
-        keep_awake(True, next_switch(cfg)[1] + 600 if cfg.get("enabled") else 6 * 3600)
     if not dry_run:
-        update(state="night", night_mode=real)
+        update(state="night", night_mode=real, recovery_pending=False)
+        if IS_WIN and real != "virtual_only":
+            try:
+                from . import win_power
+                win_power.enter(keep_display_on=real != "screen_off")
+            except Exception:
+                go_day(overlay_cb, raise_errors=True)
+                raise
+        if cfg.get("keep_awake", True):
+            try:
+                keep_awake(True, next_switch(cfg)[1] + 600 if cfg.get("enabled") else 6 * 3600)
+            except Exception:
+                go_day(overlay_cb, raise_errors=True)
+                raise
     return real
 
 
-def go_day(overlay_cb=None, mode=None, raise_errors=False):
+@serialized
+def go_day(overlay_cb=None, mode=None, raise_errors=True):
     cfg = load()
-    real = mode or cfg.get("night_mode") or "screen_off"
+    real = cfg.get("night_mode") if mode == "all" else mode or cfg.get("night_mode")
+    real = real or "screen_off"
     log("恢复白天显示（上次夜间模式=%s）" % real)
     errors = []
     if overlay_cb:
         try:
-            overlay_cb(False)
+            if overlay_cb(False) is not True:
+                raise RuntimeError("黑幕未确认关闭")
         except Exception as e:
             errors.append(str(e))
-    if real == "virtual_only" or mode == "all":
+    elif real == "overlay" and cfg.get("state") == "night":
+        # No resident process means its windows have already been destroyed.
+        log("黑幕常驻进程已退出，继续唤醒显示器")
+    if real == "virtual_only":
         try:
             restore_display()
         except Exception as e:
@@ -292,12 +478,20 @@ def go_day(overlay_cb=None, mode=None, raise_errors=False):
         screen_on()
     except Exception as e:
         errors.append(str(e))
-    keep_awake(False)
-    update(state="day")
+    if IS_WIN:
+        try:
+            from . import win_power
+            win_power.restore()
+        except Exception as e:
+            errors.append(str(e))
     if errors:
+        update(recovery_pending=True)
         log("恢复警告（部分失败）: " + " | ".join(errors))
         if raise_errors:
             raise RuntimeError("恢复部分失败: " + " | ".join(errors))
+        return real
+    update(state="day", night_mode="", recovery_pending=False)
+    keep_awake(False)
     return real
 
 # ---------- 系统计划任务 ----------
@@ -308,8 +502,9 @@ SD_UNIT = "nightdisplay"
 
 def self_cmd():
     if getattr(sys, "frozen", False):
-        return [sys.executable]
-    return [sys.executable, "-m", "nightdisplay"]
+        return [sys.executable, "--home", os.path.abspath(home())]
+    return [sys.executable, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "nightdisplay_main.py")),
+            "--home", os.path.abspath(home())]
 
 
 def _systemd_dir():
@@ -339,11 +534,11 @@ def launchd_plist(cfg):
 
 def schedule_install(cfg):
     if IS_WIN:
-        tr = " ".join('"%s"' % c for c in self_cmd()) + " --action reconcile"
+        tr = subprocess.list2cmdline(self_cmd() + ["--action", "reconcile"])
         _win_delete_tasks()
         for i, t in enumerate(boundaries(cfg)):
             name = TASKS[i] if i < 2 else "NightDisplay_T%02d" % i
-            run(["schtasks", "/Create", "/F", "/TN", name, "/SC", "DAILY", "/ST", t, "/TR", tr])
+            run(["schtasks", "/Create", "/F", "/TN", name, "/SC", "DAILY", "/ST", t, "/TR", tr, "/IT"])
         set_autostart(cfg.get("autostart", True))
     elif IS_MAC:
         import plistlib
@@ -352,16 +547,17 @@ def schedule_install(cfg):
         run(["launchctl", "unload", path], check=False)
         with open(path, "wb") as f:
             plistlib.dump(launchd_plist(cfg), f)
-        run(["launchctl", "load", path], check=False)
+        run(["launchctl", "load", path])
+        set_autostart(cfg.get("autostart", True))
     else:
         d = _systemd_dir(); os.makedirs(d, exist_ok=True)
         svc, tim = systemd_units(cfg)
-        open(os.path.join(d, SD_UNIT + ".service"), "w").write(svc)
-        open(os.path.join(d, SD_UNIT + ".timer"), "w").write(tim)
-        p = run(["systemctl", "--user", "daemon-reload"], check=False)
-        p2 = run(["systemctl", "--user", "enable", "--now", SD_UNIT + ".timer"], check=False)
-        if p2.returncode:
-            log("警告：systemctl --user 不可用（%s），单元文件已写入 %s" % ((p2.stderr or "").strip()[:120], d))
+        with open(os.path.join(d, SD_UNIT + ".service"), "w") as f:
+            f.write(svc)
+        with open(os.path.join(d, SD_UNIT + ".timer"), "w") as f:
+            f.write(tim)
+        run(["systemctl", "--user", "daemon-reload"])
+        run(["systemctl", "--user", "enable", "--now", SD_UNIT + ".timer"])
     log("已注册系统计划：夜间时间段 %s" % "，".join("%s→%s" % r for r in ranges(cfg)))
 
 
@@ -386,17 +582,28 @@ def set_autostart(on):
         import winreg
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
             if on:
-                winreg.SetValueEx(k, "NightDisplay", 0, winreg.REG_SZ, " ".join('"%s"' % c for c in self_cmd()) + " --tray")
+                winreg.SetValueEx(k, "NightDisplay", 0, winreg.REG_SZ, subprocess.list2cmdline(self_cmd() + ["--tray"]))
             else:
-                try:
+                with contextlib.suppress(OSError):
                     winreg.DeleteValue(k, "NightDisplay")
-                except OSError:
-                    pass
+    elif IS_MAC:
+        import plistlib
+        path = os.path.expanduser("~/Library/LaunchAgents/com.nightdisplay.tray.plist")
+        run(["launchctl", "unload", path], check=False)
+        if on:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                plistlib.dump({"Label": "com.nightdisplay.tray", "ProgramArguments": self_cmd() + ["--tray"],
+                              "RunAtLoad": True}, f)
+            run(["launchctl", "load", path])
+        elif os.path.exists(path):
+            os.remove(path)
     elif IS_LINUX:
         p = os.path.expanduser("~/.config/autostart/nightdisplay.desktop")
         if on:
             os.makedirs(os.path.dirname(p), exist_ok=True)
-            open(p, "w").write("[Desktop Entry]\nType=Application\nName=NightDisplay\nExec=%s --tray\nX-GNOME-Autostart-enabled=true\n" % " ".join(shlex.quote(c) for c in self_cmd()))
+            with open(p, "w") as f:
+                f.write("[Desktop Entry]\nType=Application\nName=NightDisplay\nExec=%s --tray\nX-GNOME-Autostart-enabled=true\n" % " ".join(shlex.quote(c) for c in self_cmd()))
         elif os.path.exists(p):
             os.remove(p)
 
@@ -411,7 +618,7 @@ def autostart_status():
             return False
     if IS_LINUX:
         return os.path.exists(os.path.expanduser("~/.config/autostart/nightdisplay.desktop"))
-    return os.path.exists(os.path.expanduser("~/Library/LaunchAgents/%s.plist" % LA_LABEL))
+    return os.path.exists(os.path.expanduser("~/Library/LaunchAgents/com.nightdisplay.tray.plist"))
 
 
 def schedule_remove():
@@ -428,13 +635,13 @@ def schedule_remove():
         if os.path.exists(path):
             run(["launchctl", "unload", path], check=False)
             os.remove(path); removed.append("LaunchAgent")
+        if autostart_status():
+            set_autostart(False); removed.append("开机自启")
     else:
         tim = os.path.join(_systemd_dir(), SD_UNIT + ".timer")
         if os.path.exists(tim):
-            try:
+            with contextlib.suppress(Exception):
                 run(["systemctl", "--user", "disable", "--now", SD_UNIT + ".timer"], check=False)
-            except Exception:
-                pass
         for ext in (".service", ".timer"):
             p = os.path.join(_systemd_dir(), SD_UNIT + ext)
             if os.path.exists(p):
@@ -448,10 +655,10 @@ def schedule_remove():
 
 def schedule_status():
     if IS_WIN:
-        out = []
-        for n in TASKS:
-            p = run(["schtasks", "/Query", "/TN", n, "/FO", "LIST"], check=False)
-            out.append("%s：%s" % (n, "已注册" if p.returncode == 0 else "未注册"))
+        p = run(["schtasks", "/Query", "/FO", "CSV", "/NH"], check=False)
+        names = set(re.findall(r'"\\?(NightDisplay_(?:Night|Day|T\d+))"', p.stdout or ""))
+        out = ["%s：已注册" % n for n in sorted(names)]
+        out += ["%s：未注册" % n for n in TASKS if n not in names]
         return "；".join(out)
     if IS_MAC:
         p = run(["launchctl", "list"], check=False)

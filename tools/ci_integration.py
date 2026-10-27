@@ -1,11 +1,19 @@
-# -*- coding: utf-8 -*-
 """CI 集成测试：在真实 Windows / macOS / Linux 机器上跑核心流程，输出 PASS/FAIL/SKIP 证据表。
 用法: python tools/ci_integration.py [--vdd]   （硬失败时退出码 1）"""
-import os, sys, json, time, shutil, subprocess, traceback, platform
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import time
+import traceback
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("NIGHTDISPLAY_HOME", os.path.join(os.getcwd(), "ci-home"))
-from nightdisplay import core, backends as B
-from nightdisplay.core import IS_WIN, IS_MAC
+from nightdisplay import backends as B
+from nightdisplay import core
+from nightdisplay.core import IS_MAC, IS_WIN
 
 R = []
 def check(name, fn, hard=True):
@@ -23,6 +31,10 @@ def sh(cmd, timeout=120, **kw):
 PY = [sys.executable, "-m", "nightdisplay"]
 
 def schedule_roundtrip():
+    if not IS_WIN and not IS_MAC:
+        rc, out = sh(["systemctl", "--user", "show-environment"])
+        if rc:
+            raise SkipTest("No user systemd bus: " + out.strip()[:100])
     cfg = core.update(start="20:00", end="10:30")
     B.schedule_install(cfg)
     st = B.schedule_status()
@@ -37,12 +49,21 @@ def schedule_roundtrip():
         if shutil.which("systemd-analyze"):
             rc, out = sh(["systemd-analyze", "--user", "verify", os.path.join(d, "nightdisplay.timer")])
             st += " | verify rc=%s %s" % (rc, out.strip()[:120])
+            if rc:
+                B.schedule_remove()
+                if "RuntimeDirectory" in out or "Failed to initialize manager" in out:
+                    raise SkipTest("User systemd runtime is unavailable: " + out.strip()[:120])
+                raise AssertionError(out)
     B.schedule_remove()
     st2 = B.schedule_status()
     assert "已注册" not in st2.replace("未注册", "") and "已加载" not in st2 and "已写入" not in st2, st2
     return st + " -> removed: " + st2
 
 def awake_check():
+    if not IS_WIN and not IS_MAC:
+        rc, out = sh(["systemd-inhibit", "--list", "--no-pager"])
+        if rc:
+            raise SkipTest("No logind bus: " + out.strip()[:100])
     core.update(state="night")
     try:
         B.keep_awake(True, 120); time.sleep(4)
@@ -70,6 +91,10 @@ def display_roundtrip():
     return out.strip().splitlines()[-1]
 
 def screen_off_on():
+    if not IS_WIN and not IS_MAC:
+        from nightdisplay import linux_display as L
+        if "DPMS is" not in L._run(["xset", "q"]):
+            raise SkipTest("X server has no DPMS (Xvfb)")
     core.update(state="day")
     rc, out = sh(PY + ["--action", "night", "--mode", "screen_off"])
     rc2, out2 = sh(PY + ["--action", "emergency"])
@@ -107,17 +132,21 @@ def vdd_virtual_only():
         except subprocess.TimeoutExpired:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)
             rc = "timeout"
-    out = open(logf, errors="replace").read()
+    with open(logf, errors="replace") as f:
+        out = f.read()
     print(out[-3000:])
     assert rc == 0, "install_vdd rc=%s" % rc
     time.sleep(8)
     rc, out = sh(PY + ["--action", "displays"]); print(out)
     rc, plan = sh(PY + ["--action", "plan-virtual"]); print(plan)
     assert rc == 0, plan
-    rc, n = sh(PY + ["--action", "night", "--mode", "virtual_only"]); print(n)
-    rc2, d = sh(PY + ["--action", "emergency"]); print(d)
+    try:
+        rc, n = sh(PY + ["--action", "night", "--mode", "virtual_only"]); print(n)
+        assert rc == 0, n
+    finally:
+        rc2, d = sh(PY + ["--action", "emergency"]); print(d)
     rc3, after = sh(PY + ["--action", "displays"]); print(after)
-    assert rc == 0, n
+    assert rc2 == 0 and rc3 == 0, d + after
     return "virtual_only night rc=%s day rc=%s" % (rc, rc2)
 
 def gui_selftest():
@@ -130,11 +159,11 @@ if __name__ == "__main__":
     check("schedule register/query/remove", schedule_roundtrip)
     check("keep-awake helper", awake_check)
     check("display backup/restore round-trip", display_roundtrip, hard=not IS_MAC)
-    check("screen_off -> day", screen_off_on, hard=False)
+    check("screen_off -> day", screen_off_on)
     check("GUI selftest", gui_selftest)
-    check("overlay (exclude-from-capture) GUI", overlay_night_day, hard=False)
+    check("overlay (exclude-from-capture) GUI", overlay_night_day)
     if "--vdd" in sys.argv:
-        check("VDD install + virtual_only + restore", vdd_virtual_only, hard=False)
+        check("VDD install + virtual_only + restore", vdd_virtual_only)
     print("\n| test | result | evidence |\n|---|---|---|")
     for n, r, e in R:
         print("| %s | %s | %s |" % (n, r, e.replace("|", "/").replace("\n", " ")))

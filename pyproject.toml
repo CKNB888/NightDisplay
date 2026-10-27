@@ -1,11 +1,39 @@
 [project]
 name = "nightdisplay"
-version = "3.0.1"
+version = "3.0.3"
 description = "每天定时让本地屏幕变黑、远程照常可用（Windows/macOS/Linux）"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
 authors = [{ name = "传康Kk", email = "CKNB888@users.noreply.github.com" }]
 requires-python = ">=3.9"
+dependencies = ["pillow>=10"]
 optional-dependencies = { tray = ["pystray", "pillow"] }
 urls = { Homepage = "https://github.com/CKNB888/NightDisplay" }
 scripts = { nightdisplay = "nightdisplay.app:main" }
+
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["nightdisplay", "nightdisplay.resources"]
+py-modules = ["nightdisplay_main"]
+
+[tool.setuptools.package-data]
+nightdisplay = ["resources/*"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+exclude = ["vendor", "build", "dist", ".build-env", "third-party-licenses"]
+
+[tool.ruff.lint]
+# The popular baseline recommended by the Ruff documentation, minus rules that
+# would only rewrite legacy formatting in this release.
+select = ["E4", "E7", "E9", "F", "B", "SIM", "I", "UP"]
+ignore = [
+    "E501",   # Long UI strings and Windows API declarations are intentional.
+    "E701",   # Compact `if x: return` guards are used in the Tk event code.
+    "E702",   # Existing semicolon-separated statements are kept for this PR.
+    "UP031",  # The codebase deliberately uses %-formatting for translatable text.
+]

@@ -1,8 +1,12 @@
 import datetime as dt
+
 import pytest
+
 from nightdisplay import core
 
-D = lambda h, m: dt.datetime(2026, 1, 1, h, m)
+
+def D(h, m):
+    return dt.datetime(2026, 1, 1, h, m)
 
 @pytest.mark.parametrize("h,m,exp", [(0, 0, 1), (10, 29, 1), (10, 30, 0), (19, 59, 0), (20, 0, 1), (23, 59, 1)])
 def test_overnight(h, m, exp):
@@ -28,7 +32,8 @@ def test_config_and_backup_roundtrip():
     for i in range(12):
         core.save_backup("display", {"i": i})
     assert core.load_backup("display") == {"i": 11}
-    import glob, os
+    import glob
+    import os
     assert len(glob.glob(os.path.join(core.home(), "backups", "display-2*.json"))) == 10
 
 def test_auto_mode_resolution(monkeypatch):

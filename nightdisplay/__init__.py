@@ -1,4 +1,4 @@
-VERSION = "3.0.1"
+VERSION = "3.0.3"
 APP = "NightDisplay"
 CREDIT = "开发与赞助：传康Kk，联系方式 1837620622"
 
