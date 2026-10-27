@@ -1,0 +1,61 @@
+name: build
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: NightDisplay-Windows-x64
+          - os: macos-latest
+            name: NightDisplay-macOS-arm64
+          - os: macos-15-intel
+            name: NightDisplay-macOS-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pyinstaller
+      - run: python test_logic.py
+      - run: python nightdisplay.py --action status
+      - name: Build Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          pyinstaller --onefile --windowed --name NightDisplay nightdisplay.py
+          ./dist/NightDisplay.exe --action status; echo "exit=$?"
+          mkdir out && cp dist/NightDisplay.exe README.md out/ && cp -r legacy out/
+          cd out && 7z a ../${{ matrix.name }}.zip .
+      - name: Build macOS
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller --windowed --name NightDisplay --osx-bundle-identifier com.nightdisplay.app nightdisplay.py
+          ./dist/NightDisplay.app/Contents/MacOS/NightDisplay --action status
+          file dist/NightDisplay.app/Contents/MacOS/NightDisplay
+          mkdir out && cp -R dist/NightDisplay.app README.md out/
+          ditto -c -k --keepParent out ${{ matrix.name }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}.zip
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
