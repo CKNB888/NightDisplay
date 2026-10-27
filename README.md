@@ -6,6 +6,12 @@ NightDisplay 在指定时段关闭本地显示输出，同时保持电脑运行�
 
 [下载正式版本](https://github.com/CKNB888/NightDisplay/releases/latest) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
 
+## 宣传片
+
+[![NightDisplay：本机纯黑，远程照常](docs/promo/poster.jpg)](docs/promo/nightdisplay.mp4)
+
+人走了，屏幕按计划变成纯黑。远程桌面照常能看、能操作。点图片播放。
+
 ## 日常使用
 
 Windows 默认优先使用常驻虚拟屏。进入夜间时，桌面只输出到虚拟屏，实体屏从桌面布局中移除；恢复时还原原来的显示配置。普通鼠标和键盘输入不会重新启用被移除的实体输出。
