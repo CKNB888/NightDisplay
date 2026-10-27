@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from nightdisplay import VERSION
 from nightdisplay import backends as B
 from nightdisplay import core, updates
 from nightdisplay import win_power as P
@@ -159,12 +160,16 @@ def test_version_parse(tag, expected):
 
 
 def test_update_url_cannot_redirect_to_arbitrary_download(monkeypatch):
+    # 假版本必须高于正在打包的 VERSION，不能写死一个很快就被追上的号。
+    current = updates.version_tuple("v" + VERSION)
+    tag = "v%d.%d.%d" % (current[0], current[1], current[2] + 1)
+
     class Response:
         def __enter__(self): return self
         def __exit__(self, *args): pass
         def read(self, limit):
-            return json.dumps({"tag_name": "v3.0.6", "html_url": "https://attacker.invalid"}).encode()
+            return json.dumps({"tag_name": tag, "html_url": "https://attacker.invalid"}).encode()
     monkeypatch.setattr(updates.urllib.request, "urlopen", lambda *a, **kw: Response())
     data = updates.check()
     assert data["newer"]
-    assert data["url"] == "https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.6"
+    assert data["url"] == "https://github.com/CKNB888/NightDisplay/releases/tag/" + tag
