@@ -16,6 +16,7 @@ function Fail($step, $m) {
   Say "Log file: $LogFile"
   exit 2
 }
+trap { Say ("ERROR at line {0}: {1}" -f $_.InvocationInfo.ScriptLineNumber, $_.Exception.Message); exit 1 }
 $code = @'
 using System; using System.Runtime.InteropServices;
 public static class VddDev {
