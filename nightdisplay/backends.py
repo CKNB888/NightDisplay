@@ -104,10 +104,17 @@ def keep_awake(on, seconds=12 * 3600):
     pidf = os.path.join(home(), "awake.pid")
     if os.path.exists(pidf):
         try:
-            os.kill(int(open(pidf).read()), 15)
+            pid, name = (open(pidf).read().strip().split(":", 1) + [""])[:2]
+            if name and _proc_matches(int(pid), name):
+                os.kill(int(pid), 15)
+            else:
+                log("保持唤醒 pid %s 已不是本程序进程，跳过结束" % pid)
         except Exception:
             pass
-        os.remove(pidf)
+        try:
+            os.remove(pidf)
+        except OSError:
+            pass
     if not on:
         log("已停止保持唤醒")
         return True
@@ -120,12 +127,27 @@ def keep_awake(on, seconds=12 * 3600):
                "--mode=block", "sleep", str(seconds)]
     try:
         _awake_proc = spawn_detached(cmd)
-        open(pidf, "w").write(str(_awake_proc.pid))
+        open(pidf, "w").write("%s:%s" % (_awake_proc.pid, os.path.basename(cmd[0])))
         log("保持唤醒：%s (pid %s)" % (cmd[0], _awake_proc.pid))
         return True
     except FileNotFoundError:
         log("警告：找不到 %s，无法阻止睡眠" % cmd[0])
         return False
+
+def _proc_matches(pid, name):
+    """确认 pid 仍是我们启动的进程（防 PID 复用误杀）。"""
+    name = name.lower().replace(".exe", "")
+    try:
+        if IS_WIN:
+            p = run(["tasklist", "/FI", "PID eq %d" % pid, "/FO", "CSV", "/NH"], check=False)
+            return name in (p.stdout or "").lower()
+        if os.path.exists("/proc/%d/cmdline" % pid):
+            return name in open("/proc/%d/cmdline" % pid, "rb").read().decode(errors="replace").lower()
+        p = run(["ps", "-p", str(pid), "-o", "command="], check=False)
+        return name in (p.stdout or "").lower()
+    except Exception:
+        return False
+
 
 def spawn_detached(cmd):
     kw = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
@@ -235,7 +257,12 @@ def go_night(mode, overlay_cb=None, dry_run=False):
     elif real == "overlay":
         if overlay_cb is None:
             raise RuntimeError("防窥黑幕需要托盘程序在运行")
-        overlay_cb(True)
+        if not dry_run and overlay_cb(True) is not True:
+            try:
+                overlay_cb(False)
+            except Exception:
+                pass
+            raise RuntimeError("防窥黑幕未能确认显示（窗口未创建或排除采集失败），未进入夜间")
     elif real == "screen_off":
         if not dry_run:
             screen_off()

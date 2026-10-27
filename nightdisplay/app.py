@@ -48,13 +48,13 @@ def start_test(mode, seconds, overlay_cb=None):
         raise RuntimeError("请先暂停每日计划再测试")
     B.validate_mode(mode)
     real = B.resolve_mode(mode, cfg.get("virtual_match", ""))
-    update(last_test_mode=real, last_test_at=dt.datetime.now().isoformat(), last_test_ok=False,
+    update(last_test_mode=real, last_test_at=dt.datetime.now().isoformat(), last_test_ok=False, last_test_night_ok=False,
            last_recovery_at="", last_recovery_mode="")
     # 先启动独立的恢复进程（窗口被关也会执行），再切换
     B.spawn_detached(B.self_cmd() + ["--action", "day", "--delay", str(seconds), "--test-recovery"])
     log("测试开始（%s），%d 秒后自动恢复" % (real, seconds))
     B.go_night(real, overlay_cb)
-    update(last_test_ok=True)
+    update(last_test_night_ok=True)  # 成功标记要等自动恢复验证通过后才写 last_test_ok
     return real
 
 
@@ -114,6 +114,7 @@ def make_overlay(root):
     state = {"win": None}
 
     def cb(on):
+        box = {"ok": False}
         def do():
             import tkinter as tk
             if on and state["win"] is None:
@@ -140,11 +141,23 @@ def make_overlay(root):
                     u.SetLayeredWindowAttributes(hwnd, 0, 255, 2)
                     ok = u.SetWindowDisplayAffinity(hwnd, 0x11)  # WDA_EXCLUDEFROMCAPTURE
                     log("防窥黑幕已显示（排除采集=%s，输入穿透）" % bool(ok))
+                    if not ok:
+                        w.destroy()
+                        log("排除采集失败，已撤销黑幕")
+                        return
                 state["win"] = w
             elif not on and state["win"] is not None:
                 state["win"].destroy(); state["win"] = None
                 log("防窥黑幕已关闭")
-        root.after(0, do)
+            box["ok"] = (state["win"] is not None) if on else True
+        if threading.current_thread() is threading.main_thread():
+            do()
+        else:
+            ev = threading.Event()
+            root.after(0, lambda: (do(), ev.set()))
+            if not ev.wait(10):
+                return False
+        return box["ok"]
     cb.is_on = lambda: state["win"] is not None
     return cb
 
@@ -184,7 +197,7 @@ def run_app(show_window=True, selftest=0):
             if name == "unlock":
                 chord_unlock(overlay); watcher.active.clear()
             elif name == "test_day":
-                B.go_day(overlay, mode="all"); watcher.active.clear()
+                B.go_day(overlay, mode="all", raise_errors=True); watcher.active.clear()
             elif name == "remote_emergency":
                 emergency(overlay); watcher.active.clear()
             elif name == "night":
@@ -292,19 +305,35 @@ def main(argv=None):
         elif a.action == "awake":
             B.win_awake_loop(a.seconds) if IS_WIN else time.sleep(a.seconds)
         elif a.action == "night":
-            if send_ipc("night") is None:
+            r = send_ipc("night")
+            if r is None:
                 B.go_night(a.mode or load()["mode"])
+            elif r != "ok":
+                raise RuntimeError("托盘进程返回：%s" % r)
         elif a.action == "day":
             if is_locked() and not a.test_recovery:
                 print("黑屏已锁定：本地请按住解锁组合键；远程可用 --action emergency"); return 2
             r = send_ipc("test_day" if a.test_recovery else "day")
-            if r is None:
-                B.go_day(mode="all" if a.test_recovery else None)
+            err = None
+            try:
+                if r is None:
+                    B.go_day(mode="all" if a.test_recovery else None, raise_errors=True)
+                elif r != "ok":
+                    raise RuntimeError("托盘进程返回：%s" % r)
+            except Exception as e:
+                err = e
             if a.test_recovery:
-                update(last_recovery_at=dt.datetime.now().isoformat(), last_recovery_mode=load().get("last_test_mode"))
-                log("测试自动恢复完成，请人工确认实体屏已亮、远程正常")
+                c = load()
+                ok = err is None and bool(c.get("last_test_night_ok")) and c.get("state") == "day"
+                update(last_recovery_at=dt.datetime.now().isoformat() if ok else "",
+                       last_recovery_mode=c.get("last_test_mode"), last_test_ok=ok)
+                log("测试自动恢复%s" % ("完成，请人工确认实体屏已亮、远程正常" if ok else "失败：%s" % (err or "夜间未成功进入或状态未恢复")))
+            if err:
+                raise err
         elif a.action == "reconcile":
             r = send_ipc("reconcile")
+            if r is not None and r.startswith(("error", "timeout")):
+                raise RuntimeError("托盘进程返回：%s" % r)
             if r is None:
                 cfg = load()
                 if cfg.get("enabled") and B.resolve_mode(cfg["mode"], cfg.get("virtual_match", "")) == "overlay":
@@ -322,10 +351,13 @@ def main(argv=None):
             r = send_ipc("remote_emergency")
             if r is None:
                 emergency()
-            elif r.startswith("error"):
-                raise RuntimeError(r)
+            elif r != "ok":
+                raise RuntimeError("托盘进程返回：%s" % r)
         elif a.action == "uninstall":
-            send_ipc("remote_emergency"); uninstall(); send_ipc("quit")
+            r = send_ipc("remote_emergency")
+            uninstall(); send_ipc("quit")
+            if r is not None and r != "ok":
+                raise RuntimeError("托盘进程返回：%s" % r)
         elif a.action == "backup":
             B._backup_display()
         elif a.action == "restore":
