@@ -85,7 +85,7 @@ jobs:
           curl -fsSL -o vdd.zip https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip
           mkdir -p vdd && 7z x -y -ovdd vdd.zip && find vdd -type f
           test -n "$(find vdd -iname MttVDD.inf)"
-          pyinstaller --onefile --windowed --name NightDisplay --add-data "nightdisplay/resources;nightdisplay/resources" --add-data "tools/install_vdd.ps1;tools" --add-data "vdd;vdd" --hidden-import pystray._win32 nightdisplay_main.py
+          pyinstaller --onefile --windowed --name NightDisplay --add-data "nightdisplay/resources;nightdisplay/resources" --hidden-import PIL._tkinter_finder --hidden-import PIL._imagingtk --add-data "tools/install_vdd.ps1;tools" --add-data "vdd;vdd" --hidden-import pystray._win32 nightdisplay_main.py
           export NIGHTDISPLAY_HOME=$PWD/smoke
           ./dist/NightDisplay.exe --action status; cat smoke/status.txt || true
           ./dist/NightDisplay.exe --action displays; ./dist/NightDisplay.exe --action gui --selftest 5; echo "gui rc=$?"
@@ -94,7 +94,7 @@ jobs:
       - name: Build macOS
         if: runner.os == 'macOS'
         run: |
-          pyinstaller --windowed --name NightDisplay --add-data "nightdisplay/resources:nightdisplay/resources" --osx-bundle-identifier com.nightdisplay.app nightdisplay_main.py
+          pyinstaller --windowed --name NightDisplay --add-data "nightdisplay/resources:nightdisplay/resources" --hidden-import PIL._tkinter_finder --hidden-import PIL._imagingtk --osx-bundle-identifier com.nightdisplay.app nightdisplay_main.py
           export NIGHTDISPLAY_HOME=$PWD/smoke
           ./dist/NightDisplay.app/Contents/MacOS/NightDisplay --action status
           ./dist/NightDisplay.app/Contents/MacOS/NightDisplay --action gui --selftest 5; echo "gui rc=$?"
@@ -106,7 +106,7 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y xvfb x11-xserver-utils python3-tk python3-pip python3-xlib
           /usr/bin/python3 -m pip install --user pyinstaller pillow pystray
-          /usr/bin/python3 -m PyInstaller --onefile --name NightDisplay --add-data "nightdisplay/resources:nightdisplay/resources" --hidden-import pystray._xorg nightdisplay_main.py
+          /usr/bin/python3 -m PyInstaller --onefile --name NightDisplay --add-data "nightdisplay/resources:nightdisplay/resources" --hidden-import PIL._tkinter_finder --hidden-import PIL._imagingtk --hidden-import pystray._xorg nightdisplay_main.py
           export NIGHTDISPLAY_HOME=$PWD/smoke
           ./dist/NightDisplay --action status
           set +e; xvfb-run -a ./dist/NightDisplay --action gui --selftest 5; rc=$?; echo "gui rc=$rc"; set -e
