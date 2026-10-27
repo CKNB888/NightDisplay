@@ -296,14 +296,18 @@ def ensure_night():
 # ---------- 显示动作 ----------
 
 def _backup_display():
+    match = load().get("virtual_match", "")
     if IS_WIN:
         from . import win_display as W
         b = W.backup_active()
-        if b.get("displays") and all(W.is_virtual(d) for d in b["displays"]):
+        if b.get("displays") and all(W.is_virtual(d, match) for d in b["displays"]):
             raise RuntimeError("当前只剩虚拟屏，不能覆盖正常显示备份；请先应急恢复实体屏")
     elif IS_LINUX:
         from . import linux_display as L
         b = L.backup()
+        active = [o for o in b.get("outputs") or [] if o.get("active")]
+        if active and all(L.is_virtual_name(o.get("name", ""), match) for o in active):
+            raise RuntimeError("当前只剩虚拟屏，不能覆盖正常显示备份；请先应急恢复实体屏")
     else:
         return None
     p = save_backup("display", b)

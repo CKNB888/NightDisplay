@@ -8,6 +8,7 @@ from .core import home, log
 from .storage import write_json
 
 GUID = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
+NIGHT_PLAN_NAME = "NightDisplay night"
 
 
 def _run(*args):
@@ -24,6 +25,36 @@ def _active():
     if not match:
         raise RuntimeError("无法读取当前 Windows 电源计划")
     return match.group().lower()
+
+
+def _listed(text):
+    found = []
+    for match in re.finditer(r"GUID:\s*(" + GUID + r")\s*\((.*?)\)", text or "", re.I):
+        found.append((match.group(1).lower(), match.group(2).strip()))
+    return found
+
+
+def _list():
+    return _listed(_run("/list"))
+
+
+def _real_original():
+    """记录丢失时，不要把仍在使用的夜间计划当成用户原来的计划。"""
+    listed = _list()
+    nights = {guid for guid, name in listed if name == NIGHT_PLAN_NAME}
+    active = _active()
+    if active in nights:
+        others = [guid for guid, _name in listed if guid not in nights]
+        if not others:
+            raise RuntimeError("夜间电源记录丢失，且没有可退回的原电源计划")
+        _run("/setactive", others[0])
+        if _active() != others[0]:
+            raise RuntimeError("无法离开残留的夜间电源计划")
+        active = others[0]
+    for guid in nights:
+        if guid != active:
+            _run("/delete", guid)
+    return active
 
 
 def _read():
@@ -48,12 +79,15 @@ def enter(keep_display_on=True):
         if _active() == state["temporary"]:
             return
         restore()
-    original, temporary = _active(), str(uuid.uuid4())
+        original = _active()
+    else:
+        original = _real_original()
+    temporary = str(uuid.uuid4())
     _run("/duplicatescheme", original, temporary)
     state = {"original": original, "temporary": temporary}
     write_json(_path(), state)
     try:
-        _run("/changename", temporary, "NightDisplay night")
+        _run("/changename", temporary, NIGHT_PLAN_NAME)
         # Do not disable hibernation globally. Only change this temporary plan.
         settings = [("SUB_SLEEP", "STANDBYIDLE"), ("SUB_SLEEP", "HIBERNATEIDLE"),
                     ("SUB_SLEEP", "HYBRIDSLEEP"), ("SUB_BUTTONS", "LIDACTION")]
@@ -75,12 +109,19 @@ def enter(keep_display_on=True):
 def restore():
     state = _read()
     if not state:
+        _real_original()
         return
     # Respect a power plan that the user explicitly selected during the night.
     if _active() == state["temporary"]:
         _run("/setactive", state["original"])
         if _active() != state["original"]:
             raise RuntimeError("Windows 未恢复原电源计划")
-    _run("/delete", state["temporary"])
+    try:
+        _run("/delete", state["temporary"])
+    except RuntimeError as e:
+        still_there = any(guid == state["temporary"] for guid, _name in _list())
+        if still_there:
+            log("临时夜间计划未能删除，下次再试，不挡住显示恢复：%s" % e)
+            return
     os.unlink(_path())
     log("原电源计划已恢复，临时夜间计划已删除")

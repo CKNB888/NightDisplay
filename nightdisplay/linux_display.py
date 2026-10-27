@@ -4,7 +4,9 @@ import re
 import shutil
 import subprocess
 
-VIRTUAL_RE = r"^(VIRTUAL|DUMMY|Virtual|HDMI-A-?V|DVI-I-\d+-\d+)"  # evdi/ xf86-video-dummy / Intel VIRTUAL
+# 两段式 DVI-I-1-1 在多显卡 Xorg 上是实体口，不能当成虚拟屏。
+# evdi 若只用这个名字，请在设置里填写自定义虚拟屏匹配。
+VIRTUAL_RE = r"^(VIRTUAL|DUMMY|Virtual|HDMI-A-?V)"
 
 
 def session_type():
@@ -76,24 +78,42 @@ def backup():
     return {"outputs": query()}
 
 
-def restore(b, log=print):
-    if b and b.get("outputs"):
+def is_virtual_name(name, match=""):
+    return bool(re.search(match or VIRTUAL_RE, name or ""))
+
+
+def _has_physical(match=""):
+    active = [o for o in query() if o.get("active")]
+    return any(not is_virtual_name(o.get("name", ""), match) for o in active)
+
+
+def restore(b, log=print, match=""):
+    outputs = (b or {}).get("outputs") or []
+    active_backup = [o for o in outputs if o.get("active")]
+    backup_virtual = bool(active_backup) and all(is_virtual_name(o.get("name", ""), match) for o in active_backup)
+    if outputs and not backup_virtual:
         try:
-            _run(restore_cmd(b["outputs"]))
-            log("xrandr 已还原完整备份")
-            return 1
+            _run(restore_cmd(outputs))
+            if _has_physical(match):
+                log("xrandr 已还原完整备份")
+                return 1
+            log("还原后仍只有虚拟输出，继续下一级")
         except Exception as e:
             log("还原备份失败: %s" % e)
+    elif backup_virtual:
+        log("备份里只有虚拟输出，跳过该备份")
     _run(["xrandr", "--auto"])
+    if not _has_physical(match):
+        raise RuntimeError("xrandr 恢复后仍没有实体输出")
     log("xrandr --auto 已执行（第2级）")
     return 2
 
 
 def virtual_only_cmd(outs, match=""):
     pat = match or VIRTUAL_RE
-    v = [o for o in outs if o["connected"] and re.search(pat, o["name"])]
+    v = [o for o in outs if o["connected"] and is_virtual_name(o["name"], pat)]
     if not v:
-        raise RuntimeError("没有已连接的虚拟输出（VIRTUAL*/DUMMY*/evdi）。")
+        raise RuntimeError("没有已连接的虚拟输出（VIRTUAL*/DUMMY*）。evdi 若显示成实体口名称，请在设置里填写自定义匹配。")
     cmd = ["xrandr", "--output", v[0]["name"], "--auto", "--primary"]
     for o in outs:
         if o is not v[0] and o["active"]:
@@ -113,7 +133,7 @@ def apply_virtual_only(match="", log=print, dry_run=False):
 
 def verify_virtual_only(match=""):
     active = [o for o in query() if o["active"]]
-    return bool(active) and all(re.search(match or VIRTUAL_RE, o["name"]) for o in active)
+    return bool(active) and all(is_virtual_name(o["name"], match) for o in active)
 
 
 def screen_off():

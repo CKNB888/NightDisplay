@@ -165,15 +165,29 @@ def is_locked():
     return c.get("state") == "night" and c.get("lock", True)
 
 
+def remember_explicit_day(cfg=None):
+    """用户明确要回白天。计划夜间还没结束时，先记下剩余时间，避免恢复失败后又被拉回黑屏。"""
+    cfg = cfg or load()
+    patch = {"hold_night_until": ""}
+    if cfg.get("enabled") and in_night(cfg):
+        secs = max(next_switch(cfg)[1], 1)
+        patch["override_until"] = (dt.datetime.now() + dt.timedelta(seconds=secs)).isoformat()
+    update(**patch)
+
+
+def forget_unlock_override():
+    """再次主动进入夜间时，上一次解锁的截止时间不再有效。"""
+    if load().get("override_until"):
+        update(override_until="")
+
+
 @B.serialized
 def chord_unlock(overlay_cb=None):
     """本地唯一解锁方式：按住组合键。恢复显示；若在计划时段内，则本时段剩余时间不再自动黑屏。"""
     cfg = load()
+    remember_explicit_day(cfg)
     B.go_day(overlay_cb)
     update(test_id="", last_test_ok=False, test_aborted=False, hold_night_until="")
-    if cfg.get("enabled") and in_night(cfg):
-        secs = next_switch(cfg)[1]
-        update(override_until=(dt.datetime.now() + dt.timedelta(seconds=secs)).isoformat())
     log("已通过组合键 %s 解除黑屏" % " + ".join(cfg.get("unlock_chord") or ["C", "K"]))
 
 
@@ -387,7 +401,15 @@ def run_app(show_window=True, selftest=0):
             except Exception as e:
                 log("环境准备失败，软件仍可正常打开：%s" % e)
         else:
-            threading.Thread(target=lambda: ensure_environment(), daemon=True).start()
+            def _prepare_environment():
+                # 和夜间切换共用动作锁，避免装驱动的同时改显示拓扑、写坏白天备份。
+                from .storage import file_lock
+                try:
+                    with file_lock(os.path.join(home(), "actions.lock"), timeout=180):
+                        ensure_environment()
+                except Exception as e:
+                    log("环境准备失败，软件仍可正常打开：%s" % e)
+            threading.Thread(target=_prepare_environment, daemon=True).start()
     overlay = make_overlay(root)
     pending = queue.Queue()
     closing = threading.Event()
@@ -408,12 +430,13 @@ def run_app(show_window=True, selftest=0):
             elif name in ("remote_emergency", "emergency"):
                 emergency(overlay)
             elif name == "night":
+                forget_unlock_override()
                 B.go_night(data.get("mode") or load()["mode"], overlay)
                 note_manual_night()
             elif name == "test":
                 start_test(data.get("mode") or load()["mode"], data.get("seconds", 120), overlay)
             elif name == "day":
-                update(hold_night_until="")
+                remember_explicit_day()
                 B.go_day(overlay)
                 update(test_id="", last_test_ok=False, test_aborted=False)
             elif name == "reconcile":
@@ -437,7 +460,10 @@ def run_app(show_window=True, selftest=0):
         done, box = threading.Event(), {}
         pending.put((command, done, box))
         if not done.wait(55):
-            box["cancelled"] = True
+            # 解锁和应急已经进队列后不能丢掉。客户端可以先超时返回，主线程空出来仍要执行。
+            name = command.get("action") if isinstance(command, dict) else command
+            if name not in ("unlock", "emergency", "remote_emergency"):
+                box["cancelled"] = True
             return "error: 操作超时，请查看状态"
         return box.get("result", "error: 程序正在退出")
 

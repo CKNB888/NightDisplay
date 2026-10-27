@@ -134,7 +134,8 @@ def adapter_name(adapter):
 
 # ---- 高层操作 ----
 
-VIRTUAL_RE = r"MttVDD|Virtual Display|\bVDD\b|IddSample|Parsec|Virtual|\bUU\b"
+# 不用没有边界的 Virtual，避免普通适配器名字里带这几个字母就被当成虚拟屏。
+VIRTUAL_RE = r"MttVDD|Virtual Display|\bVDD\b|IddSample|Parsec|\bUU\b"
 
 
 def describe(flags=QDC_ALL_PATHS):
@@ -167,7 +168,7 @@ def is_virtual(d, match=""):
 def backup_active():
     paths, modes = query(QDC_ONLY_ACTIVE_PATHS)
     return {"paths": [p.hex() for p in paths], "modes": [m.hex() for m in modes],
-            "displays": [{k: v for k, v in d.items() if k in ("name", "device_path", "tgt_id", "active", "tech")}
+            "displays": [{k: v for k, v in d.items() if k in ("name", "device_path", "adapter_path", "tgt_id", "active", "tech")}
                          for d in describe(QDC_ONLY_ACTIVE_PATHS)]}
 
 
@@ -175,7 +176,11 @@ def restore(backup, log=print):
     """分级回滚：1 原样还原备份 → 2 仅电脑屏幕 → 3 扩展 → 4 克隆。返回使用的级别。"""
     tries = []
     paths = []
-    if backup and backup.get("paths"):
+    saved = (backup or {}).get("displays") or []
+    backup_virtual = bool(saved) and all(is_virtual(d) for d in saved)
+    if backup_virtual:
+        log("备份里只有虚拟屏，跳过该备份，避免写进系统显示数据库")
+    elif backup and backup.get("paths"):
         try:
             paths = [bytes.fromhex(x) for x in backup["paths"]]
             modes = [bytes.fromhex(x) for x in backup["modes"]]
@@ -211,7 +216,7 @@ def restore(backup, log=print):
                 if expected != actual:
                     log("恢复后目标显示器不匹配，继续下一级")
                     continue
-            elif not any(not is_virtual(p) for p in active):
+            if not any(not is_virtual(p) for p in active):
                 log("恢复后仍只有虚拟屏，继续下一级")
                 continue
             return i

@@ -259,8 +259,8 @@ def manual_night_until(cfg, now=None):
     action, secs = next_switch(cfg, now)
     if action != "night":
         return None
-    # 跨过夜间开始后的 1 分钟，避免刚好卡在边界分钟上算出同一段。
-    entered = now + dt.timedelta(seconds=secs + 60)
+    # 只跨过边界 1 秒。加满 1 分钟会跳过 20:00–20:01 这种合法短时段。
+    entered = now + dt.timedelta(seconds=secs + 1)
     action2, secs2 = next_switch(cfg, entered)
     if action2 != "day":
         return None

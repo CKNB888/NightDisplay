@@ -1,3 +1,5 @@
+import pytest
+
 from nightdisplay import backends as B
 from nightdisplay import core
 from nightdisplay import linux_display as L
@@ -28,8 +30,27 @@ def test_virtual_only_cmd():
     assert cmd[:5] == ["xrandr", "--output", "VIRTUAL1", "--auto", "--primary"]
     assert "eDP-1" in cmd and cmd[-1] == "--off"
 
+def test_physical_dvi_is_not_virtual():
+    text = SAMPLE.replace(
+        "HDMI-1 disconnected (normal left inverted right x axis y axis)",
+        "DVI-I-1-1 connected 1920x1080+3840+0 (normal left inverted right x axis y axis) 500mm x 280mm\n   1920x1080     60.00*+",
+    )
+    cmd, name = L.virtual_only_cmd(L.parse_xrandr(text))
+    assert name == "VIRTUAL1"
+    assert "DVI-I-1-1" in cmd and cmd[-1] == "--off"
+
+
+def test_restore_skips_virtual_backup(monkeypatch):
+    calls = []
+    monkeypatch.setattr(L, "_run", lambda args: calls.append(args) or "")
+    monkeypatch.setattr(L, "query", lambda: [{"name": "VIRTUAL1", "active": True}])
+    backup = {"outputs": [{"name": "VIRTUAL1", "active": True, "mode": "1920x1080", "pos": (0, 0), "rotate": "normal", "primary": True}]}
+    with pytest.raises(RuntimeError, match="实体输出"):
+        L.restore(backup, lambda s: None)
+    assert calls == [["xrandr", "--auto"]]
+
+
 def test_no_virtual():
-    import pytest
     with pytest.raises(RuntimeError):
         L.virtual_only_cmd(L.parse_xrandr(SAMPLE.replace("VIRTUAL1 connected 1920x1080+1920+0", "VIRTUAL1 disconnected")))
 

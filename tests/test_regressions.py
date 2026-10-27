@@ -44,6 +44,12 @@ def test_manual_night_holds_until_next_morning():
     assert core.manual_night_until(cfg, dt.datetime(2026, 10, 27, 21, 0)) is None
 
 
+def test_short_manual_night_is_not_skipped():
+    cfg = dict(core.DEFAULT, enabled=True, start="20:00", end="20:01")
+    until = core.manual_night_until(cfg, dt.datetime(2026, 10, 27, 19, 0))
+    assert until == dt.datetime(2026, 10, 27, 20, 1)
+
+
 def test_reconcile_keeps_manual_night_outside_schedule(monkeypatch):
     core.update(enabled=True, state="night", night_mode="screen_off",
                 start="20:00", end="10:30",
@@ -277,6 +283,76 @@ def test_windows_restore_rejects_virtual_only_success(monkeypatch):
     monkeypatch.setattr(W, "describe", lambda *a: [{"tech": 17}])
     with pytest.raises(W.DisplayError):
         W.restore(None, lambda s: None)
+
+
+def test_plain_virtual_word_is_not_a_virtual_display():
+    assert not W.is_virtual({"name": "Generic Virtual Adapter", "device_path": "", "tech": 0})
+    assert W.is_virtual({"name": "Virtual Display Driver", "tech": 0})
+    assert W.is_virtual({"name": "Panel", "tech": 17})
+
+
+def test_windows_restore_skips_all_virtual_backup(monkeypatch):
+    called = []
+    monkeypatch.setattr(W, "set_config", lambda *a, **k: called.append("config") or 0)
+    monkeypatch.setattr(W, "set_topology", lambda f: called.append("topo") or 0)
+    monkeypatch.setattr(W, "describe", lambda *a, **k: [{"tech": 5, "name": "Panel", "tgt_adapter": 1, "tgt_id": 2}])
+    level = W.restore({
+        "paths": [bytes(72).hex()],
+        "modes": [bytes(64).hex()],
+        "displays": [{"name": "VDD", "tech": 17, "active": True}],
+    }, lambda s: None)
+    assert level == 1 and called == ["topo"]
+
+
+def test_matching_virtual_targets_are_not_a_restore(monkeypatch):
+    monkeypatch.setattr(W, "set_config", lambda *a, **k: 0)
+    monkeypatch.setattr(W, "set_topology", lambda f: 0)
+    monkeypatch.setattr(W, "parse_path", lambda b: {"tgt_adapter": 1, "tgt_id": 2, "active": True, "tech": 17})
+    monkeypatch.setattr(W, "describe", lambda *a, **k: [{
+        "tgt_adapter": 1, "tgt_id": 2, "tech": 17, "name": "VDD", "active": True,
+    }])
+    with pytest.raises(W.DisplayError):
+        W.restore({"paths": [bytes(72).hex()], "modes": [bytes(64).hex()]}, lambda s: None)
+
+
+def _freeze(monkeypatch, moment):
+    class Frozen(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment.replace(tzinfo=tz) if tz is not None else moment
+
+    monkeypatch.setattr(core.dt, "datetime", Frozen)
+    monkeypatch.setattr(app.dt, "datetime", Frozen)
+
+
+def test_failed_chord_unlock_still_blocks_the_rest_of_the_night(monkeypatch):
+    core.update(enabled=True, state="night", night_mode="screen_off",
+                start="20:00", end="10:30", hold_night_until="2026-10-28T10:30:00")
+    _freeze(monkeypatch, dt.datetime(2026, 10, 27, 21, 0))
+    monkeypatch.setattr(B, "go_day", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("display")))
+    with pytest.raises(RuntimeError):
+        app.chord_unlock()
+    cfg = core.load()
+    assert cfg["hold_night_until"] == ""
+    assert cfg["override_until"].startswith("2026-10-28T10:30")
+
+
+def test_explicit_day_and_repeat_night_follow_override(monkeypatch):
+    core.update(enabled=True, state="night", start="20:00", end="10:30", hold_night_until="x")
+    _freeze(monkeypatch, dt.datetime(2026, 10, 27, 21, 0))
+    app.remember_explicit_day()
+    assert core.load()["override_until"].startswith("2026-10-28T10:30")
+    assert core.load()["hold_night_until"] == ""
+    app.forget_unlock_override()
+    assert core.load()["override_until"] == ""
+
+
+def test_linux_backup_refuses_virtual_only_topology(monkeypatch):
+    monkeypatch.setattr(B, "IS_WIN", False)
+    monkeypatch.setattr(B, "IS_LINUX", True)
+    monkeypatch.setattr(L, "backup", lambda: {"outputs": [{"name": "VIRTUAL1", "active": True}]})
+    with pytest.raises(RuntimeError, match="虚拟屏"):
+        B._backup_display()
 
 
 def test_xrandr_negative_offsets_and_rotation():
