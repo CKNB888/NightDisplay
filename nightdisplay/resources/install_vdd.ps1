@@ -16,6 +16,14 @@ function Fail($step, $m) {
   Say "Log file: $LogFile"
   exit 2
 }
+# PyInstaller can leave a PSModulePath that breaks module autoloading; restore defaults.
+$env:PSModulePath = "$env:ProgramFiles\WindowsPowerShell\Modules;$env:SystemRoot\System32\WindowsPowerShell\v1.0\Modules"
+Import-Module Microsoft.PowerShell.Security -ErrorAction SilentlyContinue
+function Get-Sha256([string]$path) {
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  $fs = [System.IO.File]::OpenRead($path)
+  try { return ([BitConverter]::ToString($sha.ComputeHash($fs)) -replace '-','').ToLowerInvariant() } finally { $fs.Dispose(); $sha.Dispose() }
+}
 trap { Say ("ERROR at line {0}: {1}" -f $_.InvocationInfo.ScriptLineNumber, $_.Exception.Message); exit 1 }
 $code = @'
 using System; using System.Runtime.InteropServices;
@@ -107,7 +115,7 @@ $expected = @{
 }
 foreach ($name in $expected.Keys) {
   $file = Join-Path $inf.DirectoryName $name
-  if (-not (Test-Path $file) -or (Get-FileHash $file -Algorithm SHA256).Hash -ne $expected[$name]) { Fail 'checksum' "Driver file mismatch: $name" }
+  if (-not (Test-Path $file) -or (Get-Sha256 $file) -ne $expected[$name]) { Fail 'checksum' "Driver file mismatch: $name" }
 }
 $sig = Get-AuthenticodeSignature (Join-Path $inf.DirectoryName 'mttvdd.cat')
 Say "Step 2/4 catalog signature: $($sig.Status)"
