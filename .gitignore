@@ -1,4 +1,8 @@
 __pycache__/
+*.pyc
 build/
 dist/
 *.spec
+ci-home/
+smoke/
+ci-results-*.json
