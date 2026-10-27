@@ -41,8 +41,29 @@ def has_virtual_display(match=""):
     return False
 
 
+def validate_mode(mode):
+    if mode not in available_modes():
+        raise RuntimeError("不支持的模式“%s”。本系统可用：%s" % (mode, "、".join(available_modes())))
+    return mode
+
+
+def resolve_reason(match=""):
+    """说明 auto 为什么选择/降级到某个模式。"""
+    if (IS_WIN or IS_LINUX) and has_virtual_display(match):
+        return "检测到已连接的虚拟屏"
+    if IS_LINUX:
+        import shutil
+        if not shutil.which("xrandr"):
+            return "未找到 xrandr（请安装 x11-xserver-utils），降级为基础关屏"
+        return "未检测到虚拟屏（VIRTUAL*/DUMMY*/evdi），降级为基础关屏"
+    if IS_WIN:
+        return "未检测到虚拟屏，" + ("降级为防窥黑幕" if win_build() >= 19041 else "系统低于 Win10 2004，降级为基础关屏")
+    return "macOS 暂无内置虚拟屏，使用基础关屏"
+
+
 def resolve_mode(mode, match=""):
     """auto：有虚拟屏→仅虚拟屏；Windows 10 2004+→防窥黑幕；否则基础关屏。"""
+    validate_mode(mode)
     if mode != "auto":
         return mode
     if (IS_WIN or IS_LINUX) and has_virtual_display(match):
@@ -52,9 +73,22 @@ def resolve_mode(mode, match=""):
     return "screen_off"
 
 
+def _sys_encoding():
+    if IS_WIN:
+        try:
+            import ctypes
+            return "cp%d" % ctypes.windll.kernel32.GetOEMCP()
+        except Exception:
+            return "mbcs"
+    return "utf-8"
+
+
 def run(cmd, check=True):
     kw = {"creationflags": 0x08000000} if IS_WIN else {}
-    p = subprocess.run(cmd, capture_output=True, text=True, **kw)
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding=_sys_encoding(), errors="replace", **kw)
+    except FileNotFoundError:
+        raise RuntimeError("找不到命令 %s" % cmd[0])
     if check and p.returncode:
         raise RuntimeError("%s 失败(%s): %s" % (cmd[0], p.returncode, (p.stderr or p.stdout).strip()))
     return p
@@ -180,7 +214,7 @@ def go_night(mode, overlay_cb=None, dry_run=False):
     real = resolve_mode(mode, cfg.get("virtual_match", ""))
     log("进入夜间：设置模式=%s，实际模式=%s" % (mode, real))
     if real == "virtual_only":
-        if cfg.get("state") != "night":
+        if cfg.get("state") != "night" and not dry_run:
             _backup_display()  # 只在白天状态备份，避免把夜间配置当成“正常”
         try:
             if IS_WIN:
@@ -192,7 +226,7 @@ def go_night(mode, overlay_cb=None, dry_run=False):
                         raise RuntimeError("应用后检查失败：仍有实体屏处于活动状态")
             else:
                 from . import linux_display as L
-                L.apply_virtual_only(cfg.get("virtual_match", ""), log)
+                L.apply_virtual_only(cfg.get("virtual_match", ""), log, dry_run=dry_run)
         except Exception as e:
             log("仅虚拟屏失败，立即回滚: %s" % e)
             if not dry_run:
@@ -212,7 +246,7 @@ def go_night(mode, overlay_cb=None, dry_run=False):
     return real
 
 
-def go_day(overlay_cb=None, mode=None):
+def go_day(overlay_cb=None, mode=None, raise_errors=False):
     cfg = load()
     real = mode or cfg.get("night_mode") or "screen_off"
     log("恢复白天显示（上次夜间模式=%s）" % real)
@@ -234,7 +268,9 @@ def go_day(overlay_cb=None, mode=None):
     keep_awake(False)
     update(state="day")
     if errors:
-        log("恢复警告: " + " | ".join(errors))
+        log("恢复警告（部分失败）: " + " | ".join(errors))
+        if raise_errors:
+            raise RuntimeError("恢复部分失败: " + " | ".join(errors))
     return real
 
 # ---------- 系统计划任务 ----------
@@ -303,8 +339,15 @@ def schedule_install(cfg):
 
 
 def _win_delete_tasks():
-    for n in list(TASKS) + ["NightDisplay_T%02d" % i for i in range(2, 24)]:
-        run(["schtasks", "/Delete", "/F", "/TN", n], check=False)
+    """删除本程序创建的全部任务（NightDisplay_Night/Day/Txx，不限数量）。返回删除数。"""
+    p = run(["schtasks", "/Query", "/FO", "CSV", "/NH"], check=False)
+    import re
+    names = set(re.findall(r'"\\?(NightDisplay_(?:Night|Day|T\d+))"', p.stdout or ""))
+    n = 0
+    for name in sorted(names):
+        if run(["schtasks", "/Delete", "/F", "/TN", name], check=False).returncode == 0:
+            n += 1
+    return n
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -345,21 +388,35 @@ def autostart_status():
 
 
 def schedule_remove():
+    """删除计划任务和自启项，并把配置 autostart 置 False。返回实际删除的项目列表。"""
+    removed = []
     if IS_WIN:
-        _win_delete_tasks()
-        set_autostart(False)
+        n = _win_delete_tasks()
+        if n:
+            removed.append("计划任务 %d 个" % n)
+        if autostart_status():
+            set_autostart(False); removed.append("开机自启(注册表 Run)")
     elif IS_MAC:
         path = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % LA_LABEL)
-        run(["launchctl", "unload", path], check=False)
         if os.path.exists(path):
-            os.remove(path)
+            run(["launchctl", "unload", path], check=False)
+            os.remove(path); removed.append("LaunchAgent")
     else:
-        run(["systemctl", "--user", "disable", "--now", SD_UNIT + ".timer"], check=False)
+        tim = os.path.join(_systemd_dir(), SD_UNIT + ".timer")
+        if os.path.exists(tim):
+            try:
+                run(["systemctl", "--user", "disable", "--now", SD_UNIT + ".timer"], check=False)
+            except Exception:
+                pass
         for ext in (".service", ".timer"):
             p = os.path.join(_systemd_dir(), SD_UNIT + ext)
             if os.path.exists(p):
-                os.remove(p)
-    log("已删除系统计划任务和自启项")
+                os.remove(p); removed.append("systemd " + ext[1:])
+        if autostart_status():
+            set_autostart(False); removed.append("XDG 自启")
+    update(autostart=False)
+    log("已删除：%s" % "、".join(removed) if removed else "无已注册项（计划任务/自启项本来就不存在）")
+    return removed
 
 
 def schedule_status():
@@ -386,6 +443,7 @@ def status_text():
             "，".join("%s→%s" % r for r in ranges(cfg)), "夜间" if cfg["state"] == "night" else "白天"),
         "上次测试：%s %s 成功=%s 自动恢复=%s" % (cfg["last_test_mode"], cfg["last_test_at"][:19], cfg["last_test_ok"], cfg["last_recovery_at"][:19]),
         schedule_status(),
+        "开机自启：配置=%s，实际=%s" % ("开" if cfg.get("autostart", True) else "关", "已注册" if autostart_status() else "未注册"),
         "数据目录：%s" % home()])
 
 
@@ -393,8 +451,10 @@ def selfcheck():
     """Non-destructive environment report used by QA and support."""
     from . import VERSION
     r = {"version": VERSION, "os": platform.platform(), "python": sys.version.split()[0]}
-    for k, f in (("modes", available_modes), ("resolved_mode", lambda: resolve_mode("virtual_only")),
-                 ("virtual_display", has_virtual_display), ("autostart", autostart_status)):
+    for k, f in (("modes", available_modes), ("resolved_mode", lambda: resolve_mode("auto")),
+                 ("resolve_reason", resolve_reason),
+                 ("virtual_display", has_virtual_display), ("autostart_actual", autostart_status),
+                 ("autostart_config", lambda: load().get("autostart", True))):
         try:
             r[k] = f()
         except Exception as e:

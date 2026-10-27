@@ -363,7 +363,7 @@ class MainWindow:
         self.label(row, "深色模式", 11, width=16, anchor="w").pack(side="left")
         Toggle(row, self, self.theme == "dark", self.set_dark).pack(side="left")
         row = tk.Frame(f, bg=f["bg"]); row.pack(anchor="w", pady=4)
-        self.label(row, "开机自启（托盘常驻）", 11, width=16, anchor="w").pack(side="left")
+        self.label(row, "开机自启（托盘常驻）" if not IS_MAC else "开机自启（Mac 暂不支持托盘）", 11, width=16 if not IS_MAC else 22, anchor="w").pack(side="left")
         Toggle(row, self, B.autostart_status(), lambda v: self.safe(lambda: (B.set_autostart(v), update(autostart=v)))).pack(side="left")
         row = tk.Frame(f, bg=f["bg"]); row.pack(anchor="w", pady=4)
         self.label(row, "黑屏锁定", 11, width=16, anchor="w").pack(side="left")

@@ -25,6 +25,7 @@ def activate(mode, start, end):
     if start == end:
         raise RuntimeError("开始和结束时间不能相同")
     cfg = load()
+    B.validate_mode(mode)
     real = B.resolve_mode(mode, cfg.get("virtual_match", ""))
     if not (cfg.get("last_test_ok") and cfg.get("last_test_mode") == real and cfg.get("last_recovery_at")):
         raise RuntimeError("请先用“%s”完成一次测试（自动恢复），确认屏幕和远程都正常后再启用。" % B.MODES.get(real, real))
@@ -45,6 +46,7 @@ def start_test(mode, seconds, overlay_cb=None):
     cfg = load()
     if cfg.get("enabled"):
         raise RuntimeError("请先暂停每日计划再测试")
+    B.validate_mode(mode)
     real = B.resolve_mode(mode, cfg.get("virtual_match", ""))
     update(last_test_mode=real, last_test_at=dt.datetime.now().isoformat(), last_test_ok=False,
            last_recovery_at="", last_recovery_mode="")
@@ -71,16 +73,19 @@ def chord_unlock(overlay_cb=None):
     log("已通过组合键 %s 解除黑屏" % " + ".join(cfg.get("unlock_chord") or ["C", "K"]))
 
 
-def emergency(overlay_cb=None):
+def emergency(overlay_cb=None, quiet=False):
     pause()
-    B.go_day(overlay_cb, mode="all")
     update(last_test_ok=False)
-    log("应急恢复完成。如仍黑屏：Windows 按 Win+P 选“仅电脑屏幕”；Mac/Linux 按任意键。")
+    B.go_day(overlay_cb, mode="all", raise_errors=True)
+    if not quiet:
+        log("应急恢复完成。如仍黑屏：Windows 按 Win+P 选“仅电脑屏幕”；Mac/Linux 按任意键。")
 
 
 def uninstall(overlay_cb=None):
-    emergency(overlay_cb)
-    log("已卸载计划任务和自启项；日志与备份保留在 %s" % home())
+    try:
+        emergency(overlay_cb, quiet=True)
+    finally:
+        log("已卸载计划任务和自启项；日志与备份保留在 %s" % home())
 
 
 def reconcile(overlay_cb=None):
@@ -273,6 +278,7 @@ def main(argv=None):
     ap.add_argument("--seconds", type=int, default=120)
     ap.add_argument("--test-recovery", action="store_true")
     ap.add_argument("--selftest", type=int, default=0, help="界面自检：N 秒后自动退出")
+    ap.add_argument("--debug", action="store_true", help="出错时在终端打印完整 traceback")
     a, _ = ap.parse_known_args(argv)
     try:
         if a.action in ("gui", "tray") or a.tray:
@@ -313,8 +319,11 @@ def main(argv=None):
             pause()
         elif a.action == "emergency":
             # 隐藏的远程恢复：在远程会话里运行，不受黑屏锁限制
-            if send_ipc("remote_emergency") is None:
+            r = send_ipc("remote_emergency")
+            if r is None:
                 emergency()
+            elif r.startswith("error"):
+                raise RuntimeError(r)
         elif a.action == "uninstall":
             send_ipc("remote_emergency"); uninstall(); send_ipc("quit")
         elif a.action == "backup":
@@ -340,8 +349,17 @@ def main(argv=None):
             import json
             print(json.dumps(B.selfcheck(), ensure_ascii=False, indent=1))
     except Exception as e:
-        import traceback; traceback.print_exc()
+        import traceback
+        tb = traceback.format_exc()
+        if a.debug:
+            sys.stderr.write(tb)
         log("错误(%s): %s" % (a.action, e))
+        try:
+            with open(os.path.join(home(), "logs", "traceback.log"), "a", encoding="utf-8") as f:
+                f.write("%s %s\n%s\n" % (dt.datetime.now().isoformat(), a.action, tb))
+        except Exception:
+            pass
+        print("错误：%s（详细信息见日志；加 --debug 显示完整堆栈）" % e, file=sys.stderr)
         return 1
     return 0
 

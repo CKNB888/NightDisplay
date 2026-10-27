@@ -11,8 +11,16 @@ def session_type():
     return "x11" if os.environ.get("DISPLAY") else "none"
 
 
+def _need(tool):
+    if not shutil.which(tool):
+        raise RuntimeError("未找到 %s，请先安装：sudo apt install x11-xserver-utils（Fedora: xorg-x11-server-utils）" % tool)
+    if session_type() == "none":
+        raise RuntimeError("未检测到 X11 会话（DISPLAY 为空），请在图形桌面的 X11 会话中运行")
+
+
 def _run(args):
-    p = subprocess.run(args, capture_output=True, text=True)
+    _need(args[0])
+    p = subprocess.run(args, capture_output=True, text=True, errors="replace")
     if p.returncode:
         raise RuntimeError("%s 失败: %s" % (" ".join(args), (p.stderr or p.stdout).strip()))
     return p.stdout
@@ -87,15 +95,21 @@ def virtual_only_cmd(outs, match=""):
     return cmd, v[0]["name"]
 
 
-def apply_virtual_only(match="", log=print):
+def apply_virtual_only(match="", log=print, dry_run=False):
     cmd, name = virtual_only_cmd(query(), match)
+    if dry_run:
+        log("预演（未执行）：%s" % " ".join(cmd))
+        return name
     _run(cmd)
     log("已切换为仅虚拟输出 %s" % name)
     return name
 
 
 def screen_off():
-    if session_type() != "x11":
+    st = session_type()
+    if st == "none":
+        raise RuntimeError("未检测到 X11 会话（DISPLAY 为空），请在图形桌面的 X11 会话中运行")
+    if st != "x11":
         raise RuntimeError("Wayland 下无法通用关屏，请使用桌面环境的“息屏”设置。")
     if "DPMS is" not in _run(["xset", "q"]):
         raise RuntimeError("X 服务器不支持 DPMS，无法关屏")

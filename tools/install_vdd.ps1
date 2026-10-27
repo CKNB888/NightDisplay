@@ -1,9 +1,22 @@
-# 安装 VirtualDrivers/Virtual-Display-Driver (MIT) 的驱动包并创建 Root\MttVDD 设备。需要管理员。
-# 用法: install_vdd.ps1 [-Uninstall|-Enable|-Disable|-Status] [-Source <内置驱动目录>]
+﻿# Install VirtualDrivers/Virtual-Display-Driver (MIT) and create the Root\MttVDD device. Requires admin.
+# Usage: install_vdd.ps1 [-Uninstall|-Enable|-Disable|-Status] [-Source <bundled driver dir>]
 param([switch]$Uninstall, [switch]$Enable, [switch]$Disable, [switch]$Status, [string]$Source = '', [string]$Url = 'https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip')
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
 $HwId = 'Root\MttVDD'
-Add-Type -TypeDefinition @'
+$LogFile = Join-Path $env:LOCALAPPDATA 'NightDisplay\logs\install_vdd.log'
+New-Item -ItemType Directory -Force (Split-Path $LogFile) | Out-Null
+function Say($m) { $l = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m; Write-Host $l; Add-Content -Path $LogFile -Value $l -Encoding UTF8 }
+function Fail($step, $m) {
+  Say "FAILED at step [$step]: $m"
+  Say "Manual install (run in an elevated PowerShell):"
+  Say "  pnputil /add-driver <dir>\MttVDD.inf /install"
+  Say "  then: Device Manager > Action > Add legacy hardware > Display adapters > Have Disk > MttVDD.inf"
+  Say "Driver download: $Url"
+  Say "Log file: $LogFile"
+  Start-Sleep 8
+  exit 2
+}
+$code = @'
 using System; using System.Runtime.InteropServices;
 public static class VddDev {
   [StructLayout(LayoutKind.Sequential)] public struct SP_DEVINFO_DATA { public int cbSize; public Guid ClassGuid; public int DevInst; public IntPtr Reserved; }
@@ -37,28 +50,49 @@ if ($Enable -or $Disable) {
   exit 0
 }
 if ($Uninstall) {
-  Get-Vdd | ForEach-Object { Write-Host "remove $($_.InstanceId)"; pnputil /remove-device "$($_.InstanceId)" | Out-Host }
+  Get-Vdd | ForEach-Object { Say "remove $($_.InstanceId)"; pnputil /remove-device "$($_.InstanceId)" | Out-Host }
   pnputil /enum-drivers | Select-String -Context 1,0 'MttVDD.inf' | ForEach-Object { if ($_.Context.PreContext[0] -match '(oem\d+\.inf)') { pnputil /delete-driver $Matches[1] /uninstall /force | Out-Host } }
+  Say "Uninstall done"
   exit 0
 }
-if (Get-Vdd) { Write-Host 'VDD already installed'; Get-Vdd | Format-Table -AutoSize FriendlyName, Status, InstanceId | Out-Host; exit 0 }
+Say "== NightDisplay VDD install start (Source=$Source) =="
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) { Fail 'admin' 'Not running as Administrator' }
+if (Get-Vdd) { Say 'VDD already installed'; Get-Vdd | Format-Table -AutoSize FriendlyName, Status, InstanceId | Out-Host; exit 0 }
+try { Add-Type -TypeDefinition $code -ErrorAction Stop } catch { Fail 'compile helper' $_.Exception.Message }
 $work = Join-Path $env:TEMP 'nightdisplay-vdd'
 New-Item -ItemType Directory -Force $work | Out-Null
 $inf = $null
 if ($Source -and (Test-Path $Source)) { $inf = Get-ChildItem $Source -Recurse -Filter MttVDD.inf | Select-Object -First 1 }
-if ($inf) { Write-Host "使用内置驱动: $($inf.FullName)" } else {
+if ($inf) { Say "Step 1/4 bundled driver found: $($inf.FullName)" } else {
+  Say "Step 1/4 bundled driver not found, downloading $Url"
   $zip = Join-Path $work 'vdd.zip'
-  Invoke-WebRequest -UseBasicParsing $Url -OutFile $zip
-  Expand-Archive -Force $zip $work
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -UseBasicParsing $Url -OutFile $zip -ErrorAction Stop
+    Expand-Archive -Force $zip $work -ErrorAction Stop
+  } catch { Fail 'download' $_.Exception.Message }
   $inf = Get-ChildItem $work -Recurse -Filter MttVDD.inf | Select-Object -First 1
+  if (-not $inf) { Fail 'download' 'MttVDD.inf not found in downloaded zip' }
+  Say "Download OK: $($inf.FullName)"
 }
 $sig = Get-AuthenticodeSignature (Join-Path $inf.DirectoryName 'mttvdd.cat') -EA SilentlyContinue
-Write-Host "驱动目录签名: $($sig.Status) $($sig.SignerCertificate.Subject)"
-New-Item -ItemType Directory -Force 'C:\VirtualDisplayDriver' | Out-Null
-Copy-Item (Join-Path $inf.DirectoryName 'vdd_settings.xml') 'C:\VirtualDisplayDriver\vdd_settings.xml' -Force
-pnputil /add-driver $inf.FullName /install | Out-Host
+Say "Step 2/4 catalog signature: $($sig.Status) $($sig.SignerCertificate.Subject) (Windows itself enforces the signature in pnputil)"
+try {
+  New-Item -ItemType Directory -Force 'C:\VirtualDisplayDriver' | Out-Null
+  $xml = Join-Path $inf.DirectoryName 'vdd_settings.xml'
+  if (Test-Path $xml) { Copy-Item $xml 'C:\VirtualDisplayDriver\vdd_settings.xml' -Force }
+} catch { Say "warning: copy settings failed: $($_.Exception.Message)" }
+Say "Step 3/4 pnputil /add-driver"
+pnputil /add-driver "$($inf.FullName)" /install | Out-Host
+$pc = $LASTEXITCODE
+Say "pnputil exit code: $pc"
+if ($pc -ne 0 -and $pc -ne 259 -and $pc -ne 3010) { Fail 'pnputil' "exit code $pc (driver rejected or signature not trusted)" }
+Say "Step 4/4 create device $HwId"
 $r = [VddDev]::Create($HwId, $inf.FullName)
-Write-Host "Create device: $r"
+Say "Create device: $r"
 Start-Sleep 5
 Get-PnpDevice -Class Display | Format-Table -AutoSize FriendlyName, Status, InstanceId | Out-Host
-if ($r -notlike 'OK*') { exit 2 }
+if ($r -notlike 'OK*') { Fail 'create device' $r }
+Say "== VDD install OK =="
+exit 0

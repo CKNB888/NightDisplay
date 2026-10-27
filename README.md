@@ -59,7 +59,7 @@
 | Windows 10/11 x64 | `NightDisplay-Windows-x64.zip` | 解压后双击 `NightDisplay.exe`（免安装）。SmartScreen 提示时点“更多信息 → 仍要运行”。 |
 | macOS Apple 芯片 | `NightDisplay-macOS-arm64.zip` | 解压，把 `NightDisplay.app` 拖进“应用程序”，首次右键 → 打开（未签名）。 |
 | macOS Intel | `NightDisplay-macOS-x64.zip` | 同上。 |
-| Linux x64 | `NightDisplay-Linux-x64.tar.gz` | `tar xzf` 后运行 `./NightDisplay`；需要 X11 会话（Wayland 只能用基础功能）。 |
+| Linux x64 | `NightDisplay-Linux-x64.tar.gz` | `tar xzf` 后运行 `./NightDisplay`；需要 X11 会话（Wayland 只能用基础功能）。最低 glibc 2.35（Ubuntu 22.04 / Debian 12 及以上）；虚拟屏/关屏需 `sudo apt install x11-xserver-utils`。 |
 
 ## 快速开始
 
@@ -138,10 +138,25 @@ GitHub Actions 在 Windows（latest/2022）、macOS（arm64/Intel）、Ubuntu �
 
 - Windows“只保留虚拟屏”需要安装虚拟显示驱动（需管理员一次）；部分品牌一体机的背光由固件控制，需真机确认能否熄灭。
 - “防窥黑幕”依赖 Win10 2004 及以上；更早系统会自动退回“基础关屏”。
+- macOS 暂不支持托盘常驻：开机自启只会打开主窗口，关闭窗口即退出。
 - macOS 目前只有“基础关屏”（动鼠标/键盘会亮），虚拟屏需要第三方工具（如 BetterDisplay）。
 - Linux Wayland 不允许程序修改输出，只能在 X11 下使用虚拟屏/关屏。
 - 程序未做代码签名，首次运行系统会提示。
 - 与 UU 远程的实际配合（超级屏、防窥模式、虚拟屏断开自动删除）需在你的电脑上实测。
+
+## 更新日志
+
+### v3.0.1（2026-10-27）
+- 修复：Linux 包改在 Ubuntu 22.04 构建，解决 Ubuntu 24.04 上图形界面因 `GLIBC_2.42` 打不开的问题；最低 glibc 2.35。
+- 修复：`--mode` 必须是本系统支持的模式，非法模式直接报错（退出码非 0），不再“测试通过”、不再启动保持唤醒，也无法启用计划。
+- 修复：Linux 上 `plan-virtual` 真正只预演，不再执行 xrandr、不再生成备份。
+- 修复：`selfcheck` 按 auto 真实解析模式，并给出降级原因（`resolve_reason`）。
+- 改进：缺少 xrandr/xset 提示安装 x11-xserver-utils；无 DISPLAY 时提示“未检测到 X11 会话”；终端只显示中文错误，完整堆栈写入 `logs/traceback.log`，加 `--debug` 才在终端打印。
+- 修复：暂停/卸载在没有注册项时记录“无已注册项”；应急恢复出错时退出码非 0 并标注“部分失败”。
+- 修复：暂停/卸载同时把配置里的开机自启关闭；`status`/`selfcheck` 分别显示自启“配置值”和“实际状态”。
+- 修复：Windows 包内置 VDD 驱动（VirtualDrivers Driver.Only，MIT）于 `vdd/`，离线可装；安装脚本分步记录（下载、pnputil 返回码、创建设备），失败给出手动安装命令，日志在 `%LOCALAPPDATA%\NightDisplay\logs\install_vdd.log`；修复脚本在 Windows PowerShell 5 下的语法/编码错误（UTF-8 BOM + ASCII 输出）。
+- 修复：Windows 删除计划任务时清理本程序创建的全部 `NightDisplay_*` 任务（不限 T23）；外部命令输出按系统代码页解码，避免中文乱码报错。
+- 修复：Mac 压缩包顶层直接是 `NightDisplay.app`（去掉多余的 out/）；设置页与 README 注明 Mac 暂不支持托盘。
 
 ## 许可与致谢
 

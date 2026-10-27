@@ -70,7 +70,7 @@ jobs:
             name: NightDisplay-macOS-arm64
           - os: macos-15-intel
             name: NightDisplay-macOS-x64
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             name: NightDisplay-Linux-x64
     runs-on: ${{ matrix.os }}
     steps:
@@ -83,7 +83,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          pyinstaller --onefile --windowed --name NightDisplay --add-data "tools/install_vdd.ps1;tools" --hidden-import pystray._win32 nightdisplay_main.py
+          curl -fsSL -o vdd.zip https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip
+          mkdir -p vdd && 7z x -y -ovdd vdd.zip && find vdd -type f
+          test -n "$(find vdd -iname MttVDD.inf)"
+          pyinstaller --onefile --windowed --name NightDisplay --add-data "tools/install_vdd.ps1;tools" --add-data "vdd;vdd" --hidden-import pystray._win32 nightdisplay_main.py
           export NIGHTDISPLAY_HOME=$PWD/smoke
           ./dist/NightDisplay.exe --action status; cat smoke/status.txt || true
           ./dist/NightDisplay.exe --action displays; ./dist/NightDisplay.exe --action gui --selftest 5; echo "gui rc=$?"
@@ -98,7 +101,7 @@ jobs:
           ./dist/NightDisplay.app/Contents/MacOS/NightDisplay --action gui --selftest 5; echo "gui rc=$?"
           file dist/NightDisplay.app/Contents/MacOS/NightDisplay
           mkdir out && cp -R dist/NightDisplay.app README.md LICENSE NOTICE.md out/
-          ditto -c -k --keepParent out ${{ matrix.name }}.zip
+          cd out && zip -qry ../${{ matrix.name }}.zip NightDisplay.app README.md LICENSE NOTICE.md && cd .. && unzip -l ${{ matrix.name }}.zip | head
       - name: Build Linux
         if: runner.os == 'Linux'
         run: |
@@ -107,6 +110,8 @@ jobs:
           export NIGHTDISPLAY_HOME=$PWD/smoke
           ./dist/NightDisplay --action status
           xvfb-run -a ./dist/NightDisplay --action gui --selftest 5; echo "gui rc=$?"
+          ldd --version | head -1
+          objdump -T dist/NightDisplay | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
           mkdir out && cp dist/NightDisplay README.md LICENSE NOTICE.md out/
           tar czf ${{ matrix.name }}.tar.gz -C out .
       - uses: actions/upload-artifact@v4
