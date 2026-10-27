@@ -1,13 +1,59 @@
-name: build
+name: build-and-test
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     tags: ['v*']
+  pull_request:
   workflow_dispatch:
 permissions:
   contents: write
 jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2022, macos-latest, macos-15-intel, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest pillow pystray
+      - name: Linux deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb x11-xserver-utils python3-tk
+      - name: Unit tests
+        if: runner.os != 'Linux'
+        run: python -m pytest -v tests
+      - name: Unit tests (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest -v tests
+      - name: Integration (Windows, incl. VDD driver)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: python tools/ci_integration.py --vdd
+      - name: Integration (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          python tools/ci_integration.py
+          pmset -g | head -20
+      - name: Integration (Linux / Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s "-screen 0 1280x800x24" python tools/ci_integration.py
+      - name: Logs
+        if: always()
+        shell: bash
+        run: cat ci-home/logs/*.log || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-results-${{ matrix.os }}
+          path: |
+            ci-results-*.json
+            ci-home/logs/
   build:
+    needs: test
     strategy:
       fail-fast: false
       matrix:
@@ -18,35 +64,49 @@ jobs:
             name: NightDisplay-macOS-arm64
           - os: macos-15-intel
             name: NightDisplay-macOS-x64
+          - os: ubuntu-latest
+            name: NightDisplay-Linux-x64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install pyinstaller
-      - run: python test_logic.py
-      - run: python nightdisplay.py --action status
+      - run: pip install pyinstaller pillow pystray
       - name: Build Windows
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          pyinstaller --onefile --windowed --name NightDisplay nightdisplay.py
-          ./dist/NightDisplay.exe --action status; cat "$LOCALAPPDATA/NightDisplay/status.txt"
-          mkdir out && cp dist/NightDisplay.exe README.md out/ && cp -r legacy out/
+          pyinstaller --onefile --windowed --name NightDisplay --add-data "tools/install_vdd.ps1;tools" --hidden-import pystray._win32 nightdisplay_main.py
+          export NIGHTDISPLAY_HOME=$PWD/smoke
+          ./dist/NightDisplay.exe --action status; cat smoke/status.txt || true
+          ./dist/NightDisplay.exe --action displays; ./dist/NightDisplay.exe --action gui --selftest 5; echo "gui rc=$?"
+          mkdir out && cp dist/NightDisplay.exe README.md LICENSE NOTICE.md out/ && cp -r legacy out/
           cd out && 7z a ../${{ matrix.name }}.zip .
       - name: Build macOS
         if: runner.os == 'macOS'
         run: |
-          pyinstaller --windowed --name NightDisplay --osx-bundle-identifier com.nightdisplay.app nightdisplay.py
+          pyinstaller --windowed --name NightDisplay --osx-bundle-identifier com.nightdisplay.app nightdisplay_main.py
+          export NIGHTDISPLAY_HOME=$PWD/smoke
           ./dist/NightDisplay.app/Contents/MacOS/NightDisplay --action status
+          ./dist/NightDisplay.app/Contents/MacOS/NightDisplay --action gui --selftest 5; echo "gui rc=$?"
           file dist/NightDisplay.app/Contents/MacOS/NightDisplay
-          mkdir out && cp -R dist/NightDisplay.app README.md out/
+          mkdir out && cp -R dist/NightDisplay.app README.md LICENSE NOTICE.md out/
           ditto -c -k --keepParent out ${{ matrix.name }}.zip
+      - name: Build Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb x11-xserver-utils
+          pyinstaller --onefile --name NightDisplay --hidden-import pystray._xorg nightdisplay_main.py
+          export NIGHTDISPLAY_HOME=$PWD/smoke
+          ./dist/NightDisplay --action status
+          xvfb-run -a ./dist/NightDisplay --action gui --selftest 5; echo "gui rc=$?"
+          mkdir out && cp dist/NightDisplay README.md LICENSE NOTICE.md out/
+          tar czf ${{ matrix.name }}.tar.gz -C out .
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: ${{ matrix.name }}.zip
+          path: ${{ matrix.name }}.*
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
@@ -58,4 +118,4 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          files: dist/*

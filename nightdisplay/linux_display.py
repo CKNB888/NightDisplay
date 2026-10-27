@@ -1,0 +1,108 @@
+# -*- coding: utf-8 -*-
+"""Linux(X11) 显示：xrandr 备份/还原/仅虚拟输出，xset dpms 关屏。Wayland 下仅提示。"""
+import os, re, shutil, subprocess
+
+VIRTUAL_RE = r"^(VIRTUAL|DUMMY|Virtual|HDMI-A-?V|DVI-I-\d+-\d+)"  # evdi/ xf86-video-dummy / Intel VIRTUAL
+
+
+def session_type():
+    if os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland":
+        return "wayland"
+    return "x11" if os.environ.get("DISPLAY") else "none"
+
+
+def _run(args):
+    p = subprocess.run(args, capture_output=True, text=True)
+    if p.returncode:
+        raise RuntimeError("%s 失败: %s" % (" ".join(args), (p.stderr or p.stdout).strip()))
+    return p.stdout
+
+
+def parse_xrandr(text):
+    outs, cur = [], None
+    for line in text.splitlines():
+        m = re.match(r"^(\S+) (connected|disconnected)( primary)?(?: (\d+)x(\d+)\+(-?\d+)\+(-?\d+))?(?: (left|right|inverted|normal))?", line)
+        if m:
+            cur = dict(name=m.group(1), connected=m.group(2) == "connected", primary=bool(m.group(3)),
+                       active=m.group(4) is not None, mode=None, rate=None,
+                       pos=(int(m.group(6)), int(m.group(7))) if m.group(4) else None,
+                       rotate=m.group(8) or "normal")
+            if cur["active"]:
+                cur["mode"] = "%sx%s" % (m.group(4), m.group(5))
+            outs.append(cur)
+            continue
+        if cur is not None and line.startswith("   ") and "*" in line:
+            parts = line.split()
+            for r in parts[1:]:
+                if "*" in r:
+                    cur["rate"] = r.replace("*", "").replace("+", "")
+    return outs
+
+
+def query():
+    return parse_xrandr(_run(["xrandr", "--query"]))
+
+
+def restore_cmd(outs):
+    cmd = ["xrandr"]
+    for o in outs:
+        cmd += ["--output", o["name"]]
+        if o["active"]:
+            cmd += ["--mode", o["mode"], "--pos", "%dx%d" % tuple(o["pos"]), "--rotate", o["rotate"]]
+            if o.get("rate"):
+                cmd += ["--rate", o["rate"]]
+            if o["primary"]:
+                cmd += ["--primary"]
+        else:
+            cmd += ["--off"]
+    return cmd
+
+
+def backup():
+    return {"outputs": query()}
+
+
+def restore(b, log=print):
+    if b and b.get("outputs"):
+        try:
+            _run(restore_cmd(b["outputs"]))
+            log("xrandr 已还原完整备份")
+            return 1
+        except Exception as e:
+            log("还原备份失败: %s" % e)
+    _run(["xrandr", "--auto"])
+    log("xrandr --auto 已执行（第2级）")
+    return 2
+
+
+def virtual_only_cmd(outs, match=""):
+    pat = match or VIRTUAL_RE
+    v = [o for o in outs if o["connected"] and re.search(pat, o["name"])]
+    if not v:
+        raise RuntimeError("没有已连接的虚拟输出（VIRTUAL*/DUMMY*/evdi）。")
+    cmd = ["xrandr", "--output", v[0]["name"], "--auto", "--primary"]
+    for o in outs:
+        if o is not v[0] and o["active"]:
+            cmd += ["--output", o["name"], "--off"]
+    return cmd, v[0]["name"]
+
+
+def apply_virtual_only(match="", log=print):
+    cmd, name = virtual_only_cmd(query(), match)
+    _run(cmd)
+    log("已切换为仅虚拟输出 %s" % name)
+    return name
+
+
+def screen_off():
+    if session_type() != "x11":
+        raise RuntimeError("Wayland 下无法通用关屏，请使用桌面环境的“息屏”设置。")
+    if "DPMS is" not in _run(["xset", "q"]):
+        raise RuntimeError("X 服务器不支持 DPMS，无法关屏")
+    _run(["xset", "dpms", "force", "off"])
+
+
+def screen_on():
+    if session_type() == "x11" and shutil.which("xset"):
+        subprocess.run(["xset", "dpms", "force", "on"], capture_output=True)
+        subprocess.run(["xset", "s", "reset"], capture_output=True)
