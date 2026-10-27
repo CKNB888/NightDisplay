@@ -64,7 +64,7 @@ def round_test(source, number):
         events.append("PASS: " + " ".join(args))
     try:
         run("--action", "status")
-        if number == 1:
+        if not any(W.is_virtual(d) and d["available"] for d in W.describe()):
             run("--action", "install-vdd", timeout=320)
             time.sleep(3)
         # Baseline after installing the VDD: the new virtual monitor is part of the desktop.

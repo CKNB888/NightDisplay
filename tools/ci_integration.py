@@ -71,7 +71,7 @@ def awake_check():
         except RuntimeError:
             if not IS_WIN and not IS_MAC:
                 rc, out = sh(["systemd-inhibit", "--what=sleep:idle", "--mode=block", "true"]) if shutil.which("systemd-inhibit") else (1, "no systemd-inhibit")
-                if rc: raise SkipTest("logind 不可用（容器/CI）：" + out.strip()[:100])
+                if rc: raise SkipTest("logind 不可用（容器/CI）：" + out.strip()[:100]) from None
             raise
         if IS_WIN:
             rc, out = sh(["powercfg", "/requests"])
