@@ -144,7 +144,9 @@ jobs:
         if: always()
         with:
           name: qa-${{ matrix.os }}
-          path: qa-windows.json
+          path: |
+            qa-windows.json
+            qa-evidence/
   release:
     needs: [test, build]
     if: startsWith(github.ref, 'refs/tags/v')

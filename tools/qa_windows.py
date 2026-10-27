@@ -112,6 +112,9 @@ def round_test(source, number):
             output.parent.mkdir(exist_ok=True)
             if (root / "state").exists():
                 shutil.copytree(root / "state", output, dirs_exist_ok=True)
+                for f in sorted((root / "state" / "logs").glob("*.log")):
+                    print("----- %s -----" % f.name)
+                    print(f.read_text(encoding="utf-8", errors="replace")[-4000:])
 
 
 if __name__ == "__main__":
