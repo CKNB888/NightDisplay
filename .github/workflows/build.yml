@@ -102,6 +102,9 @@ jobs:
           cd out && 7z a ../${{ matrix.name }}.zip .
           # 真正产出安装包：Inno Setup 按当前用户安装（PrivilegesRequired=lowest），
           # 驱动安装仍在首次打开时弹一次 UAC，不在安装器里偷偷提权。
+          # 注意：上面 cd out 之后当前目录还在 out/ 里，必须先 cd .. 回仓库根，
+          # 否则 iscc 找不到 packaging/windows.iss，只报“找不到路径”就退出码 2。
+          cd ..
           choco install innosetup -y --no-progress
           iscc packaging/windows.iss
           test -f NightDisplay-Windows-x64-Setup.exe
