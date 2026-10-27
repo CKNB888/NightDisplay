@@ -490,7 +490,7 @@ def go_day(overlay_cb=None, mode=None, raise_errors=True):
         if raise_errors:
             raise RuntimeError("恢复部分失败: " + " | ".join(errors))
         return real
-    update(state="day", night_mode="", recovery_pending=False)
+    update(state="day", night_mode="", recovery_pending=False, hold_night_until="")
     keep_awake(False)
     return real
 

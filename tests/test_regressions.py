@@ -36,6 +36,62 @@ def test_full_day_has_no_false_boundary():
     assert core.next_switch(c, dt.datetime(2026, 1, 1, 5)) == (None, 86400)
 
 
+def test_manual_night_holds_until_next_morning():
+    cfg = dict(core.DEFAULT, enabled=True, start="20:00", end="10:30")
+    now = dt.datetime(2026, 10, 27, 10, 46)
+    until = core.manual_night_until(cfg, now)
+    assert until == dt.datetime(2026, 10, 28, 10, 30)
+    assert core.manual_night_until(cfg, dt.datetime(2026, 10, 27, 21, 0)) is None
+
+
+def test_reconcile_keeps_manual_night_outside_schedule(monkeypatch):
+    core.update(enabled=True, state="night", night_mode="screen_off",
+                start="20:00", end="10:30",
+                hold_night_until="2026-10-28T10:30:00")
+    calls = []
+    monkeypatch.setattr(B, "go_day", lambda *a, **k: calls.append("day"))
+    monkeypatch.setattr(B, "go_night", lambda *a, **k: calls.append("night"))
+    monkeypatch.setattr(B, "ensure_night", lambda: calls.append("ensure"))
+
+    class Frozen(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = cls(2026, 10, 27, 10, 46)
+            return base.replace(tzinfo=tz) if tz is not None else base
+
+    monkeypatch.setattr(core.dt, "datetime", Frozen)
+    monkeypatch.setattr(app.dt, "datetime", Frozen)
+    assert app.reconcile() == "unchanged"
+    assert calls == ["ensure"]
+    assert core.load()["hold_night_until"] == "2026-10-28T10:30:00"
+
+
+def test_expired_manual_night_returns_to_day(monkeypatch):
+    core.update(enabled=True, state="night", night_mode="screen_off",
+                start="20:00", end="10:30",
+                hold_night_until="2026-10-27T10:30:00")
+    calls = []
+
+    def go_day(*a, **k):
+        calls.append("day")
+        core.update(state="day", night_mode="", hold_night_until="")
+
+    monkeypatch.setattr(B, "go_day", go_day)
+    monkeypatch.setattr(B, "go_night", lambda *a, **k: calls.append("night"))
+
+    class Frozen(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = cls(2026, 10, 27, 10, 46)
+            return base.replace(tzinfo=tz) if tz is not None else base
+
+    monkeypatch.setattr(core.dt, "datetime", Frozen)
+    monkeypatch.setattr(app.dt, "datetime", Frozen)
+    assert app.reconcile() == "day"
+    assert calls == ["day"]
+    assert core.load()["hold_night_until"] == ""
+
+
 def test_updates_survive_threads_and_processes():
     def task(i):
         core.update(**{"thread_%d" % i: i})

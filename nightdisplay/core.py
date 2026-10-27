@@ -73,6 +73,8 @@ DEFAULT = {
     "unlock_chord": ["C", "K"],
     "lock": True,
     "override_until": "",
+    # 白天手动进入夜间后，保持到下一段计划夜间结束，避免定时检查立刻拉回白天。
+    "hold_night_until": "",
     "autostart": True,
     "autostart_preference": True,
     "start": "20:00",
@@ -154,6 +156,7 @@ def validate_config(cfg):
     # Runtime state is written by several processes; reject wrong JSON types
     # early instead of letting a later display action fail halfway through.
     for key in ("virtual_match", "hotkey", "test_id", "awake_token", "override_until",
+                "hold_night_until",
                 "last_test_at", "last_test_mode", "last_test_requested",
                 "last_recovery_at", "last_recovery_mode"):
         if key in cfg and not isinstance(cfg[key], str):
@@ -242,6 +245,26 @@ def in_night(cfg, now=None):
 
 def boundaries(cfg):
     return sorted({"%02d:%02d" % parse_hm(t) for r in ranges(cfg) for t in r})
+
+
+def manual_night_until(cfg, now=None):
+    """白天被手动切入夜间时，应保持到下一段夜间计划结束。
+
+    当前已经在计划夜间内时返回 None，结束时间仍由时段边界决定。
+    没有下一段夜间，或下一段没有白天边界时也返回 None。
+    """
+    now = now or dt.datetime.now()
+    if not cfg.get("enabled") or in_night(cfg, now):
+        return None
+    action, secs = next_switch(cfg, now)
+    if action != "night":
+        return None
+    # 跨过夜间开始后的 1 分钟，避免刚好卡在边界分钟上算出同一段。
+    entered = now + dt.timedelta(seconds=secs + 60)
+    action2, secs2 = next_switch(cfg, entered)
+    if action2 != "day":
+        return None
+    return entered + dt.timedelta(seconds=secs2)
 
 
 def next_switch(cfg, now=None):

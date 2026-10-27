@@ -20,6 +20,7 @@ from .core import (
     in_night,
     load,
     log,
+    manual_night_until,
     next_switch,
     parse_hm,
     save,
@@ -86,7 +87,7 @@ def activate(mode, start, end):
 
 @B.serialized
 def pause():
-    update(enabled=False)
+    update(enabled=False, hold_night_until="")
     B.schedule_remove()
     log("已暂停每日计划（不改变当前显示）")
 
@@ -169,7 +170,7 @@ def chord_unlock(overlay_cb=None):
     """本地唯一解锁方式：按住组合键。恢复显示；若在计划时段内，则本时段剩余时间不再自动黑屏。"""
     cfg = load()
     B.go_day(overlay_cb)
-    update(test_id="", last_test_ok=False, test_aborted=False)
+    update(test_id="", last_test_ok=False, test_aborted=False, hold_night_until="")
     if cfg.get("enabled") and in_night(cfg):
         secs = next_switch(cfg)[1]
         update(override_until=(dt.datetime.now() + dt.timedelta(seconds=secs)).isoformat())
@@ -215,6 +216,19 @@ def uninstall(overlay_cb=None):
     log("已卸载计划任务和自启项；日志与备份保留在 %s" % home())
 
 
+def note_manual_night():
+    """计划开启且当前不在夜间时段时，记下手动夜间应保持到的早晨边界。"""
+    cfg = load()
+    if not (cfg.get("enabled") and cfg.get("state") == "night") or in_night(cfg):
+        if cfg.get("hold_night_until"):
+            update(hold_night_until="")
+        return
+    until = manual_night_until(cfg)
+    if until is None:
+        return
+    update(hold_night_until=until.replace(microsecond=0).isoformat())
+
+
 @B.serialized
 def reconcile(overlay_cb=None):
     cfg = load()
@@ -224,6 +238,20 @@ def reconcile(overlay_cb=None):
     if not cfg.get("enabled"):
         return "disabled"
     want = "night" if in_night(cfg) else "day"
+    # 白天手动进入夜间后，在计划早晨结束前不要被定时检查拉回白天。
+    # 组合键解锁的 override_until 写在后面，仍然优先恢复白天。
+    hold = cfg.get("hold_night_until") or ""
+    if hold:
+        try:
+            until = dt.datetime.fromisoformat(hold)
+            holding = dt.datetime.now(until.tzinfo) < until
+        except (TypeError, ValueError):
+            holding = False
+        if holding:
+            want = "night"
+        else:
+            update(hold_night_until="")
+            cfg = load()
     ov = cfg.get("override_until") or ""
     if ov:
         try:
@@ -381,9 +409,11 @@ def run_app(show_window=True, selftest=0):
                 emergency(overlay)
             elif name == "night":
                 B.go_night(data.get("mode") or load()["mode"], overlay)
+                note_manual_night()
             elif name == "test":
                 start_test(data.get("mode") or load()["mode"], data.get("seconds", 120), overlay)
             elif name == "day":
+                update(hold_night_until="")
                 B.go_day(overlay)
                 update(test_id="", last_test_ok=False, test_aborted=False)
             elif name == "reconcile":
