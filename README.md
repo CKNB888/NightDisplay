@@ -23,7 +23,7 @@
 
 | 功能 | Windows | macOS | Linux |
 |---|:-:|:-:|:-:|
-| 每日自定义时间段（默认 20:00 → 10:30，可跨午夜） | ✅ 计划任务 | ✅ launchd | ✅ systemd 用户定时器 |
+| 每日自定义时间段（默认 20:00 → 10:30，可多段、可跨午夜） | ✅ 计划任务 | ✅ launchd | ✅ systemd 用户定时器 |
 | 只保留虚拟屏（最接近 UU“关闭显示屏”） | ✅ 需虚拟显示驱动 | ⚠️ 需 BetterDisplay 等 | ✅ X11 + 虚拟输出 |
 | 防截屏黑幕（本地黑、远程画面不黑） | ✅ Win10 2004+ | — | — |
 | 基础关屏 | ✅ | ✅ pmset | ✅ xset dpms（X11） |
@@ -48,6 +48,10 @@
 
 > 与 UU 远程的关系：UU 的“超级屏”会关闭实体屏且与 UU 虚拟屏互斥；UU 虚拟屏断开连接会自动删除。所以 NightDisplay 推荐使用**自己安装的常驻虚拟屏**，而不是依赖 UU 临时虚拟屏。UU 自带的“防窥模式 → 关闭显示屏”（Ctrl+Alt+P 解除）也可与本工具互补使用。
 
+## 设置项
+
+深色模式 · 开机自启（托盘常驻）· 黑屏锁定 · 解锁组合键录制/测试 · 额外时间段 · 检查更新（查询 GitHub 最新 Release）
+
 ## 安装
 
 | 系统 | 下载 | 安装 |
@@ -67,13 +71,22 @@
 3. **显示模式**页选择模式（推荐“自动”），点“测试（120 秒自动恢复）”。**请先确认远程软件已能连上，并有人在电脑旁。**
 4. 测试成功后回到首页，打开“每日自动计划”开关。（24 小时内没有成功测试过当前模式，不允许开启，防止远程把自己锁在外面。）
 
+## 黑屏锁定与解锁组合键（v3 新增）
+
+- 黑屏期间默认**锁定**：托盘“恢复/应急/退出”、主窗口按钮、Ctrl+Alt+Shift+R 在本地全部无效。
+- 本地**唯一**解除方式：**同时按住 C 和 K**（约 0.3 秒）。可在“设置 → 解锁组合键”里点“录制”改成任意 2~3 键组合（如 Ctrl+X、Alt+Shift+9），并可点“测试”验证。
+- 只读取按键状态，**不拦截、不吞掉任何按键**，远程和本地输入照常传给系统。
+- 用组合键解锁后，本时段剩余时间不再自动黑屏；到计划结束时间（如 10:30）也会自动恢复。
+- 隐藏的远程恢复（仅主人知道）：在远程会话里打开命令行运行 `NightDisplay.exe --action emergency`，不受锁定限制。
+- macOS 首次使用会请求“输入监控”权限；Linux 需 X11 会话。
+
 ## 安全设计
 
 - 不拦截键盘鼠标，不需要关闭杀毒，不注入任何远程软件，不修改 UU / ToDesk 客户端。
 - 每次进入夜间前把当前显示配置**完整备份**（保留最近 10 份 + 最近一次正常配置）。
 - 恢复按顺序尝试：完整备份 → 仅拓扑 → 仅内屏 → 扩展 → 复制，任何一级成功即停止。
 - 切换后立即校验，失败**自动回滚**。
-- 应急恢复：托盘菜单 / `Ctrl+Alt+Shift+R` / 命令行 `NightDisplay --action emergency`（恢复显示并暂停计划）。
+- 应急恢复：未锁定时可用托盘菜单 / `Ctrl+Alt+Shift+R`；任何时候都可在远程用命令行 `NightDisplay --action emergency`（恢复显示并暂停计划）。
 - 一键卸载：设置页“卸载计划与自启”或 `--action uninstall`。
 
 ## 命令行
@@ -85,6 +98,8 @@ NightDisplay --action day             立即恢复
 NightDisplay --action test --mode M --seconds 120   测试并自动恢复
 NightDisplay --action activate --start 20:00 --end 10:30   开启每日计划
 NightDisplay --action pause | emergency | uninstall
+NightDisplay --action selfcheck       查看本机支持的模式
+NightDisplay --action install-vdd | uninstall-vdd   安装/卸载虚拟显示驱动
 NightDisplay --action displays        列出显示器（Windows/Linux）
 NightDisplay --action plan-virtual    预演“只保留虚拟屏”（只校验，不应用）
 NightDisplay --action install-vdd     安装虚拟显示驱动（Windows，管理员）

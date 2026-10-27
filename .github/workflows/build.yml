@@ -7,6 +7,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: '1'
 jobs:
   test:
     continue-on-error: true
@@ -110,14 +113,41 @@ jobs:
         with:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}.*
-  release:
+  qa-windows:
     needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: NightDisplay-Windows-x64
+      - name: Unpack built package
+        shell: bash
+        run: mkdir pkg && cd pkg && 7z x ../NightDisplay-Windows-x64.zip && ls -la
+      - name: End-to-end QA, 3 rounds on the packaged exe
+        run: python tools/qa_windows.py pkg\NightDisplay.exe 3
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-${{ matrix.os }}
+          path: qa-windows.json
+  release:
+    needs: [build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: NightDisplay-*
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:

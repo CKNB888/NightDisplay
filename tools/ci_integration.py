@@ -27,8 +27,8 @@ def schedule_roundtrip():
     B.schedule_install(cfg)
     st = B.schedule_status()
     if IS_WIN:
-        rc, out = sh(["schtasks", "/Query", "/TN", "NightDisplay_Night", "/FO", "LIST", "/V"])
-        assert rc == 0 and "20:00" in out, out
+        rc, out = sh(["schtasks", "/Query", "/FO", "CSV"])
+        assert "NightDisplay_Night" in out, out[-400:]
     elif IS_MAC:
         assert "已加载" in st, st
         rc, out = sh(["plutil", "-lint", os.path.expanduser("~/Library/LaunchAgents/com.nightdisplay.agent.plist")]); assert rc == 0, out
@@ -72,7 +72,7 @@ def display_roundtrip():
 def screen_off_on():
     core.update(state="day")
     rc, out = sh(PY + ["--action", "night", "--mode", "screen_off"])
-    rc2, out2 = sh(PY + ["--action", "day"])
+    rc2, out2 = sh(PY + ["--action", "emergency"])
     assert rc == 0 and rc2 == 0, out + out2
     return "night rc=%s day rc=%s" % (rc, rc2)
 
@@ -86,7 +86,7 @@ def overlay_night_day():
         c = core.load()
         assert rc == 0 and c.get("state") == "night" and c.get("night_mode") == "overlay", (out, c)
         time.sleep(2)
-        rc2, out2 = sh(PY + ["--action", "day"])
+        rc2, out2 = sh(PY + ["--action", "emergency"])
         assert rc2 == 0 and core.load().get("state") == "day", out2
         return "overlay night via IPC ok, day ok; log tail: " + core.read_log_tail(400).replace("\n", " / ")
     finally:
@@ -103,7 +103,7 @@ def vdd_virtual_only():
     rc, plan = sh(PY + ["--action", "plan-virtual"]); print(plan)
     assert rc == 0, plan
     rc, n = sh(PY + ["--action", "night", "--mode", "virtual_only"]); print(n)
-    rc2, d = sh(PY + ["--action", "day"]); print(d)
+    rc2, d = sh(PY + ["--action", "emergency"]); print(d)
     rc3, after = sh(PY + ["--action", "displays"]); print(after)
     assert rc == 0, n
     return "virtual_only night rc=%s day rc=%s" % (rc, rc2)

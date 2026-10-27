@@ -56,6 +56,21 @@ def start_test(mode, seconds, overlay_cb=None):
     return real
 
 
+def is_locked():
+    c = load()
+    return c.get("state") == "night" and c.get("lock", True)
+
+
+def chord_unlock(overlay_cb=None):
+    """本地唯一解锁方式：按住组合键。恢复显示；若在计划时段内，则本时段剩余时间不再自动黑屏。"""
+    cfg = load()
+    B.go_day(overlay_cb, mode="all")
+    if cfg.get("enabled") and in_night(cfg):
+        secs = next_switch(cfg)[1]
+        update(override_until=(dt.datetime.now() + dt.timedelta(seconds=secs)).isoformat())
+    log("已通过组合键 %s 解除黑屏" % " + ".join(cfg.get("unlock_chord") or ["C", "K"]))
+
+
 def emergency(overlay_cb=None):
     pause()
     B.go_day(overlay_cb, mode="all")
@@ -73,6 +88,12 @@ def reconcile(overlay_cb=None):
     if not cfg.get("enabled"):
         return "disabled"
     want = "night" if in_night(cfg) else "day"
+    ov = cfg.get("override_until") or ""
+    if ov:
+        if dt.datetime.now() < dt.datetime.fromisoformat(ov):
+            want = "day"  # 本次夜间已用组合键解锁，到本时段结束前不再自动黑屏
+        else:
+            update(override_until="")
     if want == cfg.get("state"):
         return "unchanged"
     if want == "night":
@@ -101,7 +122,7 @@ def make_overlay(root):
                     x, y, W, H = gm(76), gm(77), gm(78), gm(79)
                 w.geometry("%dx%d+%d+%d" % (W, H, x, y))
                 w.attributes("-topmost", True)
-                tk.Label(w, text="NightDisplay 夜间防窥中 · 按 %s 恢复" % load().get("hotkey"), fg="#333333", bg="black",
+                tk.Label(w, text="", fg="#333333", bg="black",
                          font=("", 11)).place(relx=0.5, rely=0.97, anchor="s")
                 w.update_idletasks()
                 if IS_WIN:
@@ -152,7 +173,16 @@ def run_app(show_window=True, selftest=0):
 
     def act(name):
         try:
-            if name == "night":
+            if name in ("day", "emergency", "quit") and is_locked():
+                log("黑屏已锁定，已忽略本地操作“%s”（按住解锁组合键 %s 解除）" % (name, " + ".join(load().get("unlock_chord") or ["C", "K"])))
+                return "locked"
+            if name == "unlock":
+                chord_unlock(overlay); watcher.active.clear()
+            elif name == "test_day":
+                B.go_day(overlay, mode="all"); watcher.active.clear()
+            elif name == "remote_emergency":
+                emergency(overlay); watcher.active.clear()
+            elif name == "night":
                 B.go_night(load()["mode"], overlay)
             elif name == "day":
                 B.go_day(overlay, mode="all")
@@ -188,6 +218,15 @@ def run_app(show_window=True, selftest=0):
     threading.Thread(target=serve, daemon=True).start()
 
     start_hotkey(root, lambda: act("emergency"))
+    from . import chord
+    watcher = chord.Watcher(lambda: load().get("unlock_chord") or chord.DEFAULT_CHORD, lambda: root.after(0, lambda: act("unlock")))
+
+    def sync_watch():
+        (watcher.active.set if is_locked() else watcher.active.clear)()
+        root.after(1000, sync_watch)
+    root.after(500, sync_watch)
+    if IS_MAC:
+        chord.request_permission()
 
     def tick():
         try:
@@ -243,15 +282,17 @@ def main(argv=None):
         if a.delay:
             time.sleep(a.delay)
         if a.action == "status":
-            print(B.status_text())
+            save(load()); print(B.status_text())
         elif a.action == "awake":
             B.win_awake_loop(a.seconds) if IS_WIN else time.sleep(a.seconds)
         elif a.action == "night":
             if send_ipc("night") is None:
                 B.go_night(a.mode or load()["mode"])
         elif a.action == "day":
-            r = send_ipc("day")
-            if r is None or a.test_recovery:
+            if is_locked() and not a.test_recovery:
+                print("黑屏已锁定：本地请按住解锁组合键；远程可用 --action emergency"); return 2
+            r = send_ipc("test_day" if a.test_recovery else "day")
+            if r is None:
                 B.go_day(mode="all" if a.test_recovery else None)
             if a.test_recovery:
                 update(last_recovery_at=dt.datetime.now().isoformat(), last_recovery_mode=load().get("last_test_mode"))
@@ -271,10 +312,11 @@ def main(argv=None):
         elif a.action == "pause":
             pause()
         elif a.action == "emergency":
-            if send_ipc("emergency") is None:
+            # 隐藏的远程恢复：在远程会话里运行，不受黑屏锁限制
+            if send_ipc("remote_emergency") is None:
                 emergency()
         elif a.action == "uninstall":
-            send_ipc("emergency"); uninstall(); send_ipc("quit")
+            send_ipc("remote_emergency"); uninstall(); send_ipc("quit")
         elif a.action == "backup":
             B._backup_display()
         elif a.action == "restore":
