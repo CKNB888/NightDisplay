@@ -1,3 +1,4 @@
+import re
 # -*- coding: utf-8 -*-
 """配置、日志、时间计划（与平台无关，可单元测试）。"""
 import datetime as dt, json, os, sys, glob
@@ -123,12 +124,48 @@ def seconds_until(hm, now=None):
     return int((t - now).total_seconds())
 
 
+def parse_ranges(text):
+    """解析额外时间段文本，如 "12:00-13:30, 02:00-04:00"，返回 [(start,end)]。"""
+    out = []
+    for part in re.split(r"[,，;；\s]+", (text or "").strip()):
+        if not part:
+            continue
+        m = re.fullmatch(r"(\d{1,2}:\d{2})[-~–](\d{1,2}:\d{2})", part)
+        if not m:
+            raise ValueError("时间段格式应为 HH:MM-HH:MM：%s" % part)
+        a, b = ["%02d:%02d" % parse_hm(x) for x in m.groups()]
+        if a == b:
+            raise ValueError("时间段开始和结束不能相同：%s" % part)
+        out.append((a, b))
+    return out
+
+
+def ranges(cfg):
+    """全部夜间时间段：主时间段 + 额外时间段（每段都可跨午夜）。"""
+    r = [(cfg["start"], cfg["end"])]
+    for x in cfg.get("extra_ranges") or []:
+        r.append(tuple(x))
+    return r
+
+
+def in_night(cfg, now=None):
+    return any(is_night(a, b, now) for a, b in ranges(cfg))
+
+
+def boundaries(cfg):
+    return sorted({t for r in ranges(cfg) for t in r})
+
+
 def next_switch(cfg, now=None):
-    """返回 (下一次动作 'night'/'day', 距离秒数)。"""
+    """返回 (下一次动作 'night'/'day', 距离秒数)，支持多个、重叠、跨午夜时间段。"""
     now = now or dt.datetime.now()
-    if is_night(cfg["start"], cfg["end"], now):
-        return "day", seconds_until(cfg["end"], now)
-    return "night", seconds_until(cfg["start"], now)
+    cur = in_night(cfg, now)
+    base = now.replace(second=0, microsecond=0)
+    for i in range(1, 1441):
+        t = base + dt.timedelta(minutes=i)
+        if in_night(cfg, t) != cur:
+            return ("day" if cur else "night"), int((t - now).total_seconds())
+    return ("day" if cur else "night"), 86400
 
 
 def save_backup(kind, data):

@@ -38,5 +38,5 @@ def test_systemd_units():
 
 def test_launchd_plist():
     p = B.launchd_plist(dict(core.DEFAULT, start="20:00", end="10:30"))
-    assert p["StartCalendarInterval"] == [{"Hour": 20, "Minute": 0}, {"Hour": 10, "Minute": 30}]
+    assert p["StartCalendarInterval"] == [{"Hour": 10, "Minute": 30}, {"Hour": 20, "Minute": 0}]
     assert p["ProgramArguments"][-2:] == ["--action", "reconcile"]

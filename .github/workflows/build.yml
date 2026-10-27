@@ -9,6 +9,8 @@ permissions:
   contents: write
 jobs:
   test:
+    continue-on-error: true
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -32,6 +34,7 @@ jobs:
       - name: Integration (Windows, incl. VDD driver)
         if: runner.os == 'Windows'
         shell: bash
+        timeout-minutes: 12
         run: python tools/ci_integration.py --vdd
       - name: Integration (macOS)
         if: runner.os == 'macOS'

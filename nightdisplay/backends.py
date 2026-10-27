@@ -2,7 +2,7 @@
 """各平台动作：夜间/白天、模式选择、防睡眠、系统计划任务。"""
 import os, platform, shlex, subprocess, sys, datetime as dt
 
-from .core import IS_WIN, IS_MAC, IS_LINUX, log, load, save, update, save_backup, load_backup, home, parse_hm, seconds_until
+from .core import IS_WIN, IS_MAC, IS_LINUX, log, load, save, update, save_backup, load_backup, home, parse_hm, seconds_until, ranges, boundaries, next_switch
 
 MODES = {
     "auto": "自动（最接近 UU 关闭显示屏）",
@@ -206,7 +206,7 @@ def go_night(mode, overlay_cb=None, dry_run=False):
         if not dry_run:
             screen_off()
     if cfg.get("keep_awake", True) and not dry_run:
-        keep_awake(True, seconds_until(cfg["end"]) + 600 if cfg.get("enabled") else 6 * 3600)
+        keep_awake(True, next_switch(cfg)[1] + 600 if cfg.get("enabled") else 6 * 3600)
     if not dry_run:
         update(state="night", night_mode=real)
     return real
@@ -255,18 +255,17 @@ def _systemd_dir():
 
 def systemd_units(cfg):
     exe = " ".join(shlex.quote(c) for c in self_cmd())
-    (sh, sm), (eh, em) = parse_hm(cfg["start"]), parse_hm(cfg["end"])
     service = ("[Unit]\nDescription=NightDisplay reconcile\n\n[Service]\nType=oneshot\n"
                "ExecStart=%s --action reconcile\n" % exe)
-    timer = ("[Unit]\nDescription=NightDisplay daily switch\n\n[Timer]\nOnCalendar=*-*-* %02d:%02d:00\n"
-             "OnCalendar=*-*-* %02d:%02d:00\nOnStartupSec=60\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n"
-             % (sh, sm, eh, em))
+    cal = "".join("OnCalendar=*-*-* %02d:%02d:00\n" % parse_hm(t) for t in boundaries(cfg))
+    timer = ("[Unit]\nDescription=NightDisplay daily switch\n\n[Timer]\n" + cal +
+             "OnStartupSec=60\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n")
     return service, timer
 
 
 def launchd_plist(cfg):
     times = []
-    for t in (cfg["start"], cfg["end"]):
+    for t in boundaries(cfg):
         h, m = parse_hm(t)
         times.append({"Hour": h, "Minute": m})
     return {"Label": LA_LABEL, "ProgramArguments": self_cmd() + ["--action", "reconcile"],
@@ -278,7 +277,9 @@ def launchd_plist(cfg):
 def schedule_install(cfg):
     if IS_WIN:
         tr = " ".join('"%s"' % c for c in self_cmd()) + " --action reconcile"
-        for name, t in zip(TASKS, (cfg["start"], cfg["end"])):
+        _win_delete_tasks()
+        for i, t in enumerate(boundaries(cfg)):
+            name = TASKS[i] if i < 2 else "NightDisplay_T%02d" % i
             run(["schtasks", "/Create", "/F", "/TN", name, "/SC", "DAILY", "/ST", t, "/TR", tr])
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as k:
@@ -300,13 +301,17 @@ def schedule_install(cfg):
         p2 = run(["systemctl", "--user", "enable", "--now", SD_UNIT + ".timer"], check=False)
         if p2.returncode:
             log("警告：systemctl --user 不可用（%s），单元文件已写入 %s" % ((p2.stderr or "").strip()[:120], d))
-    log("已注册系统计划：%s 夜间，%s 白天" % (cfg["start"], cfg["end"]))
+    log("已注册系统计划：夜间时间段 %s" % "，".join("%s→%s" % r for r in ranges(cfg)))
+
+
+def _win_delete_tasks():
+    for n in list(TASKS) + ["NightDisplay_T%02d" % i for i in range(2, 24)]:
+        run(["schtasks", "/Delete", "/F", "/TN", n], check=False)
 
 
 def schedule_remove():
     if IS_WIN:
-        for n in TASKS:
-            run(["schtasks", "/Delete", "/F", "/TN", n], check=False)
+        _win_delete_tasks()
         try:
             import winreg
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as k:
@@ -346,9 +351,9 @@ def status_text():
     cfg = load()
     return "\n".join([
         "版本 %s ｜ %s %s" % (VERSION, platform.system(), platform.release()),
-        "模式：%s ｜ 自动计划：%s ｜ %s → %s ｜ 当前状态：%s" % (
+        "模式：%s ｜ 自动计划：%s ｜ 夜间 %s ｜ 当前状态：%s" % (
             MODES.get(cfg["mode"], cfg["mode"]), "已启用" if cfg["enabled"] else "未启用",
-            cfg["start"], cfg["end"], "夜间" if cfg["state"] == "night" else "白天"),
+            "，".join("%s→%s" % r for r in ranges(cfg)), "夜间" if cfg["state"] == "night" else "白天"),
         "上次测试：%s %s 成功=%s 自动恢复=%s" % (cfg["last_test_mode"], cfg["last_test_at"][:19], cfg["last_test_ok"], cfg["last_recovery_at"][:19]),
         schedule_status(),
         "数据目录：%s" % home()])

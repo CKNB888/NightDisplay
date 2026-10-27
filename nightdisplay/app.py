@@ -3,7 +3,7 @@
 import argparse, datetime as dt, os, socket, sys, threading, time
 
 from . import VERSION, APP, CREDIT
-from .core import IS_WIN, IS_MAC, IS_LINUX, log, load, save, update, is_night, parse_hm, next_switch, read_log_tail, home
+from .core import in_night, IS_WIN, IS_MAC, IS_LINUX, log, load, save, update, is_night, parse_hm, next_switch, read_log_tail, home
 from . import backends as B
 
 PORT = 47831
@@ -72,7 +72,7 @@ def reconcile(overlay_cb=None):
     cfg = load()
     if not cfg.get("enabled"):
         return "disabled"
-    want = "night" if is_night(cfg["start"], cfg["end"]) else "day"
+    want = "night" if in_night(cfg) else "day"
     if want == cfg.get("state"):
         return "unchanged"
     if want == "night":
@@ -226,7 +226,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog=APP)
     ap.add_argument("--action", default="gui", choices=[
         "gui", "tray", "night", "day", "reconcile", "test", "activate", "pause", "emergency", "uninstall",
-        "status", "awake", "backup", "restore", "displays", "plan-virtual", "install-vdd"])
+        "status", "awake", "backup", "restore", "displays", "plan-virtual", "install-vdd", "uninstall-vdd", "selfcheck"])
     ap.add_argument("--tray", action="store_true", help="开机自启：只显示托盘")
     ap.add_argument("--mode")
     ap.add_argument("--start"); ap.add_argument("--end")
@@ -291,7 +291,12 @@ def main(argv=None):
         elif a.action == "plan-virtual":
             B.go_night("virtual_only", dry_run=True)
         elif a.action == "install-vdd":
-            return install_vdd()
+            return install_vdd("install")
+        elif a.action == "uninstall-vdd":
+            return install_vdd("uninstall")
+        elif a.action == "selfcheck":
+            import json
+            print(json.dumps(B.selfcheck(), ensure_ascii=False, indent=1))
     except Exception as e:
         import traceback; traceback.print_exc()
         log("错误(%s): %s" % (a.action, e))
@@ -307,17 +312,25 @@ def resource(name):
     return os.path.join(base, name)
 
 
-def install_vdd():
-    """以管理员身份（UAC 弹窗由用户确认）运行 VDD 安装脚本。"""
+def vdd_dir():
+    """内置的 VDD 驱动目录（打包时放入 vdd/；源码运行时为 vendor/vdd）。"""
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, "vdd")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "vendor", "vdd")
+
+
+def install_vdd(op="install"):
+    """以管理员身份（UAC 弹窗由用户确认）安装/卸载内置虚拟显示驱动。op: install/uninstall/status。"""
     if not IS_WIN:
-        print("仅 Windows 需要；macOS 请用 BetterDisplay，Linux 请用 evdi/dummy 驱动")
+        print("仅 Windows 需要；macOS 使用内置 CGVirtualDisplay，Linux 请用 evdi/dummy 驱动")
         return 1
-    import ctypes
+    import ctypes, subprocess
     script = resource("install_vdd.ps1")
-    args = '-NoProfile -ExecutionPolicy Bypass -File "%s"' % script
-    if ctypes.windll.shell32.IsUserAnAdmin():
-        import subprocess
-        return subprocess.call(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script])
+    extra = {"install": [], "uninstall": ["-Uninstall"], "status": ["-Status"]}[op]
+    argv = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Source", vdd_dir()] + extra
+    if op == "status" or ctypes.windll.shell32.IsUserAnAdmin():
+        return subprocess.call(["powershell"] + argv)
+    args = subprocess.list2cmdline(argv)
     r = ctypes.windll.shell32.ShellExecuteW(None, "runas", "powershell.exe", args, None, 1)
-    log("已请求管理员权限安装虚拟显示驱动（ShellExecute=%s）" % r)
+    log("已请求管理员权限%s虚拟显示驱动（ShellExecute=%s）" % ("安装" if op == "install" else "卸载", r))
     return 0 if r > 32 else 1

@@ -1,6 +1,6 @@
 # 安装 VirtualDrivers/Virtual-Display-Driver (MIT) 的驱动包并创建 Root\MttVDD 设备。需要管理员。
-# 用法: install_vdd.ps1 [-Uninstall]
-param([switch]$Uninstall, [string]$Url = 'https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip')
+# 用法: install_vdd.ps1 [-Uninstall|-Enable|-Disable|-Status] [-Source <内置驱动目录>]
+param([switch]$Uninstall, [switch]$Enable, [switch]$Disable, [switch]$Status, [string]$Source = '', [string]$Url = 'https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip')
 $ErrorActionPreference = 'Stop'
 $HwId = 'Root\MttVDD'
 Add-Type -TypeDefinition @'
@@ -29,17 +29,31 @@ public static class VddDev {
   }
 }
 '@
-if ($Uninstall) {
-  Get-PnpDevice -Class Display -EA SilentlyContinue | Where-Object { $_.InstanceId -like 'ROOT\DISPLAY\*' -or $_.FriendlyName -match 'Virtual Display Driver|MttVDD' } | ForEach-Object {
-    Write-Host "remove $($_.InstanceId)"; pnputil /remove-device "$($_.InstanceId)" | Out-Host }
+function Get-Vdd { Get-PnpDevice -Class Display -EA SilentlyContinue | Where-Object { $_.HardwareID -contains $HwId -or $_.FriendlyName -match 'Virtual Display Driver|MttVDD' } }
+if ($Status) { $d = Get-Vdd; if ($d) { $d | Format-Table -AutoSize FriendlyName, Status, InstanceId | Out-Host; exit 0 } else { Write-Host 'VDD not installed'; exit 3 } }
+if ($Enable -or $Disable) {
+  $d = Get-Vdd; if (-not $d) { Write-Host 'VDD not installed'; exit 3 }
+  foreach ($x in $d) { if ($Enable) { pnputil /enable-device "$($x.InstanceId)" | Out-Host } else { pnputil /disable-device "$($x.InstanceId)" | Out-Host } }
   exit 0
 }
+if ($Uninstall) {
+  Get-Vdd | ForEach-Object { Write-Host "remove $($_.InstanceId)"; pnputil /remove-device "$($_.InstanceId)" | Out-Host }
+  pnputil /enum-drivers | Select-String -Context 1,0 'MttVDD.inf' | ForEach-Object { if ($_.Context.PreContext[0] -match '(oem\d+\.inf)') { pnputil /delete-driver $Matches[1] /uninstall /force | Out-Host } }
+  exit 0
+}
+if (Get-Vdd) { Write-Host 'VDD already installed'; Get-Vdd | Format-Table -AutoSize FriendlyName, Status, InstanceId | Out-Host; exit 0 }
 $work = Join-Path $env:TEMP 'nightdisplay-vdd'
 New-Item -ItemType Directory -Force $work | Out-Null
-$zip = Join-Path $work 'vdd.zip'
-Invoke-WebRequest -UseBasicParsing $Url -OutFile $zip
-Expand-Archive -Force $zip $work
-$inf = Get-ChildItem $work -Recurse -Filter MttVDD.inf | Select-Object -First 1
+$inf = $null
+if ($Source -and (Test-Path $Source)) { $inf = Get-ChildItem $Source -Recurse -Filter MttVDD.inf | Select-Object -First 1 }
+if ($inf) { Write-Host "使用内置驱动: $($inf.FullName)" } else {
+  $zip = Join-Path $work 'vdd.zip'
+  Invoke-WebRequest -UseBasicParsing $Url -OutFile $zip
+  Expand-Archive -Force $zip $work
+  $inf = Get-ChildItem $work -Recurse -Filter MttVDD.inf | Select-Object -First 1
+}
+$sig = Get-AuthenticodeSignature (Join-Path $inf.DirectoryName 'mttvdd.cat') -EA SilentlyContinue
+Write-Host "驱动目录签名: $($sig.Status) $($sig.SignerCertificate.Subject)"
 New-Item -ItemType Directory -Force 'C:\VirtualDisplayDriver' | Out-Null
 Copy-Item (Join-Path $inf.DirectoryName 'vdd_settings.xml') 'C:\VirtualDisplayDriver\vdd_settings.xml' -Force
 pnputil /add-driver $inf.FullName /install | Out-Host
