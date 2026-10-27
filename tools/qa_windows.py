@@ -62,11 +62,13 @@ def round_test(source, number):
         p = subprocess.run([str(exe), *args], timeout=timeout)
         assert p.returncode == expected, (args, p.returncode)
         events.append("PASS: " + " ".join(args))
-    before = active_targets()
     try:
         run("--action", "status")
         if number == 1:
             run("--action", "install-vdd", timeout=320)
+            time.sleep(3)
+        # Baseline after installing the VDD: the new virtual monitor is part of the desktop.
+        before = active_targets()
         assert any(W.is_virtual(d) and d["available"] for d in W.describe()), "No available virtual display"
         gui = subprocess.Popen([str(exe), "--action", "gui", "--selftest", "240"])
         from nightdisplay.app import send_ipc
@@ -74,7 +76,8 @@ def round_test(source, number):
         run("--action", "test", "--mode", "auto", "--seconds", "15")
         wait_for(lambda: load().get("last_test_ok"))
         assert load()["last_test_mode"] == "virtual_only", "Default silently fell back instead of testing VDD"
-        assert load()["state"] == "day" and active_targets() == before
+        st = load()["state"]; now = active_targets()
+        assert st == "day" and now == before, ("after test", st, now, before)
         events.append("PASS: real timed test + verified display recovery")
         # A daytime test interval prevents automatic reconciliation racing the test.
         run("--action", "activate", "--start", "20:00", "--end", "10:30")
