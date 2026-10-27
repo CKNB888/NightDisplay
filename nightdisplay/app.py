@@ -294,58 +294,210 @@ def reconcile(overlay_cb=None):
 
 # ---------------- Windows：黑幕、快捷键 ----------------
 
-def make_overlay(root):
+# 系统光标资源号。SetSystemCursor 会吃掉句柄，每个都要单独复制一份空白光标。
+CURSOR_IDS = (32512, 32513, 32514, 32515, 32516, 32640, 32641, 32642, 32643,
+              32644, 32645, 32646, 32648, 32649, 32650)
+_cursor = {"hidden": False}
+
+
+def overlay_geometry(x, y, width, height):
+    """Tk 几何串。原点允许为负，才能盖住摆在主屏左边或上边的副屏。"""
+    if width <= 0 or height <= 0:
+        raise ValueError("黑幕尺寸无效")
+    return "%dx%d%+d%+d" % (width, height, x, y)
+
+
+def overlay_dwm_attributes(build):
+    """按系统版本返回要写给 DwmSetWindowAttribute 的 (属性, 值)。
+
+    2 是 DWMWA_NCRENDERING_POLICY，值 1 为 DWMNCRP_DISABLED。
+    3 是 DWMWA_TRANSITIONS_FORCEDISABLED。这两项从 Vista 起就有。
+    33 是 DWMWA_WINDOW_CORNER_PREFERENCE，值 1 为 DWMWCP_DONOTROUND。
+    34 是 DWMWA_BORDER_COLOR，值 0xFFFFFFFE 为 DWMWA_COLOR_NONE。
+    33 和 34 只在 Windows 11 版本 22000 及以后有效，更早的系统不发送。
+    """
+    attrs = [(2, 1), (3, 1)]
+    if build >= 22000:
+        attrs.extend([(33, 1), (34, 0xFFFFFFFE)])
+    return tuple(attrs)
+
+
+def borderless_style(style):
+    """去掉标题栏、厚边框和重叠窗口样式，保留其余位，再标成弹出窗口。"""
+    return (style & ~0x00CF0000) | 0x80000000
+
+
+def settings_visibility(viewable, night, remembered):
+    """夜间收起设置窗口。只有进入夜间前窗口本来就开着，白天才再显示。
+
+    返回 (withdraw, deiconify, remembered)。托盘自启时窗口本来就是藏的，
+    remembered 保持为假，白天不会被这次黑屏带出来。
+    """
+    if night:
+        if viewable:
+            return True, False, True
+        return False, False, remembered
+    if remembered:
+        return False, True, False
+    return False, False, False
+
+
+def _ctype(fn, argtypes, restype):
+    """给 ctypes 函数补原型。测试里的普通替身没有这些属性，忽略即可。"""
+    target = getattr(fn, "__func__", fn)
+    try:
+        target.argtypes = argtypes
+        target.restype = restype
+    except (AttributeError, TypeError):
+        return
+
+
+def hide_system_cursor(user32):
+    """把本机系统光标换成 1×1 空白。远程采集若自带指针形状，黑幕期间会看到空白指针。
+
+    仅虚拟屏不走这里，远程端的指针保持原样。重复调用是幂等的，不会累加 ShowCursor 计数。
+    """
+    import ctypes
+    handle = ctypes.c_void_p
+    _ctype(user32.GetSystemMetrics, [ctypes.c_int], ctypes.c_int)
+    _ctype(user32.CreateCursor, [handle, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                 ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p], handle)
+    _ctype(user32.CopyIcon, [handle], handle)
+    _ctype(user32.SetSystemCursor, [handle, ctypes.c_uint], ctypes.c_int)
+    _ctype(user32.DestroyCursor, [handle], ctypes.c_int)
+    width = user32.GetSystemMetrics(13) or 32
+    height = user32.GetSystemMetrics(14) or 32
+    row = ((width + 15) // 16) * 2
+    and_mask = (ctypes.c_ubyte * (row * height))(*([0xFF] * (row * height)))
+    xor_mask = (ctypes.c_ubyte * (row * height))(*([0x00] * (row * height)))
+    blank = user32.CreateCursor(None, 0, 0, width, height, and_mask, xor_mask)
+    if not blank:
+        raise RuntimeError("无法创建空白光标")
+    try:
+        for cid in CURSOR_IDS:
+            copy = user32.CopyIcon(blank)
+            if not copy or not user32.SetSystemCursor(copy, cid):
+                raise RuntimeError("无法隐藏系统光标")
+    finally:
+        user32.DestroyCursor(blank)
+
+
+def restore_system_cursor(user32):
+    import ctypes
+    _ctype(user32.SystemParametersInfoW, [ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint], ctypes.c_int)
+    if not user32.SystemParametersInfoW(0x0057, 0, None, 0):  # SPI_SETCURSORS
+        raise RuntimeError("无法恢复系统光标")
+
+
+def apply_cursor(hidden):
+    """黑幕期间反复换成空白光标。已经是显示状态时不再调用恢复，避免每次检查都重置光标。"""
+    if not IS_WIN:
+        return
+    if _cursor["hidden"] == hidden and not hidden:
+        return
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        if hidden:
+            hide_system_cursor(user32)
+        elif _cursor["hidden"]:
+            restore_system_cursor(user32)
+        _cursor["hidden"] = hidden
+    except Exception as e:
+        log("光标显示切换失败：%s" % e)
+
+
+def apply_overlay_chrome(user32, hwnd, build):
+    """去掉标题栏边框。Windows 11 22000 起再去掉圆角和彩色边。失败不影响黑幕本身。"""
+    import ctypes
+    style = user32.GetWindowLongW(hwnd, -16) & 0xFFFFFFFF
+    user32.SetWindowLongW(hwnd, -16, borderless_style(style))
+    try:
+        dwm = ctypes.WinDLL("dwmapi")
+    except OSError:
+        return
+    dwm.DwmSetWindowAttribute.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint]
+    dwm.DwmSetWindowAttribute.restype = ctypes.c_long
+    for attr, value in overlay_dwm_attributes(build):
+        blob = ctypes.c_uint(value)
+        dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(blob), ctypes.sizeof(blob))
+
+
+def make_overlay(root, on_cover=None, on_fail=None):
     """返回 overlay_cb(on)。Windows 用 WDA_EXCLUDEFROMCAPTURE：本地黑，屏幕采集看不到它；鼠标键盘穿透，不拦截输入。"""
     state = {"win": None}
+
+    def fail(window):
+        if window is not None:
+            with contextlib.suppress(Exception):
+                window.destroy()
+        state["win"] = None
+        apply_cursor(False)
+        if on_fail:
+            on_fail()
 
     def cb(on):
         box = {"ok": False}
         def do():
             import tkinter as tk
             if on and state["win"] is None:
-                w = tk.Toplevel(root)
-                w.overrideredirect(True)
-                w.configure(bg="black")
-                x = y = 0; W, H = w.winfo_screenwidth(), w.winfo_screenheight()
-                if IS_WIN:
-                    import ctypes
-                    gm = ctypes.windll.user32.GetSystemMetrics
-                    x, y, W, H = gm(76), gm(77), gm(78), gm(79)
-                w.geometry("%dx%d+0+0" % (W, H))
-                w.attributes("-topmost", True)
-                w.configure(bg="#000000")
-                # 黑幕上不放文字、图标或动画，避免本机看出电脑还开着。
-                w.update_idletasks()
-                if IS_WIN:
-                    import ctypes
-                    from ctypes import wintypes as T
-                    u = ctypes.windll.user32
-                    u.GetParent.argtypes = [T.HWND]
-                    u.GetParent.restype = T.HWND
-                    u.GetWindowLongW.argtypes = [T.HWND, ctypes.c_int]
-                    u.GetWindowLongW.restype = T.LONG
-                    u.SetWindowLongW.argtypes = [T.HWND, ctypes.c_int, T.LONG]
-                    u.SetLayeredWindowAttributes.argtypes = [T.HWND, T.DWORD, ctypes.c_ubyte, T.DWORD]
-                    u.SetWindowDisplayAffinity.argtypes = [T.HWND, T.DWORD]
-                    u.SetWindowPos.argtypes = [T.HWND, T.HWND, ctypes.c_int, ctypes.c_int,
-                                              ctypes.c_int, ctypes.c_int, T.UINT]
-                    hwnd = u.GetParent(w.winfo_id()) or w.winfo_id()
-                    GWL_EXSTYLE = -20
-                    ex = u.GetWindowLongW(hwnd, GWL_EXSTYLE)
-                    u.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | 0x80000 | 0x20 | 0x80 | 0x08000000 | 0x8)  # LAYERED|TRANSPARENT|TOOLWINDOW|NOACTIVATE|TOPMOST
-                    u.SetLayeredWindowAttributes(hwnd, 0, 255, 2)
-                    if not u.SetWindowPos(hwnd, T.HWND(-1), x, y, W, H, 0x10 | 0x40):
-                        w.destroy()
-                        raise RuntimeError("无法覆盖全部显示器")
-                    ok = u.SetWindowDisplayAffinity(hwnd, 0x11)  # WDA_EXCLUDEFROMCAPTURE
-                    log("防窥黑幕已显示（排除采集=%s，输入穿透）" % bool(ok))
-                    if not ok:
-                        w.destroy()
-                        log("排除采集失败，已撤销黑幕")
-                        return
-                state["win"] = w
+                w = None
+                try:
+                    if on_cover:
+                        on_cover()
+                    w = tk.Toplevel(root)
+                    w.overrideredirect(True)
+                    w.configure(bg="#000000")
+                    x = y = 0
+                    width, height = w.winfo_screenwidth(), w.winfo_screenheight()
+                    if IS_WIN:
+                        import ctypes
+                        gm = ctypes.windll.user32.GetSystemMetrics
+                        vx, vy, vw, vh = gm(76), gm(77), gm(78), gm(79)  # 虚拟屏幕原点与尺寸
+                        if vw > 0 and vh > 0:
+                            x, y, width, height = vx, vy, vw, vh
+                    w.geometry(overlay_geometry(x, y, width, height))
+                    w.attributes("-topmost", True)
+                    # 黑幕上不放文字、图标或动画，避免本机看出电脑还开着。
+                    w.update_idletasks()
+                    if IS_WIN:
+                        import ctypes
+                        from ctypes import wintypes as T
+                        u = ctypes.windll.user32
+                        u.GetParent.argtypes = [T.HWND]
+                        u.GetParent.restype = T.HWND
+                        u.GetWindowLongW.argtypes = [T.HWND, ctypes.c_int]
+                        u.GetWindowLongW.restype = T.LONG
+                        # 样式高位含 WS_POPUP，用无符号 32 位，避免 LONG 溢出。
+                        u.SetWindowLongW.argtypes = [T.HWND, ctypes.c_int, ctypes.c_uint]
+                        u.SetLayeredWindowAttributes.argtypes = [T.HWND, T.DWORD, ctypes.c_ubyte, T.DWORD]
+                        u.SetWindowDisplayAffinity.argtypes = [T.HWND, T.DWORD]
+                        u.SetWindowPos.argtypes = [T.HWND, T.HWND, ctypes.c_int, ctypes.c_int,
+                                                  ctypes.c_int, ctypes.c_int, T.UINT]
+                        hwnd = u.GetParent(w.winfo_id()) or w.winfo_id()
+                        apply_overlay_chrome(u, hwnd, B.win_build())
+                        GWL_EXSTYLE = -20
+                        ex = u.GetWindowLongW(hwnd, GWL_EXSTYLE)
+                        # LAYERED|TRANSPARENT|TOOLWINDOW|NOACTIVATE|TOPMOST。穿透才能让远程点击落到真实窗口。
+                        u.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | 0x80000 | 0x20 | 0x80 | 0x08000000 | 0x8)
+                        u.SetLayeredWindowAttributes(hwnd, 0, 255, 2)
+                        # SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW
+                        if not u.SetWindowPos(hwnd, T.HWND(-1), x, y, width, height, 0x10 | 0x20 | 0x40):
+                            raise RuntimeError("无法覆盖全部显示器")
+                        ok = u.SetWindowDisplayAffinity(hwnd, 0x11)  # WDA_EXCLUDEFROMCAPTURE
+                        log("防窥黑幕已显示（排除采集=%s，输入穿透）" % bool(ok))
+                        if not ok:
+                            raise RuntimeError("排除采集失败")
+                    state["win"] = w
+                    apply_cursor(True)
+                except Exception as e:
+                    log("防窥黑幕未能确认显示：%s" % e)
+                    fail(w)
+                    return
             elif not on and state["win"] is not None:
-                state["win"].destroy(); state["win"] = None
+                state["win"].destroy()
+                state["win"] = None
+                apply_cursor(False)
                 log("防窥黑幕已关闭")
             box["ok"] = (state["win"] is not None) if on else True
         if threading.current_thread() is threading.main_thread():
@@ -410,7 +562,45 @@ def run_app(show_window=True, selftest=0):
                 except Exception as e:
                     log("环境准备失败，软件仍可正常打开：%s" % e)
             threading.Thread(target=_prepare_environment, daemon=True).start()
-    overlay = make_overlay(root)
+    appearance = {"restore": False}
+
+    def _viewable():
+        try:
+            return bool(root.winfo_viewable())
+        except tk.TclError:
+            return False
+
+    def conceal_settings():
+        withdraw, _show, remembered = settings_visibility(_viewable(), True, appearance["restore"])
+        appearance["restore"] = remembered
+        if withdraw:
+            with contextlib.suppress(tk.TclError):
+                root.withdraw()
+
+    def reveal_settings():
+        _hide, deiconify, remembered = settings_visibility(_viewable(), False, appearance["restore"])
+        appearance["restore"] = remembered
+        if deiconify:
+            with contextlib.suppress(tk.TclError):
+                root.deiconify()
+
+    def sync_night_window(refresh_cursor=False):
+        if not IS_WIN:
+            return
+        night = load().get("state") == "night"
+        withdraw, deiconify, remembered = settings_visibility(_viewable(), night, appearance["restore"])
+        appearance["restore"] = remembered
+        try:
+            if withdraw:
+                root.withdraw()
+            elif deiconify:
+                root.deiconify()
+        except tk.TclError:
+            pass
+        if refresh_cursor or not night:
+            apply_cursor(night and load().get("night_mode") == "overlay")
+
+    overlay = make_overlay(root, on_cover=conceal_settings, on_fail=reveal_settings)
     pending = queue.Queue()
     closing = threading.Event()
 
@@ -418,41 +608,53 @@ def run_app(show_window=True, selftest=0):
         data = command if isinstance(command, dict) else {"action": command}
         name = data.get("action")
         try:
-            if name in ("day", "emergency", "quit") and is_locked():
-                return "locked"
-            if name in ("night", "test") and load().get("lock", True):
-                reader = chord.Reader(load().get("unlock_chord") or chord.DEFAULT_CHORD)
-                reader.close()
-            if name == "unlock":
-                chord_unlock(overlay)
-            elif name == "test_day":
-                return finish_test(data.get("test_id"), overlay)
-            elif name in ("remote_emergency", "emergency"):
-                emergency(overlay)
-            elif name == "night":
-                forget_unlock_override()
-                B.go_night(data.get("mode") or load()["mode"], overlay)
-                note_manual_night()
-            elif name == "test":
-                start_test(data.get("mode") or load()["mode"], data.get("seconds", 120), overlay)
-            elif name == "day":
-                remember_explicit_day()
-                B.go_day(overlay)
-                update(test_id="", last_test_ok=False, test_aborted=False)
-            elif name == "reconcile":
-                return reconcile(overlay)
-            elif name == "ping":
-                return "ok"
-            elif name == "show":
-                root.deiconify(); root.lift()
-            elif name == "quit":
-                root.after(50, root.destroy)
-            else:
-                raise ValueError("未知操作：%s" % name)
+            try:
+                return _act(name, data)
+            except Exception as e:
+                log("错误(%s): %s" % (name, e))
+                return "error: %s" % e
+        finally:
+            sync_night_window()
+
+    def _act(name, data):
+        if name in ("day", "emergency", "quit") and is_locked():
+            return "locked"
+        if name in ("night", "test") and load().get("lock", True):
+            reader = chord.Reader(load().get("unlock_chord") or chord.DEFAULT_CHORD)
+            reader.close()
+        if name == "unlock":
+            chord_unlock(overlay)
+        elif name == "test_day":
+            return finish_test(data.get("test_id"), overlay)
+        elif name in ("remote_emergency", "emergency"):
+            emergency(overlay)
+        elif name == "night":
+            forget_unlock_override()
+            B.go_night(data.get("mode") or load()["mode"], overlay)
+            note_manual_night()
+        elif name == "test":
+            start_test(data.get("mode") or load()["mode"], data.get("seconds", 120), overlay)
+        elif name == "day":
+            remember_explicit_day()
+            B.go_day(overlay)
+            update(test_id="", last_test_ok=False, test_aborted=False)
+        elif name == "reconcile":
+            return reconcile(overlay)
+        elif name == "ping":
             return "ok"
-        except Exception as e:
-            log("错误(%s): %s" % (name, e))
-            return "error: %s" % e
+        elif name == "show":
+            # 夜间再弹出设置窗口会在本机屏幕上露出界面。用户明确打开过的窗口，白天由 sync 放回来。
+            if IS_WIN and load().get("state") == "night":
+                log("夜间不打开设置窗口")
+                return "ok"
+            appearance["restore"] = False
+            root.deiconify()
+            root.lift()
+        elif name == "quit":
+            root.after(50, root.destroy)
+        else:
+            raise ValueError("未知操作：%s" % name)
+        return "ok"
 
     def dispatch(command):
         if threading.current_thread() is threading.main_thread():
@@ -507,6 +709,9 @@ def run_app(show_window=True, selftest=0):
                     B.ensure_night()
             except Exception as e:
                 log("定时检查出错: %s" % e)
+            finally:
+                # 黑幕期间每轮都重新盖住光标。别的程序可能把系统光标改回去。
+                sync_night_window(refresh_cursor=True)
             root.after(5000, tick)
         root.after(2000, tick)
         # A destroyed overlay cannot still be treated as active after a restart.
@@ -543,10 +748,11 @@ def run_app(show_window=True, selftest=0):
                 log("退出时中止测试失败：%s" % e)
         try:
             if started and load().get("state") == "night":
-                B.go_day()
+                B.go_day(overlay)
         except Exception as e:
             log("退出时恢复显示失败：%s" % e)
         finally:
+            apply_cursor(False)
             if server.server is not None:
                 server.close()
             with contextlib.suppress(tk.TclError):

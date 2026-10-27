@@ -1,5 +1,6 @@
 """Failure paths that previously reported success or restored the wrong session."""
 import datetime as dt
+import json
 import os
 import subprocess
 import sys
@@ -538,6 +539,197 @@ def test_transition_frames_cover_full_progress():
     assert frames[-1] == (10, 10, 2)
     assert [step for step, _, _ in frames] == list(range(1, 11))
     assert all(1 <= dots <= 4 for _, _, dots in frames)
+
+
+def test_overlay_geometry_covers_negative_virtual_origin():
+    assert app.overlay_geometry(0, 0, 1920, 1080) == "1920x1080+0+0"
+    assert app.overlay_geometry(-1920, -120, 3840, 1200) == "3840x1200-1920-120"
+    with pytest.raises(ValueError):
+        app.overlay_geometry(0, 0, 0, 1080)
+
+
+def test_borderless_style_strips_caption_and_keeps_popup():
+    assert app.borderless_style(0x00CF0000) == 0x80000000
+    assert app.borderless_style(0x10000000 | 0x00C00000) & 0x10000000
+    assert app.borderless_style(0x10000000 | 0x00C00000) & 0x00CF0000 == 0
+    assert app.overlay_dwm_attributes(19041) == ((2, 1), (3, 1))
+    assert app.overlay_dwm_attributes(22000) == ((2, 1), (3, 1), (33, 1), (34, 0xFFFFFFFE))
+
+
+def test_settings_window_stays_hidden_for_tray_startup():
+    assert app.settings_visibility(True, True, False) == (True, False, True)
+    assert app.settings_visibility(False, True, True) == (False, False, True)
+    assert app.settings_visibility(False, False, True) == (False, True, False)
+    assert app.settings_visibility(False, False, False) == (False, False, False)
+    assert app.settings_visibility(False, True, False) == (False, False, False)
+
+
+def test_blank_cursor_replaces_every_system_cursor_once():
+    class User32:
+        def __init__(self):
+            self.calls = []
+            self._next = 1
+
+        def GetSystemMetrics(self, index):
+            return 32
+
+        def CreateCursor(self, inst, x, y, w, h, and_mask, xor_mask):
+            self.calls.append(("create", w, h))
+            self._next += 1
+            return self._next
+
+        def CopyIcon(self, handle):
+            self.calls.append(("copy", handle))
+            self._next += 1
+            return self._next
+
+        def SetSystemCursor(self, handle, cursor_id):
+            self.calls.append(("set", handle, cursor_id))
+            return True
+
+        def DestroyCursor(self, handle):
+            self.calls.append(("destroy", handle))
+            return True
+
+    user32 = User32()
+    app.hide_system_cursor(user32)
+    assert [item[2] for item in user32.calls if item[0] == "set"] == list(app.CURSOR_IDS)
+    assert sum(item[0] == "copy" for item in user32.calls) == len(app.CURSOR_IDS)
+    assert user32.calls[-1][0] == "destroy"
+
+    class Restore:
+        def SystemParametersInfoW(self, action, param, value, flags):
+            self.got = (action, param, value, flags)
+            return True
+
+    restore = Restore()
+    app.restore_system_cursor(restore)
+    assert restore.got == (0x0057, 0, None, 0)
+
+
+def test_physical_restore_is_saved_only_after_it_is_confirmed(monkeypatch):
+    flags = []
+    monkeypatch.setattr(W, "set_config", lambda paths, modes, fl: flags.append(fl) or 0)
+    monkeypatch.setattr(W, "set_topology", lambda flag: pytest.fail("topology"))
+    monkeypatch.setattr(W, "parse_path", lambda raw: {"tgt_adapter": (1, 0), "tgt_id": 0, "active": True, "tech": 5})
+    monkeypatch.setattr(W, "describe", lambda *args, **kwargs: [{
+        "tgt_adapter": (1, 0), "tgt_id": 0, "tech": 5, "name": "Internal", "active": True,
+    }])
+    level = W.restore({"paths": [bytes(72).hex()], "modes": [bytes(64).hex()]}, lambda _s: None)
+    assert level == 1 and len(flags) == 2
+    assert flags[0] & W.SDC_APPLY and not flags[0] & W.SDC_SAVE_TO_DATABASE
+    assert flags[1] & W.SDC_SAVE_TO_DATABASE
+
+
+def test_virtual_result_is_never_saved_without_display_metadata(monkeypatch):
+    flags = []
+    monkeypatch.setattr(W, "set_config", lambda paths, modes, fl: flags.append(fl) or 0)
+    monkeypatch.setattr(W, "set_topology", lambda flag: 0)
+    monkeypatch.setattr(W, "parse_path", lambda raw: {"tgt_adapter": (1, 0), "tgt_id": 0, "active": True, "tech": 17})
+    monkeypatch.setattr(W, "describe", lambda *args, **kwargs: [{
+        "tgt_adapter": (1, 0), "tgt_id": 0, "tech": 17, "name": "VDD", "active": True,
+    }])
+    with pytest.raises(W.DisplayError):
+        W.restore({"paths": [bytes(72).hex()], "modes": [bytes(64).hex()]}, lambda _s: None)
+    assert flags
+    assert all(not fl & W.SDC_SAVE_TO_DATABASE for fl in flags)
+
+
+def test_virtual_only_lets_the_panel_power_down(monkeypatch):
+    monkeypatch.setattr(B, "IS_WIN", True)
+    monkeypatch.setattr(B.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(B, "_backup_display", lambda: None)
+    monkeypatch.setattr(B, "keep_awake", lambda *args, **kwargs: True)
+    seen = {}
+    monkeypatch.setattr(W, "plan_virtual_only", lambda match: None)
+    monkeypatch.setattr(W, "apply_virtual_only", lambda *args, **kwargs: None)
+    monkeypatch.setattr(W, "verify_virtual_only", lambda match: True)
+
+    def enter(keep_display_on=True):
+        seen["keep"] = keep_display_on
+
+    monkeypatch.setattr("nightdisplay.win_power.enter", enter)
+    core.update(state="day", mode="virtual_only", keep_awake=False)
+    assert B._go_night("virtual_only") == "virtual_only"
+    assert seen["keep"] is False
+    assert B.windows_execution_flags("virtual_only") == 0x80000001
+    assert B.windows_execution_flags("screen_off") == 0x80000001
+    assert B.windows_execution_flags("overlay") == 0x80000003
+
+
+def test_ensure_night_virtual_does_not_force_the_panel_on(monkeypatch):
+    monkeypatch.setattr(B, "IS_WIN", True)
+    core.update(state="night", night_mode="virtual_only", keep_awake=False, virtual_match="")
+    monkeypatch.setattr(W, "verify_virtual_only", lambda match: True)
+    seen = {}
+
+    def enter(keep_display_on=True):
+        seen["keep"] = keep_display_on
+
+    monkeypatch.setattr("nightdisplay.win_power.enter", enter)
+    B.ensure_night()
+    assert seen["keep"] is False
+
+
+def test_screen_off_is_reissued_and_failure_stays_in_night(monkeypatch):
+    monkeypatch.setattr(B, "IS_WIN", True)
+    core.update(state="night", night_mode="screen_off", keep_awake=False)
+    calls = []
+    monkeypatch.setattr(B, "screen_off", lambda quiet=False: calls.append(quiet))
+    B.ensure_night()
+    assert calls == [True]
+
+    def boom(quiet=False):
+        raise RuntimeError("rejected")
+
+    monkeypatch.setattr(B, "screen_off", boom)
+    B.ensure_night()
+    assert core.load()["state"] == "night"
+
+
+def test_windows_tasks_catch_up_after_sleep(monkeypatch):
+    monkeypatch.setattr(B, "IS_WIN", True)
+    monkeypatch.setattr(B, "_win_delete_tasks", lambda: 0)
+    monkeypatch.setattr(B, "set_autostart", lambda on: None)
+    calls = []
+
+    def fake_run(cmd, check=True, timeout=60, env=None):
+        calls.append((cmd, env))
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(B, "run", fake_run)
+    core.update(start="20:00", end="10:30", enabled=False)
+    B.schedule_install(core.load())
+    assert calls[0][0][0] == "powershell"
+    script = calls[0][0][-1]
+    assert "StartWhenAvailable" in script
+    assert "LogonType Interactive" in script
+    assert "WindowsIdentity" in script
+    assert "InvariantCulture" in script
+    payload = json.loads(calls[0][1]["NIGHTDISPLAY_TASKS"])
+    assert [task["name"] for task in payload["tasks"]] == ["NightDisplay_Night", "NightDisplay_Day"]
+    assert [task["time"] for task in payload["tasks"]] == ["10:30", "20:00"]
+    assert not any(call[0][0] == "schtasks" for call in calls)
+
+
+def test_windows_tasks_fall_back_when_powershell_fails(monkeypatch):
+    monkeypatch.setattr(B, "IS_WIN", True)
+    monkeypatch.setattr(B, "_win_delete_tasks", lambda: 0)
+    monkeypatch.setattr(B, "set_autostart", lambda on: None)
+    calls = []
+
+    def fake_run(cmd, check=True, timeout=60, env=None):
+        if cmd[0] == "powershell":
+            raise RuntimeError("no scheduled task module")
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(B, "run", fake_run)
+    core.update(start="20:00", end="10:30", extra_ranges=[["12:00", "13:00"]], enabled=False)
+    B.schedule_install(core.load())
+    names = [cmd[cmd.index("/TN") + 1] for cmd in calls]
+    assert names == ["NightDisplay_Night", "NightDisplay_Day", "NightDisplay_T02", "NightDisplay_T03"]
+    assert all("/IT" in cmd for cmd in calls)
 
 
 def test_environment_report_does_not_install_or_raise():

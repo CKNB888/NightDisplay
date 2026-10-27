@@ -149,12 +149,15 @@ def native_launch():
             yield
 
 
-def run(cmd, check=True, timeout=60):
+def run(cmd, check=True, timeout=60, env=None):
     kw = {"creationflags": 0x08000000} if IS_WIN else {}
+    merged = native_env()
+    if env:
+        merged.update(env)
     try:
         with native_launch():
             p = subprocess.run(cmd, capture_output=True, text=True, encoding=_sys_encoding(), errors="replace",
-                               timeout=timeout, env=native_env(), **kw)
+                               timeout=timeout, env=merged, **kw)
     except FileNotFoundError as e:
         raise RuntimeError("找不到命令 %s" % cmd[0]) from e
     except subprocess.TimeoutExpired as e:
@@ -219,6 +222,20 @@ def spawn_detached(cmd):
     return subprocess.Popen(cmd, **kw)
 
 
+def windows_execution_flags(night_mode):
+    """阻止系统睡眠。只有防窥黑幕额外禁止显示器休眠。
+
+    winbase.h：ES_SYSTEM_REQUIRED 是 0x1，ES_DISPLAY_REQUIRED 是 0x2，
+    ES_CONTINUOUS 是 0x80000000。0x2 会重置显示器空闲计时器，把已经关掉的
+    屏幕重新点亮，所以仅虚拟屏和基础关屏只用 0x80000001。防窥黑幕画在真实
+    屏上，显示器休眠后窗口会消失，才加 0x2。退出时用单独的 0x80000000 清掉。
+    夜间必须一直醒着，远程才能操作；这个请求只活在唤醒进程里，进程结束就释放。
+    """
+    if night_mode == "overlay":
+        return 0x80000003
+    return 0x80000001
+
+
 def awake_loop(seconds, token=""):
     """Own any child by its live Popen handle; exit when the token is revoked."""
     child = None
@@ -227,7 +244,7 @@ def awake_loop(seconds, token=""):
     try:
         if IS_WIN:
             import ctypes
-            flags = 0x80000003 if load().get("night_mode") in ("virtual_only", "overlay") else 0x80000001
+            flags = windows_execution_flags(load().get("night_mode"))
             if not ctypes.windll.kernel32.SetThreadExecutionState(flags):
                 raise RuntimeError("Windows 拒绝阻止系统睡眠")
         elif IS_MAC:
@@ -276,11 +293,19 @@ def ensure_night():
         match = c.get("virtual_match", "")
         if IS_WIN:
             from . import win_power
-            win_power.enter()
+            # 修复夜间拓扑时不要把显示器空闲又禁掉，否则一体机背光会一直亮。
+            win_power.enter(keep_display_on=False)
         if not display.verify_virtual_only(match):
             display.apply_virtual_only(match, log)
             if not display.verify_virtual_only(match):
                 raise RuntimeError("夜间输出已改变，无法重新确认只有虚拟屏")
+    elif IS_WIN and c.get("night_mode") == "screen_off":
+        # 基础关屏只发一次的话，键鼠把屏幕点亮后会一直亮到下一个时间边界。
+        # 失败只记日志：这里抛出去会让定时检查关掉每日计划。
+        try:
+            screen_off(quiet=True)
+        except Exception as e:
+            log("再次关屏未成功，保持夜间：%s" % e)
     if c.get("keep_awake"):
         try:
             import json
@@ -334,7 +359,7 @@ def restore_display(log_=None):
     return 0
 
 
-def screen_off():
+def screen_off(quiet=False):
     if IS_WIN:
         import ctypes
         from ctypes import wintypes
@@ -347,7 +372,8 @@ def screen_off():
     else:
         from . import linux_display as L
         L.screen_off()
-    log("已关闭显示器（基础关屏）")
+    if not quiet:
+        log("已关闭显示器（基础关屏）")
 
 
 def screen_on():
@@ -405,7 +431,8 @@ def _go_night(mode, overlay_cb=None, dry_run=False):
                 if not dry_run:
                     W.plan_virtual_only(cfg.get("virtual_match", ""))
                     from . import win_power
-                    win_power.enter()
+                    # 实体屏已经离开桌面。系统保持醒着，显示器空闲仍允许，背光才能灭。
+                    win_power.enter(keep_display_on=False)
                 W.apply_virtual_only(cfg.get("virtual_match", ""), log, dry_run=dry_run)
                 if not dry_run:
                     time.sleep(3)
@@ -536,13 +563,55 @@ def launchd_plist(cfg):
             "StandardErrorPath": os.path.join(home(), "launchd.log")}
 
 
+# schtasks /Create 写不出 StartWhenAvailable。任务名仍按边界顺序分配，
+# 和已有的 NightDisplay_Night/Day/Txx 查询、删除保持一致，不按“夜间/白天”改名。
+# -At 的类型是 DateTime，用 24 小时制解析，避免系统区域把 20:00 当成上午。
+# LogonType Interactive 等于 schtasks /IT：只在当前已登录的交互会话里跑，不保存密码。
+# 账户用 DOMAIN\user，不用单独的用户名。
+_WIN_TASK_SCRIPT = r"""
+$ErrorActionPreference = "Stop"
+$payload = $env:NIGHTDISPLAY_TASKS | ConvertFrom-Json
+$action = New-ScheduledTaskAction -Execute $payload.exe -Argument $payload.args
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew
+$account = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited
+foreach ($task in $payload.tasks) {
+  $when = [datetime]::ParseExact($task.time, "HH:mm", [System.Globalization.CultureInfo]::InvariantCulture)
+  $trigger = New-ScheduledTaskTrigger -Daily -At $when
+  Register-ScheduledTask -TaskName $task.name -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+}
+"""
+
+
+def windows_task_plan(cfg):
+    """当前用户交互式会话里、每个时间边界一个任务。醒来后补跑错过的边界。"""
+    cmd = self_cmd() + ["--action", "reconcile"]
+    tasks = []
+    for i, stamp in enumerate(boundaries(cfg)):
+        name = TASKS[i] if i < 2 else "NightDisplay_T%02d" % i
+        tasks.append({"name": name, "time": stamp})
+    return {"exe": cmd[0], "args": subprocess.list2cmdline(cmd[1:]), "tasks": tasks}
+
+
+def _win_register_tasks(plan):
+    import json
+    run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", _WIN_TASK_SCRIPT],
+        timeout=60, env={"NIGHTDISPLAY_TASKS": json.dumps(plan, ensure_ascii=True)})
+
+
 def schedule_install(cfg):
     if IS_WIN:
-        tr = subprocess.list2cmdline(self_cmd() + ["--action", "reconcile"])
         _win_delete_tasks()
-        for i, t in enumerate(boundaries(cfg)):
-            name = TASKS[i] if i < 2 else "NightDisplay_T%02d" % i
-            run(["schtasks", "/Create", "/F", "/TN", name, "/SC", "DAILY", "/ST", t, "/TR", tr, "/IT"])
+        plan = windows_task_plan(cfg)
+        try:
+            _win_register_tasks(plan)
+        except Exception as e:
+            # 计划任务模块不可用时仍要有每日任务，只是睡眠期间错过的点要等下一次到点。
+            log("补跑计划注册失败，改用基础计划任务：%s" % e)
+            tr = subprocess.list2cmdline(self_cmd() + ["--action", "reconcile"])
+            for task in plan["tasks"]:
+                run(["schtasks", "/Create", "/F", "/TN", task["name"], "/SC", "DAILY",
+                     "/ST", task["time"], "/TR", tr, "/IT"])
         set_autostart(cfg.get("autostart", True))
     elif IS_MAC:
         import plistlib

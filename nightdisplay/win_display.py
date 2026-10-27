@@ -173,7 +173,12 @@ def backup_active():
 
 
 def restore(backup, log=print):
-    """分级回滚：1 原样还原备份 → 2 仅电脑屏幕 → 3 扩展 → 4 克隆。返回使用的级别。"""
+    """分级回滚。返回使用的级别。
+
+    完整备份先临时应用，确认活动输出里已经有实体屏，才带 SDC_SAVE_TO_DATABASE
+    再写一次。备份没有显示器名单、或这一级结果仍全是虚拟屏时，不能把黑屏布局
+    存成开机后的系统显示数据库。
+    """
     tries = []
     paths = []
     saved = (backup or {}).get("displays") or []
@@ -186,40 +191,46 @@ def restore(backup, log=print):
             modes = [bytes.fromhex(x) for x in backup["modes"]]
             if any(len(p) != PATH_SIZE for p in paths) or any(len(m) != MODE_SIZE for m in modes):
                 raise ValueError("结构长度错误")
-            fl = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_SAVE_TO_DATABASE | SDC_ALLOW_CHANGES
-            tries.append(("还原完整备份", lambda: set_config(paths, modes, SDC_APPLY | fl)))
+            # 第一次不写数据库。persist=True 的级别要等下面的实体屏检查通过后再写。
+            fl = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES
+            tries.append(("还原完整备份", lambda: set_config(paths, modes, SDC_APPLY | fl), True))
             tries.append(("还原备份(仅拓扑)", lambda: set_config(
-                [build_path(p) for p in paths], [], SDC_APPLY | SDC_TOPOLOGY_SUPPLIED | SDC_ALLOW_PATH_ORDER_CHANGES)))
+                [build_path(p) for p in paths], [],
+                SDC_APPLY | SDC_TOPOLOGY_SUPPLIED | SDC_ALLOW_PATH_ORDER_CHANGES), False))
         except (ValueError, TypeError, KeyError) as e:
             log("备份不可用，尝试系统恢复：%s" % e)
             paths = []
-    tries += [("仅电脑屏幕 SDC_TOPOLOGY_INTERNAL", lambda: set_topology(SDC_TOPOLOGY_INTERNAL)),
-              ("扩展 SDC_TOPOLOGY_EXTEND", lambda: set_topology(SDC_TOPOLOGY_EXTEND)),
-              ("复制 SDC_TOPOLOGY_CLONE", lambda: set_topology(SDC_TOPOLOGY_CLONE))]
-    for i, (name, fn) in enumerate(tries, 1):
+    tries += [("仅电脑屏幕 SDC_TOPOLOGY_INTERNAL", lambda: set_topology(SDC_TOPOLOGY_INTERNAL), False),
+              ("扩展 SDC_TOPOLOGY_EXTEND", lambda: set_topology(SDC_TOPOLOGY_EXTEND), False),
+              ("复制 SDC_TOPOLOGY_CLONE", lambda: set_topology(SDC_TOPOLOGY_CLONE), False)]
+    for i, (name, fn, persist) in enumerate(tries, 1):
         try:
             r = fn()
         except (DisplayError, OSError) as e:
             log("恢复第%d级失败：%s" % (i, e))
             continue
         log("恢复第%d级 %s：%s" % (i, name, _err(r)))
-        if r == 0:
-            # A successful API return is insufficient if only the virtual
-            # monitor remains active. Verify the expected targets as well.
-            active = describe(QDC_ONLY_ACTIVE_PATHS)
-            if not active:
-                log("恢复后没有活动显示器，继续下一级")
+        if r != 0:
+            continue
+        active = describe(QDC_ONLY_ACTIVE_PATHS)
+        if not active:
+            log("恢复后没有活动显示器，继续下一级")
+            continue
+        if paths and i <= 2:
+            expected = {(parse_path(p)["tgt_adapter"], parse_path(p)["tgt_id"]) for p in paths}
+            actual = {(p["tgt_adapter"], p["tgt_id"]) for p in active}
+            if expected != actual:
+                log("恢复后目标显示器不匹配，继续下一级")
                 continue
-            if paths and i <= 2:
-                expected = {(parse_path(p)["tgt_adapter"], parse_path(p)["tgt_id"]) for p in paths}
-                actual = {(p["tgt_adapter"], p["tgt_id"]) for p in active}
-                if expected != actual:
-                    log("恢复后目标显示器不匹配，继续下一级")
-                    continue
-            if not any(not is_virtual(p) for p in active):
-                log("恢复后仍只有虚拟屏，继续下一级")
-                continue
-            return i
+        if not any(not is_virtual(p) for p in active):
+            log("恢复后仍只有虚拟屏，继续下一级")
+            continue
+        if persist:
+            sr = set_config(paths, modes, SDC_APPLY | fl | SDC_SAVE_TO_DATABASE)
+            log("确认实体屏后写入系统显示数据库：%s" % _err(sr))
+            if sr != 0:
+                log("显示已恢复，但未能写入系统数据库，重启后可能回到旧布局")
+        return i
     raise DisplayError("所有恢复级别均失败，请按 Win+P 或进入安全模式")
 
 
