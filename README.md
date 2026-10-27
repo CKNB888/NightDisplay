@@ -1,168 +1,185 @@
-# NightDisplay 夜间黑屏 · 远程照常可用
+# NightDisplay
 
-> 每天到点让电脑**本地屏幕变黑**，电脑保持开机，**UU 远程 / ToDesk / RustDesk 等远程软件照常连接操作**；到点自动恢复。
-> 适合一体机、办公室电脑、家里常开的主机：晚上不亮屏、不被旁人看到，远程随时能用。
+NightDisplay 在指定时段关闭本地显示输出，同时保持电脑运行，方便你继续通过 UU 远程、ToDesk 等软件连接。默认时间为每天 20:00 到次日 10:30，支持多个时间段和跨午夜计划，按电脑本地时区执行。
 
-作者：**传康Kk**（GitHub [@CKNB888](https://github.com/CKNB888)） ｜ **赞助 / 联系：传康Kk，1837620622**
+作者：传康Kk。赞助及联系：1837620622。
 
-[下载最新版本（Releases）](https://github.com/CKNB888/NightDisplay/releases/latest)
+[下载正式版本](https://github.com/CKNB888/NightDisplay/releases/latest) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
 
-## 界面预览
+## 日常使用
 
-| 首页（浅色） | 首页（深色） |
-|---|---|
-| ![首页](docs/screenshots/home.png) | ![深色](docs/screenshots/dark.png) |
-| **显示模式** | **关于** |
-| ![显示模式](docs/screenshots/mode.png) | ![关于](docs/screenshots/about.png) |
+Windows 默认优先使用常驻虚拟屏。进入夜间时，桌面只输出到虚拟屏，实体屏从桌面布局中移除；恢复时还原原来的显示配置。普通鼠标和键盘输入不会重新启用被移除的实体输出。
 
-> 界面布局参考主流远程控制客户端（左侧导航、蓝色主卡片、圆角卡片、开关），图标与品牌均为 NightDisplay 自有设计，未使用任何第三方商标或素材。
+如果虚拟屏无法使用，程序先回滚，再按系统能力尝试防窥黑幕和基础关屏。界面和日志会记录实际使用的方式。基础关屏兼容性较好，但输入会唤醒屏幕；它无法提供虚拟屏相同的效果。
 
----
+NightDisplay 只负责显示、电源和时间计划。远程连接仍由 UU、ToDesk 等软件提供，不绑定设备，也不限制客户端数量；远程软件自身的会话规则继续生效。
 
-## 功能一览
+## 界面
 
-| 功能 | Windows | macOS | Linux |
-|---|:-:|:-:|:-:|
-| 每日自定义时间段（默认 20:00 → 10:30，可多段、可跨午夜） | ✅ 计划任务 | ✅ launchd | ✅ systemd 用户定时器 |
-| 只保留虚拟屏（最接近 UU“关闭显示屏”） | ✅ 需虚拟显示驱动 | ⚠️ 需 BetterDisplay 等 | ✅ X11 + 虚拟输出 |
-| 防截屏黑幕（本地黑、远程画面不黑） | ✅ Win10 2004+ | — | — |
-| 基础关屏 | ✅ | ✅ pmset | ✅ xset dpms（X11） |
-| 夜间阻止系统睡眠 | ✅ SetThreadExecutionState | ✅ caffeinate | ✅ systemd-inhibit |
-| 切换前完整备份显示配置，失败分级回滚 | ✅ | — | ✅ |
-| 应急恢复（托盘 / 快捷键 Ctrl+Alt+Shift+R / 命令行） | ✅ | ✅ | ✅ |
-| 图形界面（侧边导航、状态卡、浅/深色） | ✅ | ✅ | ✅ |
+![NightDisplay 磨砂卡片界面](docs/screenshots/home.png)
 
-## 显示模式说明
-
-| 模式 | 效果 | 远程看到的画面 | 本地动鼠标 |
-|---|---|---|---|
-| **自动（默认）** | 有虚拟屏→只保留虚拟屏；否则 Win10 2004+ 用防窥黑幕；否则基础关屏 | 正常 | 视实际模式 |
-| 只保留虚拟屏 | 实体屏从桌面移除（不输出信号，一体机通常背光也会关） | 正常（远程看到的是虚拟屏） | 不会亮 |
-| 防窥黑幕 | 全屏黑色窗口，已设置“不被截屏/录屏”，键鼠穿透 | 正常 | 不会亮 |
-| 基础关屏 | 系统关显示器 | 正常 | **会亮** |
-
-“只保留虚拟屏”需要一块虚拟显示器：
-- **Windows**：在“显示模式”页点“安装虚拟显示驱动”（会弹出管理员确认），安装开源 [Virtual-Display-Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver)（MIT）。
-- **macOS**：可用 BetterDisplay 创建虚拟屏，再配合系统设置；当前版本默认基础关屏。
-- **Linux**：X11 下需要 `VIRTUAL*` / `DUMMY*` / evdi 虚拟输出；Wayland 不支持改输出，请切换到 X11 会话。
-
-> 与 UU 远程的关系：UU 的“超级屏”会关闭实体屏且与 UU 虚拟屏互斥；UU 虚拟屏断开连接会自动删除。所以 NightDisplay 推荐使用**自己安装的常驻虚拟屏**，而不是依赖 UU 临时虚拟屏。UU 自带的“防窥模式 → 关闭显示屏”（Ctrl+Alt+P 解除）也可与本工具互补使用。
-
-## 设置项
-
-深色模式 · 开机自启（托盘常驻）· 黑屏锁定 · 解锁组合键录制/测试 · 额外时间段 · 检查更新（查询 GitHub 最新 Release）
+主窗口保留时间设置、测试、每日计划、立即黑屏和恢复操作。设置窗口提供额外时间段、解锁组合键、开机自启、更新检查和卸载。磨砂卡片和短暂的窗口动画在本机绘制，不需要浏览器或网页运行时；动画结束后不会持续重绘背景。
 
 ## 安装
 
-| 系统 | 下载 | 安装 |
+| 平台 | 文件 | 使用方法 |
 |---|---|---|
-| Windows 10/11 x64 | `NightDisplay-Windows-x64.zip` | 解压后双击 `NightDisplay.exe`（免安装）。SmartScreen 提示时点“更多信息 → 仍要运行”。 |
-| macOS Apple 芯片 | `NightDisplay-macOS-arm64.zip` | 解压，把 `NightDisplay.app` 拖进“应用程序”，首次右键 → 打开（未签名）。 |
-| macOS Intel | `NightDisplay-macOS-x64.zip` | 同上。 |
-| Linux x64 | `NightDisplay-Linux-x64.tar.gz` | `tar xzf` 后运行 `./NightDisplay`；需要 X11 会话（Wayland 只能用基础功能）。最低 glibc 2.35（Ubuntu 22.04 / Debian 12 及以上）；虚拟屏/关屏需 `sudo apt install x11-xserver-utils`。 |
+| Windows 10/11 x64 | `NightDisplay-Windows-x64-Setup.exe` | 按当前用户安装。虚拟显示驱动需要单独确认管理员权限。 |
+| Windows 免安装 | `NightDisplay-Windows-x64.zip` | 解压到固定目录，运行 `NightDisplay.exe`。开启计划后不要移动程序。 |
+| macOS Apple 芯片 | `NightDisplay-macOS-arm64.dmg` | 打开后拖入 Applications。也提供应用 ZIP。 |
+| macOS Intel | `NightDisplay-macOS-x64.dmg` | 同上。 |
+| Linux x64 | `NightDisplay-Linux-x64.tar.gz` | 解压后运行 `./NightDisplay`，需要 X11。构建基线为 Ubuntu 22.04，glibc 至少 2.35。 |
 
-## 快速开始
+安装包尚未使用商业代码签名或 Apple 公证证书。源码、构建日志和校验值应一并核对，不能把未签名当成已经通过平台认证。
 
-1. 下载对应系统的压缩包（Actions 构建产物 / Release），解压。
-   - Windows：双击 `NightDisplay.exe`
-   - macOS：打开 `NightDisplay.app`（首次需右键→打开）
-   - Linux：`./NightDisplay`（需要 X11）
-2. **定时计划**页设置“进入夜间 / 恢复显示”时间，保存。
-3. **显示模式**页选择模式（推荐“自动”），点“测试（120 秒自动恢复）”。**请先确认远程软件已能连上，并有人在电脑旁。**
-4. 测试成功后回到首页，打开“每日自动计划”开关。（24 小时内没有成功测试过当前模式，不允许开启，防止远程把自己锁在外面。）
+源码运行：
 
-## 黑屏锁定与解锁组合键（v3 新增）
+```bash
+python -m pip install '.[tray]'
+python -m nightdisplay
+```
 
-- 黑屏期间默认**锁定**：托盘“恢复/应急/退出”、主窗口按钮、Ctrl+Alt+Shift+R 在本地全部无效。
-- 本地**唯一**解除方式：**同时按住 C 和 K**（约 0.3 秒）。可在“设置 → 解锁组合键”里点“录制”改成任意 2~3 键组合（如 Ctrl+X、Alt+Shift+9），并可点“测试”验证。
-- 只读取按键状态，**不拦截、不吞掉任何按键**，远程和本地输入照常传给系统。
-- 用组合键解锁后，本时段剩余时间不再自动黑屏；到计划结束时间（如 10:30）也会自动恢复。
-- 隐藏的远程恢复（仅主人知道）：在远程会话里打开命令行运行 `NightDisplay.exe --action emergency`，不受锁定限制。
-- macOS 首次使用会请求“输入监控”权限；Linux 需 X11 会话。
+Linux 另外需要 tkinter、X11 工具和中文字体，例如 Ubuntu：
 
-## 安全设计
+```bash
+sudo apt install python3-tk x11-xserver-utils fonts-noto-cjk
+```
 
-- 不拦截键盘鼠标，不需要关闭杀毒，不注入任何远程软件，不修改 UU / ToDesk 客户端。
-- 每次进入夜间前把当前显示配置**完整备份**（保留最近 10 份 + 最近一次正常配置）。
-- 恢复按顺序尝试：完整备份 → 仅拓扑 → 仅内屏 → 扩展 → 复制，任何一级成功即停止。
-- 切换后立即校验，失败**自动回滚**。
-- 应急恢复：未锁定时可用托盘菜单 / `Ctrl+Alt+Shift+R`；任何时候都可在远程用命令行 `NightDisplay --action emergency`（恢复显示并暂停计划）。
-- 一键卸载：设置页“卸载计划与自启”或 `--action uninstall`。
+## 第一次配置
+
+1. 先确认远程软件已能正常连接这台电脑。
+2. Windows 点“安装内置驱动”。驱动随 Windows 包提供；源码运行前先执行 `python tools/download_vdd.py`。安装结果以进程退出码和设备状态为准，不以弹出 UAC 为成功依据。
+3. 设置主时间段，需要其他时段时打开“设置”，填入例如 `12:00-13:30, 02:00-04:00`。
+4. 点“测试 15 秒”。程序会先启动独立恢复进程，再切换显示；测试与恢复属于同一会话，旧的恢复进程不会干扰后来的操作。
+5. 测试恢复后，检查实体屏是否正常、远程是否能看到桌面，再启用每日计划。超过 24 小时的测试结果不能直接用于重新启用计划。
+
+本地默认同时按住 C 和 K 约 0.3 秒解除。可以在设置里录制或填写 2～3 个键，例如 `Ctrl + K`。组合键解锁后，本次夜间剩余时间不再自动黑屏。
+
+启用黑屏锁定时，程序内的本地恢复、应急快捷键和退出操作都不会解除黑屏。远程恢复可运行：
+
+```text
+NightDisplay.exe --action emergency
+```
+
+Windows 压缩包也提供 `Recover.cmd`。应急恢复会恢复显示并暂停计划。这里的锁定是程序的操作限制，不是操作系统的权限隔离；系统显示设置和恢复命令仍可改变屏幕状态。
+
+## 默认设备和电源配置
+
+新安装的 Windows 虚拟屏采用一块 1920×1080、60 Hz 的显示器配置，关闭自定义 EDID 和额外 HDR 选项。已有驱动的用户配置不会被直接覆盖。
+
+内置驱动固定使用 VirtualDrivers 的 `25.7.23` 版本。构建时校验下载 ZIP 的 SHA-256，安装前再次核对 INF、DLL、CAT 的固定校验值和目录签名。安装期间只临时信任已经通过固定文件校验和有效签名检查的驱动签名者，结束时移除本次新增的发布者条目。详细来源见 [NOTICE.md](NOTICE.md)。
+
+Windows 夜间使用临时电源计划，关闭该计划下的自动睡眠、自动休眠和合盖睡眠；虚拟屏和黑幕方式还保持显示渲染唤醒。原电源计划保存在切换记录中，恢复后重新启用并删除临时计划，不会全局关闭 Windows 的休眠功能。如果你在夜间主动选择了另一份电源计划，恢复时保留你的选择。
+
+常驻进程定时检查显示输出和唤醒进程。虚拟输出发生改变时尝试修复，唤醒进程失效时重新启动；无法确认成功时报告错误并尝试恢复。断电、关机、低电量强制保护及系统或组织策略无法由应用保证。
+
+## 各平台能力
+
+| 能力 | Windows | macOS | Linux |
+|---|---|---|---|
+| 每日多个时间段 | 计划任务 + 常驻检查 | LaunchAgent + 常驻检查 | systemd 用户定时器 + 常驻检查 |
+| 常驻虚拟屏 | 包含安装器，首次需要管理员权限 | 暂无内置虚拟显示驱动 | 使用已连接的 X11 虚拟输出 |
+| 防窥黑幕 | Windows 10 2004 及以上 | 未实现 | 未实现 |
+| 基础关屏 | 支持，输入会唤醒 | `pmset`，输入会唤醒 | X11 DPMS，输入会唤醒 |
+| 防睡眠 | 临时电源计划 + Windows 唤醒请求 | `caffeinate` | `systemd-inhibit`，需要 logind |
+| 显示备份与还原 | 支持，带多级恢复与目标校验 | 基础关屏不修改显示布局 | 支持 xrandr 备份与还原 |
+| 后台入口 | 系统托盘 | 菜单栏，需 macOS 真机复核 | 取决于桌面托盘支持 |
+| 本地组合键 | 支持 | 需要输入监控权限 | 需要 X11 |
+
+macOS 当前自动降级为基础关屏，不能承诺本地动鼠标也不亮。Linux Wayland 不提供通用的真实输出控制，程序会明确报错，避免误把 XWayland 虚拟布局当成实体屏控制。
+
+Windows 防窥黑幕依赖系统的 `WDA_EXCLUDEFROMCAPTURE`。设置成功只能说明 Windows 接受了请求，不能证明每一种远程采集方式都兼容。使用 UU、ToDesk 的实际画面仍需分别验证。
+
+## 备份与恢复
+
+进入虚拟屏模式前，程序保存当前显示路径和模式。最近十份备份会轮转，最近一次正常配置另存一份。配置文件、显示备份和电源记录采用完整文件替换；多进程修改配置时加锁，避免后台进程覆盖前台设置。
+
+恢复优先还原完整显示配置，再尝试保存的拓扑、仅内屏、扩展和复制。每一级除了检查 API 返回码，还检查活动显示器；恢复失败不会把状态写成“白天”或“测试成功”。损坏的显示备份不会阻止尝试系统恢复。
+
+IPC 按数据目录隔离，使用随机端口和会话凭据；没有回复的夜间命令不会被直接重复执行。后台进程不再读取磁盘里的 PID 后按名称杀进程，防止误杀其他 Python 或系统进程。
+
+## 更新和卸载
+
+启动后在后台查询 GitHub 最新正式 Release，也可以在设置里手动检查。查询失败写入日志，不阻塞主窗口；发现更新后由你选择是否打开下载页。程序不自动运行下载文件。
+
+卸载前先运行“恢复并暂停”或远程恢复命令。Windows 安装器会在卸载前执行恢复和任务清理，恢复失败时停止卸载。设置中的“卸载计划与自启”会移除计划和自启项；显示备份与日志保留。
 
 ## 命令行
 
+```text
+NightDisplay --action status
+NightDisplay --action selfcheck
+NightDisplay --action night [--mode auto|virtual_only|overlay|screen_off]
+NightDisplay --action day
+NightDisplay --action test --mode auto --seconds 15
+NightDisplay --action activate --start 20:00 --end 10:30
+NightDisplay --action pause
+NightDisplay --action emergency
+NightDisplay --action uninstall
+NightDisplay --action displays
+NightDisplay --action plan-virtual
+NightDisplay --action install-vdd
+NightDisplay --action uninstall-vdd
 ```
-NightDisplay --action status          查看状态
-NightDisplay --action night [--mode M] 立即进入夜间（M: auto/virtual_only/overlay/screen_off）
-NightDisplay --action day             立即恢复
-NightDisplay --action test --mode M --seconds 120   测试并自动恢复
-NightDisplay --action activate --start 20:00 --end 10:30   开启每日计划
-NightDisplay --action pause | emergency | uninstall
-NightDisplay --action selfcheck       查看本机支持的模式
-NightDisplay --action install-vdd | uninstall-vdd   安装/卸载虚拟显示驱动
-NightDisplay --action displays        列出显示器（Windows/Linux）
-NightDisplay --action plan-virtual    预演“只保留虚拟屏”（只校验，不应用）
-NightDisplay --action install-vdd     安装虚拟显示驱动（Windows，管理员）
-```
 
-源码运行：`python -m nightdisplay`（Python 3.9+，需要 tkinter；可选 `pip install pystray pillow` 启用托盘）。
+夜间和测试命令会确保常驻进程存在，以便组合键和黑幕能工作。`plan-virtual` 只生成和校验方案，不改变输出。所有失败命令返回非零退出码；锁定状态下拒绝普通 `day` 命令时返回 2。
 
-## 数据位置
+可用 `--home PATH` 指定数据目录，计划任务、恢复进程和唤醒进程会继承该目录。`--debug` 把完整错误堆栈同时打印到终端。
 
-| 系统 | 目录 |
+## 数据目录
+
+| 平台 | 默认目录 |
 |---|---|
 | Windows | `%LOCALAPPDATA%\NightDisplay` |
 | macOS | `~/Library/Application Support/NightDisplay` |
-| Linux | `~/.local/state/nightdisplay` |
+| Linux | `$XDG_STATE_HOME/nightdisplay`，未设置时为 `~/.local/state/nightdisplay` |
 
-包含 `config.json`、`backups/`（显示配置备份）、`logs/`（保留 30 天）。
+包含 `config.json`、`backups`、`logs` 及运行时会话文件。日志保留最近三十天。报告问题时可以提供版本、`selfcheck` 输出和对应日志，无需提供远程账号或密码。
 
-## 测试
+## 构建和测试
 
+```bash
+python -m pip install pytest pillow pystray build pyinstaller ruff
+python -m pytest -v tests
+python -m ruff check nightdisplay tests tools
+python tools/ci_integration.py
+python -m build --wheel
 ```
-python -m pytest tests            # 时间逻辑、配置、xrandr 解析、systemd/launchd 生成、Windows 结构体与备份还原
-python tools/ci_integration.py    # 真机集成：计划任务注册/删除、防睡眠、显示备份还原、界面自检（Windows 加 --vdd）
-```
 
-GitHub Actions 在 Windows（latest/2022）、macOS（arm64/Intel）、Ubuntu 上自动跑全部测试并打包。
+Windows 集成检查增加 `--vdd`。打包后的 EXE 由 `tools/qa_windows.py` 进行实际测试、组合键解锁、应急恢复、计划注册和卸载检查，不预填成功记录。
 
-**仍需真机验证**：UU 远程连接后的实际画面、一体机背光是否真正熄灭、与 UU“超级屏/防窥模式”同时使用时的表现。CI 云主机没有真实显示器和 UU 客户端，无法覆盖这些。
+GitHub Actions 在 Windows 2022、Windows latest、macOS Apple 芯片、macOS Intel 和 Ubuntu 上运行测试。测试通过后构建 Windows 安装器与免安装包、macOS DMG 与应用 ZIP、Linux 压缩包。正式 Release 必须同时通过测试、构建和 Windows 打包产物 QA，推送 `v*` 标签才会发布。工作流也支持手动运行。
 
-## 常见问题
+云端 VM 和 CI 没有你的实际一体机、UU/ToDesk 会话及真实背光控制。它们能验证操作系统接口、恢复和打包流程，不能代替硬件兼容性测试。没有跑过的机型和平台不标注为“已保证兼容”。
 
-- **远程连上是黑的？** 远程端切换到虚拟屏画面；或按 Ctrl+Alt+Shift+R / 托盘“应急恢复”。
-- **本地动鼠标屏幕亮了？** 你在用“基础关屏”模式，换成“只保留虚拟屏”或“防窥黑幕”。
-- **电脑夜里睡眠了？** 确认设置里“夜间阻止系统睡眠”开启；笔记本合盖仍可能睡眠。
+## 更新记录
 
-## 已知限制
+### 3.0.3
 
-- Windows“只保留虚拟屏”需要安装虚拟显示驱动（需管理员一次）；部分品牌一体机的背光由固件控制，需真机确认能否熄灭。
-- “防窥黑幕”依赖 Win10 2004 及以上；更早系统会自动退回“基础关屏”。
-- macOS 暂不支持托盘常驻：开机自启只会打开主窗口，关闭窗口即退出。
-- macOS 目前只有“基础关屏”（动鼠标/键盘会亮），虚拟屏需要第三方工具（如 BetterDisplay）。
-- Linux Wayland 不允许程序修改输出，只能在 X11 下使用虚拟屏/关屏。
-- 程序未做代码签名，首次运行系统会提示。
-- 与 UU 远程的实际配合（超级屏、防窥模式、虚拟屏断开自动删除）需在你的电脑上实测。
+- 托盘自启只唤醒已有常驻进程，不再重复弹出主窗口；托盘未在限定时间内就绪时回退到主窗口，避免只剩一个不可用的后台进程。
+- 测试中断或提前退出不再记为成功；启用计划时要求实际解析出的模式与测试模式一致，防止自动模式在驱动或显示变化后误用旧测试结果。
+- Windows 10 2004 以下不再显示不可用的防窥黑幕模式；旧系统会直接使用可用的虚拟屏或基础关屏。
+- 配置校验覆盖运行时字段、正则表达式、组合键规范化和错误类型；损坏的电源记录、显示备份不会阻断恢复流程。
+- IPC 严格校验端口，关闭操作可重复执行；退出时中止未完成测试并再次尝试恢复显示。
+- 计划状态能识别额外时间段任务；日志目录不可写时不再影响显示或恢复操作。
+- 增加 Ruff 检查配置和本地 lint 基线，修复未使用导入、异常链、文件句柄和导入顺序等问题。
 
-## 更新日志
+### 3.0.2
 
-### v3.0.1（2026-10-27）
-- 修复：Linux 包改在 Ubuntu 22.04 构建，解决 Ubuntu 24.04 上图形界面因 `GLIBC_2.42` 打不开的问题；最低 glibc 2.35。
-- 修复：`--mode` 必须是本系统支持的模式，非法模式直接报错（退出码非 0），不再“测试通过”、不再启动保持唤醒，也无法启用计划。
-- 修复：Linux 上 `plan-virtual` 真正只预演，不再执行 xrandr、不再生成备份。
-- 修复：`selfcheck` 按 auto 真实解析模式，并给出降级原因（`resolve_reason`）。
-- 改进：缺少 xrandr/xset 提示安装 x11-xserver-utils；无 DISPLAY 时提示“未检测到 X11 会话”；终端只显示中文错误，完整堆栈写入 `logs/traceback.log`，加 `--debug` 才在终端打印。
-- 修复：暂停/卸载在没有注册项时记录“无已注册项”；应急恢复出错时退出码非 0 并标注“部分失败”。
-- 修复：暂停/卸载同时把配置里的开机自启关闭；`status`/`selfcheck` 分别显示自启“配置值”和“实际状态”。
-- 修复：Windows 包内置 VDD 驱动（VirtualDrivers Driver.Only，MIT）于 `vdd/`，离线可装；安装脚本分步记录（下载、pnputil 返回码、创建设备），失败给出手动安装命令，日志在 `%LOCALAPPDATA%\NightDisplay\logs\install_vdd.log`；修复脚本在 Windows PowerShell 5 下的语法/编码错误（UTF-8 BOM + ASCII 输出）。
-- 修复：Windows 删除计划任务时清理本程序创建的全部 `NightDisplay_*` 任务（不限 T23）；外部命令输出按系统代码页解码，避免中文乱码报错。
-- 修复：Mac 压缩包顶层直接是 `NightDisplay.app`（去掉多余的 out/）；设置页与 README 注明 Mac 暂不支持托盘。
+- 按最新 main 重新审计，修复虚拟屏切换中不兼容的 Windows API 参数，夜间配置不再写成系统永久显示布局。
+- 增加恢复目标校验；恢复失败保留待恢复状态。基础关屏和黑幕恢复不再误用以前的虚拟屏备份。
+- 修复配置并发覆盖、固定临时文件冲突、IPC 超时后重复执行和不同数据目录串用常驻进程。
+- 测试增加会话 ID，旧的延迟恢复不会解除新的黑屏；实际使用的降级方式会写入测试记录。
+- 防睡眠改为可撤销的独立进程，检查启动和心跳；增加临时 Windows 电源计划及原计划恢复。
+- 虚拟屏安装增加固定校验值、真实退出码、设备健康检查和默认 1080p/60 Hz 配置。
+- 主界面改为磨砂卡片，保留多时间段、组合键录制、自启、日志和后台更新检查。
+- 修复 wheel 构建遗漏，安装脚本和默认设备配置随 Python 包分发。
+- Windows QA 改为真实测试流程；正式发布依赖打包产物 QA，并增加 Windows 安装器和 macOS DMG。
 
-## 许可与致谢
+### 3.0.1
 
-MIT，见 [LICENSE](LICENSE)。第三方参考与商标说明见 [NOTICE.md](NOTICE.md)。本项目为独立工具，与网易 UU 远程、ToDesk 无隶属关系。
+修正 Linux 构建基线、模式校验、预演命令、外部命令编码及计划清理；Windows 包开始内置 VDD 驱动。该版本仍有恢复状态、配置并发和测试覆盖不足，3.0.2 针对这些路径补充修复和回归检查。
 
-## 作者与赞助
+## 许可
 
-- 作者：传康Kk（GitHub：[CKNB888](https://github.com/CKNB888)）
-- **赞助 / 联系：传康Kk，1837620622**
+MIT，见 [LICENSE](LICENSE)。第三方许可见 [NOTICE.md](NOTICE.md)。NightDisplay 是独立项目，与 UU 远程、ToDesk 没有隶属关系，也不使用它们的标识或素材。

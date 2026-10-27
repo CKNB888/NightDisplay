@@ -1,4 +1,6 @@
-from nightdisplay import linux_display as L, backends as B, core
+from nightdisplay import backends as B
+from nightdisplay import core
+from nightdisplay import linux_display as L
 
 SAMPLE = """Screen 0: minimum 8 x 8, current 3840 x 1080, maximum 32767 x 32767
 eDP-1 connected primary 1920x1080+0+0 (normal left inverted right x axis y axis) 344mm x 193mm

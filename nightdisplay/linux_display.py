@@ -1,6 +1,8 @@
-# -*- coding: utf-8 -*-
 """Linux(X11) 显示：xrandr 备份/还原/仅虚拟输出，xset dpms 关屏。Wayland 下仅提示。"""
-import os, re, shutil, subprocess
+import os
+import re
+import shutil
+import subprocess
 
 VIRTUAL_RE = r"^(VIRTUAL|DUMMY|Virtual|HDMI-A-?V|DVI-I-\d+-\d+)"  # evdi/ xf86-video-dummy / Intel VIRTUAL
 
@@ -16,11 +18,14 @@ def _need(tool):
         raise RuntimeError("未找到 %s，请先安装：sudo apt install x11-xserver-utils（Fedora: xorg-x11-server-utils）" % tool)
     if session_type() == "none":
         raise RuntimeError("未检测到 X11 会话（DISPLAY 为空），请在图形桌面的 X11 会话中运行")
+    if session_type() == "wayland":
+        raise RuntimeError("Wayland 下不能控制真实屏幕，请在 X11 会话中运行")
 
 
 def _run(args):
     _need(args[0])
-    p = subprocess.run(args, capture_output=True, text=True, errors="replace")
+    from .backends import native_env
+    p = subprocess.run(args, capture_output=True, text=True, errors="replace", timeout=30, env=native_env())
     if p.returncode:
         raise RuntimeError("%s 失败: %s" % (" ".join(args), (p.stderr or p.stdout).strip()))
     return p.stdout
@@ -29,7 +34,7 @@ def _run(args):
 def parse_xrandr(text):
     outs, cur = [], None
     for line in text.splitlines():
-        m = re.match(r"^(\S+) (connected|disconnected)( primary)?(?: (\d+)x(\d+)\+(-?\d+)\+(-?\d+))?(?: (left|right|inverted|normal))?", line)
+        m = re.match(r"^(\S+) (connected|disconnected)( primary)?(?: (\d+)x(\d+)([+-]\d+)([+-]\d+))?(?: (left|right|inverted|normal))?", line)
         if m:
             cur = dict(name=m.group(1), connected=m.group(2) == "connected", primary=bool(m.group(3)),
                        active=m.group(4) is not None, mode=None, rate=None,
@@ -41,6 +46,7 @@ def parse_xrandr(text):
             continue
         if cur is not None and line.startswith("   ") and "*" in line:
             parts = line.split()
+            cur["mode"] = parts[0]  # rotated outputs report swapped geometry dimensions
             for r in parts[1:]:
                 if "*" in r:
                     cur["rate"] = r.replace("*", "").replace("+", "")
@@ -105,6 +111,11 @@ def apply_virtual_only(match="", log=print, dry_run=False):
     return name
 
 
+def verify_virtual_only(match=""):
+    active = [o for o in query() if o["active"]]
+    return bool(active) and all(re.search(match or VIRTUAL_RE, o["name"]) for o in active)
+
+
 def screen_off():
     st = session_type()
     if st == "none":
@@ -117,6 +128,7 @@ def screen_off():
 
 
 def screen_on():
-    if session_type() == "x11" and shutil.which("xset"):
-        subprocess.run(["xset", "dpms", "force", "on"], capture_output=True)
-        subprocess.run(["xset", "s", "reset"], capture_output=True)
+    # Xvfb has no DPMS; resetting the saver is still a valid wake operation.
+    if "DPMS is" in _run(["xset", "q"]):
+        _run(["xset", "dpms", "force", "on"])
+    _run(["xset", "s", "reset"])

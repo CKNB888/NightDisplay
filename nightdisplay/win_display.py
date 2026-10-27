@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Windows 显示配置：QueryDisplayConfig 完整备份 / SetDisplayConfig 校验+应用 / 分级回滚。
 
 依据微软公开文档独立实现（未复制 RustDesk 代码）：
@@ -6,7 +5,9 @@ https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-setdisplayconfi
 路径/模式数组按原始字节保存（DISPLAYCONFIG_PATH_INFO=72 字节, DISPLAYCONFIG_MODE_INFO=64 字节），
 还原时原样交回 SetDisplayConfig，避免字段解析误差。
 """
-import ctypes, struct, re
+import ctypes
+import re
+import struct
 from ctypes import wintypes
 
 QDC_ALL_PATHS = 0x1
@@ -77,6 +78,8 @@ def query(flags=QDC_ONLY_ACTIVE_PATHS):
 
 
 def set_config(paths, modes, flags):
+    if any(len(p) != PATH_SIZE for p in paths) or any(len(m) != MODE_SIZE for m in modes):
+        raise DisplayError("显示配置备份的结构长度不正确")
     u = _user32()
     pb = ctypes.create_string_buffer(b"".join(paths), PATH_SIZE * len(paths)) if paths else None
     mb = ctypes.create_string_buffer(b"".join(modes), MODE_SIZE * len(modes)) if modes else None
@@ -171,20 +174,46 @@ def backup_active():
 def restore(backup, log=print):
     """分级回滚：1 原样还原备份 → 2 仅电脑屏幕 → 3 扩展 → 4 克隆。返回使用的级别。"""
     tries = []
+    paths = []
     if backup and backup.get("paths"):
-        paths = [bytes.fromhex(x) for x in backup["paths"]]
-        modes = [bytes.fromhex(x) for x in backup["modes"]]
-        fl = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_SAVE_TO_DATABASE | SDC_ALLOW_CHANGES
-        tries.append(("还原完整备份", lambda: set_config(paths, modes, SDC_APPLY | fl)))
-        tries.append(("还原备份(仅拓扑)", lambda: set_config(
-            [build_path(p) for p in paths], [], SDC_APPLY | SDC_TOPOLOGY_SUPPLIED | SDC_ALLOW_PATH_ORDER_CHANGES)))
+        try:
+            paths = [bytes.fromhex(x) for x in backup["paths"]]
+            modes = [bytes.fromhex(x) for x in backup["modes"]]
+            if any(len(p) != PATH_SIZE for p in paths) or any(len(m) != MODE_SIZE for m in modes):
+                raise ValueError("结构长度错误")
+            fl = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_SAVE_TO_DATABASE | SDC_ALLOW_CHANGES
+            tries.append(("还原完整备份", lambda: set_config(paths, modes, SDC_APPLY | fl)))
+            tries.append(("还原备份(仅拓扑)", lambda: set_config(
+                [build_path(p) for p in paths], [], SDC_APPLY | SDC_TOPOLOGY_SUPPLIED | SDC_ALLOW_PATH_ORDER_CHANGES)))
+        except (ValueError, TypeError, KeyError) as e:
+            log("备份不可用，尝试系统恢复：%s" % e)
+            paths = []
     tries += [("仅电脑屏幕 SDC_TOPOLOGY_INTERNAL", lambda: set_topology(SDC_TOPOLOGY_INTERNAL)),
               ("扩展 SDC_TOPOLOGY_EXTEND", lambda: set_topology(SDC_TOPOLOGY_EXTEND)),
               ("复制 SDC_TOPOLOGY_CLONE", lambda: set_topology(SDC_TOPOLOGY_CLONE))]
     for i, (name, fn) in enumerate(tries, 1):
-        r = fn()
+        try:
+            r = fn()
+        except (DisplayError, OSError) as e:
+            log("恢复第%d级失败：%s" % (i, e))
+            continue
         log("恢复第%d级 %s：%s" % (i, name, _err(r)))
         if r == 0:
+            # A successful API return is insufficient if only the virtual
+            # monitor remains active. Verify the expected targets as well.
+            active = describe(QDC_ONLY_ACTIVE_PATHS)
+            if not active:
+                log("恢复后没有活动显示器，继续下一级")
+                continue
+            if paths and i <= 2:
+                expected = {(parse_path(p)["tgt_adapter"], parse_path(p)["tgt_id"]) for p in paths}
+                actual = {(p["tgt_adapter"], p["tgt_id"]) for p in active}
+                if expected != actual:
+                    log("恢复后目标显示器不匹配，继续下一级")
+                    continue
+            elif not any(not is_virtual(p) for p in active):
+                log("恢复后仍只有虚拟屏，继续下一级")
+                continue
             return i
     raise DisplayError("所有恢复级别均失败，请按 Win+P 或进入安全模式")
 
@@ -194,7 +223,7 @@ def plan_virtual_only(match=""):
     paths, _ = query(QDC_ALL_PATHS)
     infos = [(b, parse_path(b)) for b in paths]
     named = {}
-    for b, p in infos:
+    for _, p in infos:
         k = (p["tgt_adapter"], p["tgt_id"])
         if k not in named:
             fn, dp = target_name(*k)
@@ -203,7 +232,12 @@ def plan_virtual_only(match=""):
     if not cands:
         raise DisplayError("没有找到可用的虚拟显示器（VDD）。请先安装虚拟显示驱动。")
     physical = [k for k, d in named.items() if not is_virtual(d, match)]
-    cands.sort(key=lambda bp: (not bp[1]["active"], bp[1]["src_id"]))
+    def priority(bp):
+        p = bp[1]
+        d = named[(p["tgt_adapter"], p["tgt_id"])]
+        stable = bool(re.search(r"MttVDD|Virtual Display Driver", " ".join(str(v) for v in d.values()), re.I))
+        return (not stable, not p["active"], p["src_id"])
+    cands.sort(key=priority)
     b, p = cands[0]
     return [build_path(b)], named[(p["tgt_adapter"], p["tgt_id"])], len(physical)
 
@@ -212,7 +246,7 @@ def apply_virtual_only(match="", log=print, dry_run=False):
     paths, info, nphys = plan_virtual_only(match)
     r = -1
     for fl in (SDC_TOPOLOGY_SUPPLIED | SDC_ALLOW_PATH_ORDER_CHANGES,
-               SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES | SDC_ALLOW_PATH_ORDER_CHANGES):
+               SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES):
         r = set_config(paths, [], SDC_VALIDATE | fl)
         log("校验“仅虚拟屏”配置（目标：%s，物理屏 %d 块，flags=0x%x）：%s" % (info["name"] or info["device_path"], nphys, fl, _err(r)))
         if r == 0:
@@ -221,7 +255,9 @@ def apply_virtual_only(match="", log=print, dry_run=False):
         raise DisplayError("SetDisplayConfig 校验失败：" + _err(r))
     if dry_run:
         return info
-    r = set_config(paths, [], SDC_APPLY | (SDC_SAVE_TO_DATABASE if fl & SDC_USE_SUPPLIED_DISPLAY_CONFIG else 0) | fl)
+    # Night mode is temporary. Persisting it can leave the physical monitor
+    # disabled after a reboot before NightDisplay starts.
+    r = set_config(paths, [], SDC_APPLY | fl)
     log("应用“仅虚拟屏”：%s" % _err(r))
     if r:
         raise DisplayError("SetDisplayConfig 应用失败：" + _err(r))

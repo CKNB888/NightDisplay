@@ -1,9 +1,15 @@
-import re
-# -*- coding: utf-8 -*-
 """配置、日志、时间计划（与平台无关，可单元测试）。"""
-import datetime as dt, json, os, sys, glob
+import contextlib
+import copy
+import datetime as dt
+import glob
+import json
+import os
+import re
+import sys
 
 from . import APP
+from .storage import file_lock, write_json
 
 IS_WIN = sys.platform.startswith("win")
 IS_MAC = sys.platform == "darwin"
@@ -29,29 +35,34 @@ def home():
 
 def log(msg):
     line = "%s  %s" % (dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg)
-    path = os.path.join(home(), "logs", dt.date.today().strftime("%Y-%m-%d") + ".log")
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    # Logging must never be the reason a display/restore action fails.
+    try:
+        path = os.path.join(home(), "logs", dt.date.today().strftime("%Y-%m-%d") + ".log")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        logs = sorted(glob.glob(os.path.join(home(), "logs", "????-??-??.log")))
+        for old in logs[:-30]:  # 只保留 30 天
+            with contextlib.suppress(OSError):
+                os.remove(old)
+    except OSError:
+        pass
     try:
         if sys.stdout:
             print(line, flush=True)
     except Exception:
         pass
-    logs = sorted(glob.glob(os.path.join(home(), "logs", "*.log")))
-    for old in logs[:-30]:  # 只保留 30 天
-        try:
-            os.remove(old)
-        except OSError:
-            pass
     return line
 
 
 def read_log_tail(n=6000):
-    logs = sorted(glob.glob(os.path.join(home(), "logs", "*.log")))
+    logs = sorted(glob.glob(os.path.join(home(), "logs", "????-??-??.log")))
     out = ""
     for p in logs[-2:]:
-        with open(p, encoding="utf-8") as f:
-            out += f.read()
+        try:
+            with open(p, encoding="utf-8") as f:
+                out += f.read()
+        except OSError:
+            continue
     return out[-n:]
 
 
@@ -63,13 +74,18 @@ DEFAULT = {
     "lock": True,
     "override_until": "",
     "autostart": True,
+    "autostart_preference": True,
     "start": "20:00",
     "end": "10:30",
     "keep_awake": True,
     "virtual_match": "",     # 虚拟屏名称关键字，空=自动识别
     "hotkey": "Ctrl+Alt+Shift+R",
     "last_test_mode": "", "last_test_at": "", "last_test_ok": False,
+    "last_test_requested": "", "last_test_night_ok": False,
     "last_recovery_at": "", "last_recovery_mode": "",
+    "extra_ranges": [], "night_mode": "", "test_id": "", "test_aborted": False,
+    "awake_token": "", "recovery_pending": False,
+    "theme": "light",
     "state": "day",          # day | night  (程序认为当前所处状态)
 }
 
@@ -79,27 +95,93 @@ def config_path():
 
 
 def load():
-    cfg = dict(DEFAULT)
+    cfg = copy.deepcopy(DEFAULT)
     try:
         with open(config_path(), encoding="utf-8") as f:
-            cfg.update(json.load(f))
-    except Exception:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("配置内容必须是 JSON 对象")
+        cfg.update(data)
+        validate_config(cfg)
+    except FileNotFoundError:
         pass
+    except (ValueError, TypeError, KeyError) as e:
+        raise RuntimeError("配置文件损坏，请检查 %s：%s" % (config_path(), e)) from e
     return cfg
 
 
 def save(cfg):
-    tmp = config_path() + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, config_path())
+    validate_config(cfg)
+    with file_lock(config_path() + ".lock"):
+        write_json(config_path(), cfg)
 
 
 def update(**kw):
-    c = load(); c.update(kw); save(c); return c
+    return mutate(lambda c: c.update(kw))
+
+
+def mutate(fn):
+    with file_lock(config_path() + ".lock"):
+        c = load()
+        fn(c)
+        validate_config(c)
+        write_json(config_path(), c)
+        return c
+
+
+def validate_config(cfg):
+    if not isinstance(cfg, dict):
+        raise ValueError("配置内容必须是 JSON 对象")
+    parse_hm(cfg.get("start", DEFAULT["start"]))
+    parse_hm(cfg.get("end", DEFAULT["end"]))
+    extra = cfg.get("extra_ranges", [])
+    if not isinstance(extra, (list, tuple)):
+        raise ValueError("额外时间段必须是列表")
+    for pair in extra:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise ValueError("额外时间段应包含开始和结束时间")
+        a, b = pair
+        if parse_hm(a) == parse_hm(b):
+            raise ValueError("额外时间段开始和结束不能相同")
+    if cfg.get("mode", "auto") not in ("auto", "virtual_only", "overlay", "screen_off"):
+        raise ValueError("未知显示模式")
+    if cfg.get("state", "day") not in ("day", "night"):
+        raise ValueError("未知显示状态")
+    if cfg.get("theme", "light") not in ("light", "dark"):
+        raise ValueError("未知界面主题")
+    if cfg.get("night_mode", "") not in ("", "virtual_only", "overlay", "screen_off"):
+        raise ValueError("未知夜间实际模式")
+    # Runtime state is written by several processes; reject wrong JSON types
+    # early instead of letting a later display action fail halfway through.
+    for key in ("virtual_match", "hotkey", "test_id", "awake_token", "override_until",
+                "last_test_at", "last_test_mode", "last_test_requested",
+                "last_recovery_at", "last_recovery_mode"):
+        if key in cfg and not isinstance(cfg[key], str):
+            raise ValueError("%s 必须为字符串" % key)
+    for key in ("last_test_mode", "last_test_requested", "last_recovery_mode"):
+        if cfg.get(key) and cfg[key] not in ("auto", "virtual_only", "overlay", "screen_off"):
+            raise ValueError("未知测试模式")
+    if cfg.get("virtual_match"):
+        try:
+            re.compile(cfg["virtual_match"])
+        except re.error as e:
+            raise ValueError("虚拟屏匹配规则不是有效正则表达式：%s" % e) from e
+    if "unlock_chord" in cfg:
+        from .chord import validate
+        if not isinstance(cfg["unlock_chord"], list):
+            raise ValueError("解锁组合键应为按键列表")
+        # Store the normalized form so a hand-edited config such as
+        # ["ctrl", "k"] works in the global key reader as well.
+        cfg["unlock_chord"] = validate(cfg["unlock_chord"])
+    for key in ("enabled", "lock", "keep_awake", "autostart", "autostart_preference",
+                "last_test_ok", "last_test_night_ok", "test_aborted", "recovery_pending"):
+        if key in cfg and not isinstance(cfg[key], bool):
+            raise ValueError("%s 必须为 true 或 false" % key)
 
 
 def parse_hm(s):
+    if not re.fullmatch(r"\d{1,2}:\d{2}", str(s).strip()):
+        raise ValueError("时间格式应为 HH:MM，例如 20:00")
     h, m = str(s).strip().split(":")
     h, m = int(h), int(m)
     if not (0 <= h <= 23 and 0 <= m <= 59):
@@ -157,7 +239,7 @@ def in_night(cfg, now=None):
 
 
 def boundaries(cfg):
-    return sorted({t for r in ranges(cfg) for t in r})
+    return sorted({"%02d:%02d" % parse_hm(t) for r in ranges(cfg) for t in r})
 
 
 def next_switch(cfg, now=None):
@@ -169,24 +251,28 @@ def next_switch(cfg, now=None):
         t = base + dt.timedelta(minutes=i)
         if in_night(cfg, t) != cur:
             return ("day" if cur else "night"), int((t - now).total_seconds())
-    return ("day" if cur else "night"), 86400
+    return None, 86400  # 全天覆盖或没有有效时间段，不存在切换点
 
 
 def save_backup(kind, data):
+    with file_lock(os.path.join(home(), "backups", kind + ".lock")):
+        return _save_backup(kind, data)
+
+
+def _save_backup(kind, data):
     t = dt.datetime.now()
     while True:  # Windows 时钟精度低，同一时刻多次备份时顺延 1 微秒，保证文件名唯一且有序
         p = os.path.join(home(), "backups", "%s-%s.json" % (kind, t.strftime("%Y%m%d-%H%M%S-%f")))
         if not os.path.exists(p):
             break
         t += dt.timedelta(microseconds=1)
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=1)
+    write_json(p, data)
     files = sorted(glob.glob(os.path.join(home(), "backups", kind + "-2*.json")))
     for old in files[:-10]:
-        os.remove(old)
+        with contextlib.suppress(OSError):
+            os.remove(old)
     # "最后已知正常的白天配置"单独保存，永不轮转
-    with open(os.path.join(home(), "backups", "%s-lastgood.json" % kind), "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=1)
+    write_json(os.path.join(home(), "backups", "%s-lastgood.json" % kind), data)
     return p
 
 
@@ -195,4 +281,7 @@ def load_backup(kind):
     if not os.path.exists(p):
         return None
     with open(p, encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("备份内容必须是 JSON 对象")
+    return data
