@@ -70,7 +70,7 @@ def awake_check():
             B.keep_awake(True, 120); time.sleep(4)
         except RuntimeError:
             if not IS_WIN and not IS_MAC:
-                rc, out = sh(["systemd-inhibit", "--list", "--no-pager"]) if shutil.which("systemd-inhibit") else (1, "no systemd-inhibit")
+                rc, out = sh(["systemd-inhibit", "--what=sleep:idle", "--mode=block", "true"]) if shutil.which("systemd-inhibit") else (1, "no systemd-inhibit")
                 if rc: raise SkipTest("logind 不可用（容器/CI）：" + out.strip()[:100])
             raise
         if IS_WIN:
