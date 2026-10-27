@@ -24,7 +24,7 @@ NightDisplay 只负责显示、电源和时间计划。远程连接仍由 UU、T
 
 | 平台 | 文件 | 使用方法 |
 |---|---|---|
-| Windows 10/11 x64 | `NightDisplay-Windows-x64-Setup.exe` | 按当前用户安装。虚拟显示驱动需要单独确认管理员权限。 |
+| Windows 10/11 x64 | `NightDisplay-Windows-x64-Setup.exe` | 按当前用户安装。驱动随包内置，首次打开自动装好，不用手动装驱动；驱动进系统才弹一次管理员确认，点了取消也照常打开、自动用黑幕模式。 |
 | Windows 免安装 | `NightDisplay-Windows-x64.zip` | 解压到固定目录，运行 `NightDisplay.exe`。开启计划后不要移动程序。 |
 | macOS Apple 芯片 | `NightDisplay-macOS-arm64.dmg` | 打开后拖入 Applications。也提供应用 ZIP。 |
 | macOS Intel | `NightDisplay-macOS-x64.dmg` | 同上。 |
@@ -48,7 +48,7 @@ sudo apt install python3-tk x11-xserver-utils fonts-noto-cjk
 ## 第一次配置
 
 1. 先确认远程软件已能正常连接这台电脑。
-2. Windows 点“安装内置驱动”。驱动随 Windows 包提供；源码运行前先执行 `python tools/download_vdd.py`。安装结果以进程退出码和设备状态为准，不以弹出 UAC 为成功依据。
+2. 不用手动装驱动。驱动随 Windows 包内置，首次打开软件自动装一次并写好开机自启注册表（HKCU Run，普通用户就有权限）；装不上或点了取消管理员确认，软件照常打开、自动降级到黑幕模式，功能正常。想重装驱动再去“设置”里点“重新安装内置驱动”。源码运行前先执行 `python tools/download_vdd.py`。运行中黑屏本身是纯黑，不带任何文字；进入和退出时的提示动画只在黑屏前后出现。
 3. 设置主时间段，需要其他时段时打开“设置”，填入例如 `12:00-13:30, 02:00-04:00`。
 4. 点“测试 15 秒”。程序会先启动独立恢复进程，再切换显示；测试与恢复属于同一会话，旧的恢复进程不会干扰后来的操作。
 5. 测试恢复后，检查实体屏是否正常、远程是否能看到桌面，再启用每日计划。超过 24 小时的测试结果不能直接用于重新启用计划。
