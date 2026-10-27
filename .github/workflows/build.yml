@@ -78,18 +78,23 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install pyinstaller pillow pystray
+      - name: Tag matches code version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python -c "import sys; sys.path.insert(0, '.'); from nightdisplay import VERSION; tag='${{ github.ref_name }}'[1:]; assert tag == VERSION, f'tag {tag} != code VERSION {VERSION}'; print(f'tag {tag} == VERSION {VERSION}')"
       - name: Build Windows
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          curl -fsSL -o vdd.zip https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip
-          mkdir -p vdd && 7z x -y -ovdd vdd.zip && find vdd -type f
+          python tools/download_vdd.py --dest vdd && find vdd -type f
           test -n "$(find vdd -iname MttVDD.inf)"
           pyinstaller --onefile --windowed --name NightDisplay --add-data "nightdisplay/resources;nightdisplay/resources" --hidden-import PIL._tkinter_finder --hidden-import PIL._imagingtk --add-data "tools/install_vdd.ps1;tools" --add-data "vdd;vdd" --hidden-import pystray._win32 nightdisplay_main.py
           export NIGHTDISPLAY_HOME=$PWD/smoke
           ./dist/NightDisplay.exe --action status; cat smoke/status.txt || true
-          ./dist/NightDisplay.exe --action displays; ./dist/NightDisplay.exe --action gui --selftest 5; echo "gui rc=$?"
-          mkdir out && cp dist/NightDisplay.exe README.md LICENSE NOTICE.md out/ && cp -r legacy out/
+          ./dist/NightDisplay.exe --action displays
+          ./dist/NightDisplay.exe --action gui --selftest 5; rc=$?; echo "gui rc=$rc"; test $rc -eq 0
+          python tools/collect_licenses.py
+          mkdir out && cp dist/NightDisplay.exe README.md LICENSE NOTICE.md tools/Recover.cmd out/ && cp -r third-party-licenses out/
           cd out && 7z a ../${{ matrix.name }}.zip .
       - name: Build macOS
         if: runner.os == 'macOS'
@@ -97,7 +102,7 @@ jobs:
           pyinstaller --windowed --name NightDisplay --add-data "nightdisplay/resources:nightdisplay/resources" --hidden-import PIL._tkinter_finder --hidden-import PIL._imagingtk --osx-bundle-identifier com.nightdisplay.app nightdisplay_main.py
           export NIGHTDISPLAY_HOME=$PWD/smoke
           ./dist/NightDisplay.app/Contents/MacOS/NightDisplay --action status
-          ./dist/NightDisplay.app/Contents/MacOS/NightDisplay --action gui --selftest 5; echo "gui rc=$?"
+          ./dist/NightDisplay.app/Contents/MacOS/NightDisplay --action gui --selftest 5; rc=$?; echo "gui rc=$rc"; test $rc -eq 0
           file dist/NightDisplay.app/Contents/MacOS/NightDisplay
           mkdir out && cp -R dist/NightDisplay.app README.md LICENSE NOTICE.md out/
           cd out && zip -qry ../${{ matrix.name }}.zip NightDisplay.app README.md LICENSE NOTICE.md && cd .. && unzip -l ${{ matrix.name }}.zip | head
@@ -112,7 +117,8 @@ jobs:
           set +e; xvfb-run -a ./dist/NightDisplay --action gui --selftest 5; rc=$?; echo "gui rc=$rc"; set -e
           test $rc -eq 0
           ldd --version | head -1
-          objdump -T dist/NightDisplay | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
+          max_glibc=$(objdump -T dist/NightDisplay | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1); echo "max GLIBC=$max_glibc"; test -n "$max_glibc"
+          test "$(printf 'GLIBC_2.39\n%s\n' "$max_glibc" | sort -Vu | tail -1)" = "GLIBC_2.39"
           mkdir out && cp dist/NightDisplay README.md LICENSE NOTICE.md out/
           tar czf ${{ matrix.name }}.tar.gz -C out .
       - uses: actions/upload-artifact@v4
@@ -148,7 +154,7 @@ jobs:
             qa-windows.json
             qa-evidence/
   release:
-    needs: [test, build]
+    needs: [test, build, qa-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
