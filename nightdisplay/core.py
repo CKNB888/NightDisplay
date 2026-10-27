@@ -132,8 +132,12 @@ def next_switch(cfg, now=None):
 
 
 def save_backup(kind, data):
-    name = "%s-%s.json" % (kind, dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f"))
-    p = os.path.join(home(), "backups", name)
+    t = dt.datetime.now()
+    while True:  # Windows 时钟精度低，同一时刻多次备份时顺延 1 微秒，保证文件名唯一且有序
+        p = os.path.join(home(), "backups", "%s-%s.json" % (kind, t.strftime("%Y%m%d-%H%M%S-%f")))
+        if not os.path.exists(p):
+            break
+        t += dt.timedelta(microseconds=1)
     with open(p, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
     files = sorted(glob.glob(os.path.join(home(), "backups", kind + "-2*.json")))

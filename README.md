@@ -3,9 +3,19 @@
 > 每天到点让电脑**本地屏幕变黑**，电脑保持开机，**UU 远程 / ToDesk / RustDesk 等远程软件照常连接操作**；到点自动恢复。
 > 适合一体机、办公室电脑、家里常开的主机：晚上不亮屏、不被旁人看到，远程随时能用。
 
-**开发与赞助：传康kk，联系方式 1837620622**
+作者：**传康kk**（GitHub [@CKNB888](https://github.com/CKNB888)） ｜ **赞助 / 联系：传康kk，1837620622**
 
-> 当前分支 `dev` 为 2.0 开发版（未发布 Release）。稳定版 1.0 见 `main` 分支与 Releases。
+[下载最新版本（Releases）](https://github.com/CKNB888/NightDisplay/releases/latest)
+
+## 界面预览
+
+| 首页（浅色） | 首页（深色） |
+|---|---|
+| ![首页](docs/screenshots/home.png) | ![深色](docs/screenshots/dark.png) |
+| **显示模式** | **关于** |
+| ![显示模式](docs/screenshots/mode.png) | ![关于](docs/screenshots/about.png) |
+
+> 界面布局参考主流远程控制客户端（左侧导航、蓝色主卡片、圆角卡片、开关），图标与品牌均为 NightDisplay 自有设计，未使用任何第三方商标或素材。
 
 ---
 
@@ -37,6 +47,15 @@
 - **Linux**：X11 下需要 `VIRTUAL*` / `DUMMY*` / evdi 虚拟输出；Wayland 不支持改输出，请切换到 X11 会话。
 
 > 与 UU 远程的关系：UU 的“超级屏”会关闭实体屏且与 UU 虚拟屏互斥；UU 虚拟屏断开连接会自动删除。所以 NightDisplay 推荐使用**自己安装的常驻虚拟屏**，而不是依赖 UU 临时虚拟屏。UU 自带的“防窥模式 → 关闭显示屏”（Ctrl+Alt+P 解除）也可与本工具互补使用。
+
+## 安装
+
+| 系统 | 下载 | 安装 |
+|---|---|---|
+| Windows 10/11 x64 | `NightDisplay-Windows-x64.zip` | 解压后双击 `NightDisplay.exe`（免安装）。SmartScreen 提示时点“更多信息 → 仍要运行”。 |
+| macOS Apple 芯片 | `NightDisplay-macOS-arm64.zip` | 解压，把 `NightDisplay.app` 拖进“应用程序”，首次右键 → 打开（未签名）。 |
+| macOS Intel | `NightDisplay-macOS-x64.zip` | 同上。 |
+| Linux x64 | `NightDisplay-Linux-x64.tar.gz` | `tar xzf` 后运行 `./NightDisplay`；需要 X11 会话（Wayland 只能用基础功能）。 |
 
 ## 快速开始
 
@@ -100,8 +119,20 @@ GitHub Actions 在 Windows（latest/2022）、macOS（arm64/Intel）、Ubuntu �
 - **本地动鼠标屏幕亮了？** 你在用“基础关屏”模式，换成“只保留虚拟屏”或“防窥黑幕”。
 - **电脑夜里睡眠了？** 确认设置里“夜间阻止系统睡眠”开启；笔记本合盖仍可能睡眠。
 
+## 已知限制
+
+- Windows“只保留虚拟屏”需要安装虚拟显示驱动（需管理员一次）；部分品牌一体机的背光由固件控制，需真机确认能否熄灭。
+- “防窥黑幕”依赖 Win10 2004 及以上；更早系统会自动退回“基础关屏”。
+- macOS 目前只有“基础关屏”（动鼠标/键盘会亮），虚拟屏需要第三方工具（如 BetterDisplay）。
+- Linux Wayland 不允许程序修改输出，只能在 X11 下使用虚拟屏/关屏。
+- 程序未做代码签名，首次运行系统会提示。
+- 与 UU 远程的实际配合（超级屏、防窥模式、虚拟屏断开自动删除）需在你的电脑上实测。
+
 ## 许可与致谢
 
 MIT，见 [LICENSE](LICENSE)。第三方参考与商标说明见 [NOTICE.md](NOTICE.md)。本项目为独立工具，与网易 UU 远程、ToDesk 无隶属关系。
 
-开发与赞助：传康kk，联系方式 1837620622
+## 作者与赞助
+
+- 作者：传康kk（GitHub：[CKNB888](https://github.com/CKNB888)）
+- **赞助 / 联系：传康kk，1837620622**

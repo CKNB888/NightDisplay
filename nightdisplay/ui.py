@@ -4,7 +4,7 @@ import math, sys, threading, datetime as dt
 import tkinter as tk
 from tkinter import messagebox
 
-from . import VERSION, APP, CREDIT
+from . import VERSION, APP, CREDIT, AUTHOR, SPONSOR
 from .core import IS_WIN, IS_MAC, load, update, parse_hm, next_switch, read_log_tail, is_night, log
 from . import backends as B
 
@@ -37,6 +37,27 @@ class Card(tk.Canvas):
         rrect(self, 1, 1, w - 1, h - 1, 18, fill=self.app.t["card"], outline=self.app.t["line"], tags="bgshape")
         self.tag_lower("bgshape")
         self.itemconfigure(self.win, width=w - 32, height=h - 28)
+
+
+class Hero(tk.Canvas):
+    """远控客户端风格的渐变主卡片（类似“本机设备”大卡），自绘渐变 + 圆角。"""
+    def __init__(self, parent, app, height, night=False):
+        super().__init__(parent, height=height, highlightthickness=0, bd=0, bg=app.t["bg"])
+        self.app = app
+        self.c1, self.c2, self.c3 = (("#2B2F77", "#353A8C", "#3E449C") if night else ("#1F6BFF", "#2C76FF", "#3A81FF"))
+        self.inner = tk.Frame(self, bg=self.c1)
+        self.win = self.create_window(26, 22, window=self.inner, anchor="nw")
+        self.bind("<Configure>", self._draw)
+
+    def _draw(self, e=None):
+        self.delete("g")
+        w, h = self.winfo_width(), self.winfo_height()
+        rrect(self, 0, 0, w, h, 22, fill=self.c1, outline=self.c1, tags="g")
+        # 装饰性半透明圆（自绘，非任何品牌素材）
+        self.create_oval(w - 330, -120, w + 60, 260, fill=self.c2, outline="", tags="g")
+        self.create_oval(w - 120, h - 70, w + 40, h + 90, fill=self.c3, outline="", tags="g")
+        self.tag_lower("g")
+        self.itemconfigure(self.win, width=max(200, w - 260))
 
 
 class Toggle(tk.Canvas):
@@ -164,7 +185,8 @@ class MainWindow:
             tk.Label(self.body, text=sub, bg=self.t["bg"], fg=self.t["sub"], font=(FONT, 10)).pack(anchor="w", pady=(2, 10))
 
     def label(self, parent, text, size=10, color="text", bold=False, **kw):
-        return tk.Label(parent, text=text, bg=parent["bg"], fg=self.t[color], font=(FONT, size, "bold" if bold else "normal"),
+        kw.setdefault("bg", parent["bg"])
+        return tk.Label(parent, text=text, fg=self.t[color], font=(FONT, size, "bold" if bold else "normal"),
                         justify="left", **kw)
 
     def safe(self, fn):
@@ -182,36 +204,51 @@ class MainWindow:
     # ---- 首页：大状态卡 ----
     def page_home(self):
         cfg = load()
-        self.title("首页", "到点自动让本地屏幕变黑，电脑保持开机，远程软件照常可用")
-        card = Card(self.body, self, 210); card.pack(fill="x")
-        f = card.inner
-        left = tk.Frame(f, bg=f["bg"]); left.pack(side="left", fill="both", expand=True)
         night = cfg.get("state") == "night"
-        self.label(left, "夜间模式进行中" if night else "白天 · 屏幕正常显示", 16, bold=True).pack(anchor="w")
+        top = tk.Frame(self.body, bg=self.t["bg"]); top.pack(fill="x", pady=(0, 12))
+        self.label(top, "首页", 18, bold=True, bg=self.t["bg"]).pack(side="left")
+        self.label(top, "● 夜间进行中" if night else "● 运行正常", 10, "night" if night else "ok", bg=self.t["bg"]).pack(side="right")
+        hero = Hero(self.body, self, 220, night); hero.pack(fill="x")
+        f = hero.inner
+        W = lambda txt, size=10, bold=False, fg="#FFFFFF": tk.Label(f, text=txt, bg=hero.c1, fg=fg, font=(FONT, size, "bold" if bold else "normal"), anchor="w")
+        W("本机状态", 10, fg="#D6E4FF").pack(anchor="w")
+        W("夜间模式 · 本地已黑屏" if night else "白天 · 屏幕正常显示", 20, True).pack(anchor="w", pady=(2, 6))
         nxt, secs = next_switch(cfg)
-        sub = ("自动计划已开启 · %s 后%s" % (self._fmt(secs), "恢复显示" if nxt == "day" else "进入夜间")) if cfg["enabled"] else "自动计划未开启 · 先在“显示模式”里测试一次"
-        self.label(left, sub, 10, "sub").pack(anchor="w", pady=(4, 12))
-        row = tk.Frame(left, bg=f["bg"]); row.pack(anchor="w")
-        self.label(row, "每日自动计划", 11).pack(side="left", padx=(0, 10))
-        Toggle(row, self, cfg["enabled"], self.toggle_enabled).pack(side="left")
-        self.label(left, "模式：%s ｜ 时间：%s → %s" % (B.MODES.get(cfg["mode"]), cfg["start"], cfg["end"]), 10, "sub").pack(anchor="w", pady=(12, 0))
-        ring = tk.Canvas(f, width=170, height=170, bg=f["bg"], highlightthickness=0)
-        ring.pack(side="right", padx=8)
-        self.anim_ring(ring, cfg)
-        acts = tk.Frame(self.body, bg=self.t["bg"]); acts.pack(fill="x", pady=16)
-        Pill(acts, self, "立即进入夜间", lambda: self.safe(lambda: self.act("night")), primary=True).pack(side="left", padx=(0, 10))
-        Pill(acts, self, "立即恢复显示", lambda: self.safe(lambda: self.act("day"))).pack(side="left", padx=(0, 10))
-        Pill(acts, self, "应急恢复（暂停+还原）", lambda: self.safe(lambda: self.act("emergency")), danger=True).pack(side="left")
-        tip = Card(self.body, self, 96); tip.pack(fill="x")
-        self.label(tip.inner, "安全保证", 11, bold=True).pack(anchor="w")
-        self.label(tip.inner, "不拦截键盘鼠标 · 不安装隐藏服务 · 切换前完整备份显示配置，失败自动回滚\n应急快捷键 Ctrl+Alt+Shift+R（Windows）· 托盘菜单随时恢复", 9, "sub").pack(anchor="w", pady=4)
+        W(("%s 后%s" % (self._fmt(secs), "恢复显示" if nxt == "day" else "进入夜间")) if cfg["enabled"] else "自动计划未开启 · 先在“显示模式”里测试一次", 10, fg="#E8F0FF").pack(anchor="w")
+        row = tk.Frame(f, bg=hero.c1); row.pack(anchor="w", pady=(16, 0))
+        tk.Label(row, text="每日自动计划", bg=hero.c1, fg="#FFFFFF", font=(FONT, 11)).pack(side="left", padx=(0, 10))
+        tg = Toggle(row, self, cfg["enabled"], self.toggle_enabled); tg.configure(bg=hero.c1); tg.pack(side="left")
+        ring = tk.Canvas(hero, width=170, height=170, bg=hero.c2, highlightthickness=0)
+        hero.create_window(0, 0, window=ring, anchor="ne", tags="ring")
+        hero.bind("<Configure>", lambda e: (hero._draw(), hero.coords("ring", e.width - 28, 25)), add=False)
+        self.anim_ring(ring, cfg, hero=True, hero_bg=hero.c2)
+        # 快捷操作卡片（三宫格）
+        grid = tk.Frame(self.body, bg=self.t["bg"]); grid.pack(fill="x", pady=14)
+        items = [("◑", "立即进入夜间", "按当前模式黑屏", lambda: self.act("night")),
+                 ("☀", "立即恢复显示", "恢复实体屏与备份配置", lambda: self.act("day")),
+                 ("⛑", "应急恢复", "恢复显示并暂停计划", lambda: self.act("emergency"))]
+        for i, (ic, t1, t2, fn) in enumerate(items):
+            c = Card(grid, self, 92); c.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else 7, 0 if i == 2 else 7))
+            grid.columnconfigure(i, weight=1)
+            fr = c.inner
+            lab = tk.Label(fr, text=ic, bg=self.t["accent2"], fg=self.t["danger"] if i == 2 else self.t["accent"], font=(FONT, 16), width=2)
+            lab.pack(side="left", padx=(0, 10))
+            tx = tk.Frame(fr, bg=fr["bg"]); tx.pack(side="left", fill="x")
+            self.label(tx, t1, 11, bold=True).pack(anchor="w"); self.label(tx, t2, 9, "sub").pack(anchor="w")
+            for w in (c, fr, lab, tx) + tuple(tx.winfo_children()):
+                w.bind("<Button-1>", lambda e, fn=fn: self.safe(fn)); w.configure(cursor="hand2")
+        tip = Card(self.body, self, 86); tip.pack(fill="x")
+        self.label(tip.inner, "模式：%s ｜ 时间：%s → %s" % (B.MODES.get(cfg["mode"]), cfg["start"], cfg["end"]), 10, bold=True).pack(anchor="w")
+        self.label(tip.inner, "不拦截键盘鼠标 · 切换前完整备份，失败自动回滚 · 应急快捷键 Ctrl+Alt+Shift+R（Windows）", 9, "sub").pack(anchor="w", pady=4)
 
     def _fmt(self, s):
         h, m = s // 3600, (s % 3600) // 60
         return ("%d 小时 %d 分" % (h, m)) if h else ("%d 分钟" % m)
 
-    def anim_ring(self, c, cfg):
-        t = self.t
+    def anim_ring(self, c, cfg, hero=False, hero_bg="#2C76FF"):
+        t = dict(self.t)
+        if hero:
+            t.update(line="#6FA0FF", night="#FFFFFF", text="#FFFFFF", sub="#E0EAFF", accent="#FFD24D", card=hero_bg)
         sh, sm = parse_hm(cfg["start"]); eh, em = parse_hm(cfg["end"])
         s, e = sh * 60 + sm, eh * 60 + em
         span = (e - s) % 1440
@@ -331,10 +368,11 @@ class MainWindow:
     # ---- 关于 ----
     def page_about(self):
         self.title("关于 NightDisplay")
-        card = Card(self.body, self, 220); card.pack(fill="x")
+        card = Card(self.body, self, 250); card.pack(fill="x")
         f = card.inner
         self.label(f, "NightDisplay  v" + VERSION, 14, bold=True).pack(anchor="w")
-        self.label(f, CREDIT, 12, "accent").pack(anchor="w", pady=8)
+        self.label(f, "作者：" + AUTHOR, 11).pack(anchor="w", pady=(8, 2))
+        self.label(f, SPONSOR, 12, "accent", bold=True).pack(anchor="w", pady=(2, 8))
         self.label(f, "独立开源工具，与网易 UU 远程、ToDesk 等无隶属关系。\n"
                       "参考：RustDesk 隐私模式思路（AGPL，未复制代码）、Virtual-Display-Driver（MIT）、UUyc-companion（MIT）。\n"
                       "仅在你本人拥有或已获授权的电脑上使用。", 9, "sub", wraplength=600).pack(anchor="w")
