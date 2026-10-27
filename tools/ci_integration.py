@@ -17,8 +17,8 @@ def check(name, fn, hard=True):
     except Exception as e:
         R.append((name, "FAIL" if hard else "WARN", repr(e)[:300])); print("FAIL" if hard else "WARN", name); traceback.print_exc()
 class SkipTest(Exception): pass
-def sh(cmd, **kw):
-    p = subprocess.run(cmd, capture_output=True, text=True, errors="replace", **kw)
+def sh(cmd, timeout=120, **kw):
+    p = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout, stdin=subprocess.DEVNULL, **kw)
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 PY = [sys.executable, "-m", "nightdisplay"]
 
@@ -90,12 +90,24 @@ def overlay_night_day():
         assert rc2 == 0 and core.load().get("state") == "day", out2
         return "overlay night via IPC ok, day ok; log tail: " + core.read_log_tail(400).replace("\n", " / ")
     finally:
-        g.wait(60); core.update(mode="auto")
+        try:
+            g.wait(60)
+        except subprocess.TimeoutExpired:
+            g.kill()
+        core.update(mode="auto")
 
 def vdd_virtual_only():
     if not IS_WIN: raise SkipTest("Windows only")
     script = os.path.join(os.path.dirname(__file__), "install_vdd.ps1")
-    rc, out = sh(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], timeout=240)
+    logf = os.path.join(os.getcwd(), "vdd-install.log")
+    with open(logf, "w") as lf:
+        p = subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        try:
+            rc = p.wait(240)
+        except subprocess.TimeoutExpired:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)
+            rc = "timeout"
+    out = open(logf, errors="replace").read()
     print(out[-3000:])
     assert rc == 0, "install_vdd rc=%s" % rc
     time.sleep(8)

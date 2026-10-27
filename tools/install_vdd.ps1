@@ -83,6 +83,13 @@ try {
   $xml = Join-Path $inf.DirectoryName 'vdd_settings.xml'
   if (Test-Path $xml) { Copy-Item $xml 'C:\VirtualDisplayDriver\vdd_settings.xml' -Force }
 } catch { Say "warning: copy settings failed: $($_.Exception.Message)" }
+if ($sig -and $sig.SignerCertificate) {
+  try {
+    $st = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher', 'LocalMachine')
+    $st.Open('ReadWrite'); $st.Add($sig.SignerCertificate); $st.Close()
+    Say "Signer added to TrustedPublisher (avoids the interactive driver trust prompt)"
+  } catch { Say "warning: could not add signer to TrustedPublisher: $($_.Exception.Message)" }
+}
 Say "Step 3/4 pnputil /add-driver"
 pnputil /add-driver "$($inf.FullName)" /install | Out-Host
 $pc = $LASTEXITCODE
