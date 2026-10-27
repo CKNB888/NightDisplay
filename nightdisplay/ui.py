@@ -192,6 +192,8 @@ class MainWindow:
     def safe(self, fn):
         try:
             r = fn()
+            if r == "locked":
+                messagebox.showwarning(APP, "黑屏已锁定：请按住解锁组合键 %s" % " + ".join(load().get("unlock_chord") or ["C", "K"]))
             self.refresh_soon()
             return r
         except Exception as e:
@@ -281,7 +283,7 @@ class MainWindow:
     def page_schedule(self):
         cfg = load()
         self.title("定时计划", "每天几点进入夜间、几点恢复（可跨午夜）")
-        card = Card(self.body, self, 190); card.pack(fill="x")
+        card = Card(self.body, self, 270); card.pack(fill="x")
         f = card.inner
         hours = ["%02d" % i for i in range(24)]; mins = ["%02d" % i for i in range(0, 60, 5)]
         self.sv = [tk.StringVar(value=x) for x in cfg["start"].split(":") + cfg["end"].split(":")]
@@ -294,6 +296,11 @@ class MainWindow:
                 om.pack(side="left", padx=4)
                 if j == 0:
                     self.label(row, ":", 12).pack(side="left")
+        ev = tk.StringVar(value=", ".join("%s-%s" % tuple(r) for r in cfg.get("extra_ranges") or []))
+        row = tk.Frame(f, bg=f["bg"]); row.pack(anchor="w", pady=6)
+        self.label(row, "额外时间段", 11, width=16, anchor="w").pack(side="left")
+        tk.Entry(row, textvariable=ev, width=32, font=(FONT, 11), relief="flat", bg=self.t["accent2"], fg=self.t["text"]).pack(side="left")
+        self.label(f, "可选，多个用逗号分隔，例如 12:00-13:30, 02:00-04:00（可跨午夜）", 9, "sub").pack(anchor="w")
         kv = tk.BooleanVar(value=cfg.get("keep_awake", True))
         tk.Checkbutton(f, text="夜间阻止系统睡眠（保持远程在线）", variable=kv, bg=f["bg"], fg=self.t["text"],
                        selectcolor=self.t["card"], font=(FONT, 10), activebackground=f["bg"]).pack(anchor="w", pady=6)
@@ -301,7 +308,8 @@ class MainWindow:
         def save_():
             s = "%s:%s" % (self.sv[0].get(), self.sv[1].get()); e = "%s:%s" % (self.sv[2].get(), self.sv[3].get())
             parse_hm(s); parse_hm(e)
-            c = update(start=s, end=e, keep_awake=bool(kv.get()))
+            from .core import parse_ranges
+            c = update(start=s, end=e, keep_awake=bool(kv.get()), extra_ranges=[list(r) for r in parse_ranges(ev.get())])
             if c["enabled"]:
                 B.schedule_install(c)
             messagebox.showinfo(APP, "已保存：%s → %s" % (s, e))
@@ -346,17 +354,71 @@ class MainWindow:
 
     # ---- 设置 ----
     def page_settings(self):
+        from . import chord
+        cfg = load()
         self.title("设置")
-        card = Card(self.body, self, 150); card.pack(fill="x")
-        row = tk.Frame(card.inner, bg=card.inner["bg"]); row.pack(anchor="w", pady=6)
+        card = Card(self.body, self, 330); card.pack(fill="x")
+        f = card.inner
+        row = tk.Frame(f, bg=f["bg"]); row.pack(anchor="w", pady=4)
         self.label(row, "深色模式", 11, width=16, anchor="w").pack(side="left")
         Toggle(row, self, self.theme == "dark", self.set_dark).pack(side="left")
-        self.label(card.inner, "应急快捷键：Ctrl+Alt+Shift+R（仅 Windows 全局有效）", 10, "sub").pack(anchor="w", pady=6)
-        row2 = tk.Frame(self.body, bg=self.t["bg"]); row2.pack(anchor="w", pady=16)
+        row = tk.Frame(f, bg=f["bg"]); row.pack(anchor="w", pady=4)
+        self.label(row, "开机自启（托盘常驻）", 11, width=16, anchor="w").pack(side="left")
+        Toggle(row, self, B.autostart_status(), lambda v: self.safe(lambda: (B.set_autostart(v), update(autostart=v)))).pack(side="left")
+        row = tk.Frame(f, bg=f["bg"]); row.pack(anchor="w", pady=4)
+        self.label(row, "黑屏锁定", 11, width=16, anchor="w").pack(side="left")
+        Toggle(row, self, cfg.get("lock", True), lambda v: update(lock=bool(v))).pack(side="left")
+        self.label(f, "开启后，黑屏期间本地只能用下面的组合键解除（托盘、窗口、快捷键均无效）；到计划结束时间会自动恢复。", 9, "sub", wraplength=600).pack(anchor="w")
+        # 组合键录制
+        row = tk.Frame(f, bg=f["bg"]); row.pack(anchor="w", pady=(10, 4))
+        self.label(row, "解锁组合键", 11, width=16, anchor="w").pack(side="left")
+        cur = tk.StringVar(value=chord.fmt(cfg.get("unlock_chord") or chord.DEFAULT_CHORD))
+        box = tk.Label(row, textvariable=cur, bg=self.t["accent2"], fg=self.t["accent"], font=(FONT, 12, "bold"), padx=14, pady=6, width=16)
+        box.pack(side="left", padx=(0, 10))
+        held, rec = [], {"on": False}
+
+        def start_rec():
+            held.clear(); rec["on"] = True; cur.set("请同时按住 2~3 个键…"); box.focus_set()
+
+        def keydown(e):
+            if rec["on"]:
+                k = e.keysym
+                try:
+                    k = chord.normalize(k)
+                except ValueError:
+                    return
+                if k not in held and len(held) < 3:
+                    held.append(k); cur.set(chord.fmt(held))
+
+        def keyup(e):
+            if rec["on"] and held:
+                rec["on"] = False
+                try:
+                    ks = chord.validate(held)
+                    update(unlock_chord=ks); cur.set(chord.fmt(ks)); log("解锁组合键已设为 %s" % chord.fmt(ks))
+                except ValueError as ex:
+                    messagebox.showerror(APP, str(ex)); cur.set(chord.fmt(load().get("unlock_chord")))
+        box.bind("<KeyPress>", keydown); box.bind("<KeyRelease>", keyup)
+        Pill(row, self, "录制", start_rec).pack(side="left", padx=(0, 8))
+
+        def test():
+            ks = load().get("unlock_chord") or chord.DEFAULT_CHORD
+            if not chord.request_permission():
+                messagebox.showinfo(APP, "macOS 需要在 系统设置 → 隐私与安全性 → 输入监控 中允许 NightDisplay")
+            cur.set("10 秒内请按住 %s" % chord.fmt(ks)); self.root.update()
+            ok = chord.wait_chord(ks, 10)
+            cur.set(chord.fmt(ks))
+            (messagebox.showinfo if ok else messagebox.showwarning)(APP, "检测成功 ✔" if ok else "10 秒内未检测到组合键")
+        Pill(row, self, "测试", lambda: self.safe(test)).pack(side="left", padx=(0, 8))
+        Pill(row, self, "恢复默认 C+K", lambda: (update(unlock_chord=list(chord.DEFAULT_CHORD)), cur.set("C + K"))).pack(side="left")
+        self.label(f, "远程隐藏恢复：在远程会话中运行  NightDisplay --action emergency", 9, "sub").pack(anchor="w", pady=(8, 0))
+        row2 = tk.Frame(self.body, bg=self.t["bg"]); row2.pack(anchor="w", pady=14)
+
         def uninst():
             if messagebox.askyesno(APP, "卸载：恢复显示、删除计划任务和开机自启，然后退出。继续？"):
                 from .app import uninstall
                 uninstall(self.overlay); self.root.destroy()
+        Pill(row2, self, "检查更新", lambda: self.safe(check_update)).pack(side="left", padx=(0, 10))
         Pill(row2, self, "卸载计划与自启", uninst, danger=True).pack(side="left")
 
     def set_dark(self, v):
@@ -382,6 +444,19 @@ class MainWindow:
             self.root.withdraw()
         else:
             self.root.destroy()
+
+
+def check_update():
+    """查询 GitHub 最新 Release，有新版本则打开下载页。"""
+    import json, urllib.request, webbrowser
+    req = urllib.request.Request("https://api.github.com/repos/CKNB888/NightDisplay/releases/latest", headers={"User-Agent": "NightDisplay"})
+    data = json.load(urllib.request.urlopen(req, timeout=8))
+    tag = data.get("tag_name", "").lstrip("v")
+    newer = tuple(int(x) for x in tag.split(".")[:3] if x.isdigit()) > tuple(int(x) for x in VERSION.split("-")[0].split("."))
+    if newer and messagebox.askyesno(APP, "发现新版本 %s，打开下载页？" % tag):
+        webbrowser.open(data.get("html_url"))
+    elif not newer:
+        messagebox.showinfo(APP, "已是最新版本（%s）" % VERSION)
 
 
 def start_tray(root, act):

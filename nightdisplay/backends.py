@@ -281,9 +281,7 @@ def schedule_install(cfg):
         for i, t in enumerate(boundaries(cfg)):
             name = TASKS[i] if i < 2 else "NightDisplay_T%02d" % i
             run(["schtasks", "/Create", "/F", "/TN", name, "/SC", "DAILY", "/ST", t, "/TR", tr])
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as k:
-            winreg.SetValueEx(k, "NightDisplay", 0, winreg.REG_SZ, " ".join('"%s"' % c for c in self_cmd()) + " --tray")
+        set_autostart(cfg.get("autostart", True))
     elif IS_MAC:
         import plistlib
         path = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % LA_LABEL)
@@ -309,15 +307,47 @@ def _win_delete_tasks():
         run(["schtasks", "/Delete", "/F", "/TN", n], check=False)
 
 
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+
+def set_autostart(on):
+    """开机自启（托盘常驻，负责黑幕和组合键）。Windows: HKCU Run；macOS: LaunchAgent RunAtLoad 已包含；Linux: XDG autostart。"""
+    if IS_WIN:
+        import winreg
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+            if on:
+                winreg.SetValueEx(k, "NightDisplay", 0, winreg.REG_SZ, " ".join('"%s"' % c for c in self_cmd()) + " --tray")
+            else:
+                try:
+                    winreg.DeleteValue(k, "NightDisplay")
+                except OSError:
+                    pass
+    elif IS_LINUX:
+        p = os.path.expanduser("~/.config/autostart/nightdisplay.desktop")
+        if on:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, "w").write("[Desktop Entry]\nType=Application\nName=NightDisplay\nExec=%s --tray\nX-GNOME-Autostart-enabled=true\n" % " ".join(shlex.quote(c) for c in self_cmd()))
+        elif os.path.exists(p):
+            os.remove(p)
+
+
+def autostart_status():
+    if IS_WIN:
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
+                return bool(winreg.QueryValueEx(k, "NightDisplay")[0])
+        except OSError:
+            return False
+    if IS_LINUX:
+        return os.path.exists(os.path.expanduser("~/.config/autostart/nightdisplay.desktop"))
+    return os.path.exists(os.path.expanduser("~/Library/LaunchAgents/%s.plist" % LA_LABEL))
+
+
 def schedule_remove():
     if IS_WIN:
         _win_delete_tasks()
-        try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE) as k:
-                winreg.DeleteValue(k, "NightDisplay")
-        except OSError:
-            pass
+        set_autostart(False)
     elif IS_MAC:
         path = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % LA_LABEL)
         run(["launchctl", "unload", path], check=False)

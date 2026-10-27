@@ -59,6 +59,10 @@ DEFAULT = {
     "version": 3,
     "mode": "auto",          # auto | virtual_only | overlay | screen_off
     "enabled": False,
+    "unlock_chord": ["C", "K"],
+    "lock": True,
+    "override_until": "",
+    "autostart": True,
     "start": "20:00",
     "end": "10:30",
     "keep_awake": True,
