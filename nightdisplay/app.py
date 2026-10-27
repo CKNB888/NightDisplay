@@ -299,8 +299,8 @@ def make_overlay(root):
                     x, y, W, H = gm(76), gm(77), gm(78), gm(79)
                 w.geometry("%dx%d+0+0" % (W, H))
                 w.attributes("-topmost", True)
-                tk.Label(w, text="", fg="#333333", bg="black",
-                         font=("", 11)).place(relx=0.5, rely=0.97, anchor="s")
+                w.configure(bg="#000000")
+                # 黑幕上不放文字、图标或动画，避免本机看出电脑还开着。
                 w.update_idletasks()
                 if IS_WIN:
                     import ctypes
@@ -795,8 +795,7 @@ def environment_report():
             report["registry_writable"] = False
     else:
         report["registry_writable"] = True
-    # 运行中黑屏本身必须是纯黑：黑幕窗口不带任何文字（见 make_overlay，Label text=""），
-    # 进入/退出横幅只在黑屏前后出现，不在黑屏期间出现。
+    # 黑幕窗口只有纯黑底色，设置窗口里的进度动画在进入夜间后会停掉。
     report["pure_black"] = True
     with contextlib.suppress(Exception):
         write_json(os.path.join(home(), "env.json"), report)
