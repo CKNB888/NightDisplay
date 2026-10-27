@@ -94,8 +94,17 @@ jobs:
           ./dist/NightDisplay.exe --action displays
           ./dist/NightDisplay.exe --action gui --selftest 5; rc=$?; echo "gui rc=$rc"; test $rc -eq 0
           python tools/collect_licenses.py
+          # 打包门禁：驱动文件必须齐全，缺一个就失败，不产出“能打开但没虚拟屏”的包。
+          test -f nightdisplay/resources/install_vdd.ps1
+          test -f nightdisplay/resources/vdd_settings.xml
+          ./dist/NightDisplay.exe --action env
           mkdir out && cp dist/NightDisplay.exe README.md LICENSE NOTICE.md tools/Recover.cmd out/ && cp -r third-party-licenses out/
           cd out && 7z a ../${{ matrix.name }}.zip .
+          # 真正产出安装包：Inno Setup 按当前用户安装（PrivilegesRequired=lowest），
+          # 驱动安装仍在首次打开时弹一次 UAC，不在安装器里偷偷提权。
+          choco install innosetup -y --no-progress
+          iscc packaging/windows.iss
+          test -f NightDisplay-Windows-x64-Setup.exe
       - name: Build macOS
         if: runner.os == 'macOS'
         run: |
@@ -106,6 +115,9 @@ jobs:
           file dist/NightDisplay.app/Contents/MacOS/NightDisplay
           mkdir out && cp -R dist/NightDisplay.app README.md LICENSE NOTICE.md out/
           cd out && zip -qry ../${{ matrix.name }}.zip NightDisplay.app README.md LICENSE NOTICE.md && cd .. && unzip -l ${{ matrix.name }}.zip | head
+          # 真正产出 DMG：打开后拖入 Applications，和 README 里写的安装方式一致。
+          hdiutil create -volname NightDisplay -srcfolder out -ov -format UDZO ${{ matrix.name }}.dmg
+          test -f ${{ matrix.name }}.dmg
       - name: Build Linux
         if: runner.os == 'Linux'
         run: |
@@ -125,6 +137,12 @@ jobs:
         with:
           name: ${{ matrix.name }}
           path: ${{ matrix.name }}.*
+      - name: Upload Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: NightDisplay-Windows-x64-Setup
+          path: NightDisplay-Windows-x64-Setup.exe
   qa-windows:
     needs: build
     strategy:
