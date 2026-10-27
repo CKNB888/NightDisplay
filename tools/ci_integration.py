@@ -95,7 +95,7 @@ def overlay_night_day():
 def vdd_virtual_only():
     if not IS_WIN: raise SkipTest("Windows only")
     script = os.path.join(os.path.dirname(__file__), "install_vdd.ps1")
-    rc, out = sh(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], timeout=600)
+    rc, out = sh(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], timeout=240)
     print(out[-3000:])
     assert rc == 0, "install_vdd rc=%s" % rc
     time.sleep(8)

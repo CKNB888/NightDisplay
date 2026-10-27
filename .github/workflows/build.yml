@@ -105,11 +105,13 @@ jobs:
       - name: Build Linux
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update && sudo apt-get install -y xvfb x11-xserver-utils
-          pyinstaller --onefile --name NightDisplay --hidden-import pystray._xorg nightdisplay_main.py
+          sudo apt-get update && sudo apt-get install -y xvfb x11-xserver-utils python3-tk python3-pip python3-xlib
+          /usr/bin/python3 -m pip install --user pyinstaller pillow pystray
+          /usr/bin/python3 -m PyInstaller --onefile --name NightDisplay --hidden-import pystray._xorg nightdisplay_main.py
           export NIGHTDISPLAY_HOME=$PWD/smoke
           ./dist/NightDisplay --action status
-          xvfb-run -a ./dist/NightDisplay --action gui --selftest 5; echo "gui rc=$?"
+          set +e; xvfb-run -a ./dist/NightDisplay --action gui --selftest 5; rc=$?; echo "gui rc=$rc"; set -e
+          test $rc -eq 0
           ldd --version | head -1
           objdump -T dist/NightDisplay | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
           mkdir out && cp dist/NightDisplay README.md LICENSE NOTICE.md out/
