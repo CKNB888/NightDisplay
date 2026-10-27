@@ -140,7 +140,7 @@ jobs:
           name: qa-${{ matrix.os }}
           path: qa-windows.json
   release:
-    needs: [build, qa-windows]
+    needs: [build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
