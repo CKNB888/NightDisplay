@@ -395,3 +395,14 @@ def test_ipc_server_cannot_start_twice():
 def test_log_does_not_raise_when_data_directory_fails(monkeypatch):
     monkeypatch.setattr(core, "home", lambda: (_ for _ in ()).throw(OSError("denied")))
     core.log("still alive")
+
+
+def test_transition_frames_cover_full_progress():
+    from nightdisplay.ui import transition_frames
+
+    frames = transition_frames(2.5)
+    assert len(frames) == 10
+    assert frames[0] == (1, 10, 1)
+    assert frames[-1] == (10, 10, 2)
+    assert [step for step, _, _ in frames] == list(range(1, 11))
+    assert all(1 <= dots <= 4 for _, _, dots in frames)
