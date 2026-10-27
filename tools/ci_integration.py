@@ -66,7 +66,13 @@ def awake_check():
             raise SkipTest("No logind bus: " + out.strip()[:100])
     core.update(state="night")
     try:
-        B.keep_awake(True, 120); time.sleep(4)
+        try:
+            B.keep_awake(True, 120); time.sleep(4)
+        except RuntimeError:
+            if not IS_WIN and not IS_MAC:
+                rc, out = sh(["systemd-inhibit", "--list", "--no-pager"]) if shutil.which("systemd-inhibit") else (1, "no systemd-inhibit")
+                if rc: raise SkipTest("logind 不可用（容器/CI）：" + out.strip()[:100])
+            raise
         if IS_WIN:
             rc, out = sh(["powercfg", "/requests"])
             ok = "python" in out.lower() or "nightdisplay" in out.lower()
