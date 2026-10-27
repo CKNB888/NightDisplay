@@ -387,3 +387,24 @@ def status_text():
         "上次测试：%s %s 成功=%s 自动恢复=%s" % (cfg["last_test_mode"], cfg["last_test_at"][:19], cfg["last_test_ok"], cfg["last_recovery_at"][:19]),
         schedule_status(),
         "数据目录：%s" % home()])
+
+
+def selfcheck():
+    """Non-destructive environment report used by QA and support."""
+    from . import VERSION
+    r = {"version": VERSION, "os": platform.platform(), "python": sys.version.split()[0]}
+    for k, f in (("modes", available_modes), ("resolved_mode", lambda: resolve_mode("virtual_only")),
+                 ("virtual_display", has_virtual_display), ("autostart", autostart_status)):
+        try:
+            r[k] = f()
+        except Exception as e:
+            r[k] = "error: %s" % e
+    if IS_WIN:
+        r["win_build"] = win_build()
+    try:
+        cfg = load()
+        r["ranges"] = [list(x) for x in ranges(cfg)]
+        r["unlock_chord"] = cfg.get("unlock_chord")
+    except Exception as e:
+        r["config"] = "error: %s" % e
+    return r
