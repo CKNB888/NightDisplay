@@ -154,7 +154,7 @@ python -m build --wheel
 
 Windows 集成检查增加 `--vdd`。打包后的 EXE 由 `tools/qa_windows.py` 进行实际测试、组合键解锁、应急恢复、计划注册和卸载检查，不预填成功记录。
 
-GitHub Actions 在 Windows 2022、Windows latest、macOS Apple 芯片、macOS Intel 和 Ubuntu 上运行测试。测试通过后构建 Windows 安装器与免安装包、macOS DMG 与应用 ZIP、Linux 压缩包。正式 Release 必须同时通过测试、构建和 Windows 打包产物 QA，推送 `v*` 标签才会发布。工作流也支持手动运行。
+GitHub Actions 按平台分开跑。Windows 2022 和 Windows latest 的测试通过后，马上构建安装器与免安装包，并做打包产物 QA，不等 macOS，也不等 Linux。macOS Intel、macOS Apple 芯片、Ubuntu 各自测试通过后各自上传安装包；某一台分不到机器，只影响那一个平台。推送 `v*` 标签且 Windows QA 通过后，正式 Release 先发布 Windows 安装包。macOS 或 Linux 若随后构建成功，再把各自的包补进同一个 Release。工作流也支持手动运行。
 
 云端 VM 和 CI 没有你的实际一体机、UU/ToDesk 会话及真实背光控制。它们能验证操作系统接口、恢复和打包流程，不能代替硬件兼容性测试。没有跑过的机型和平台不标注为“已保证兼容”。
 
