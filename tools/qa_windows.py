@@ -100,10 +100,12 @@ def round_test(source, number):
         run("--action", "night", "--mode", "virtual_only")
         run("--action", "emergency")
         assert load()["state"] == "day" and not load()["enabled"], ("after emergency", load()["state"], load()["enabled"])
-        assert not has_tasks() and not has_runkey() and active_targets() == before, ("emergency cleanup", has_tasks(), has_runkey(), active_targets(), before)
+        assert not has_tasks() and has_runkey() and active_targets() == before, ("emergency cleanup", has_tasks(), has_runkey(), active_targets(), before)
         assert not (root / "state" / "night-power.json").exists()
-        events.append("PASS: emergency removes tasks, run key and temporary power scheme")
+        events.append("PASS: emergency removes tasks and temporary power scheme, keeps login autostart")
         run("--action", "uninstall")
+        assert not has_runkey(), "uninstall left the login autostart"
+        events.append("PASS: uninstall removes login autostart")
         gui.wait(timeout=20)
         return {"round": number, "ok": True, "evidence": events}
     except Exception as e:

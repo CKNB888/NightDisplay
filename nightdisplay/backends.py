@@ -78,6 +78,18 @@ def has_virtual_display(match=""):
     return False
 
 
+def bundled_virtual_connected():
+    """已经接上的是不是包内 Virtual Display Driver。旁边的 UU 等远程虚拟屏不算。"""
+    if not IS_WIN:
+        return False
+    try:
+        from . import win_display as W
+        return any(d.get("available") and W.bundled_vdd(d) for d in W.describe())
+    except Exception as e:
+        log("检测内置虚拟屏失败: %s" % e)
+    return False
+
+
 def validate_mode(mode):
     if mode not in available_modes():
         raise RuntimeError("不支持的模式“%s”。本系统可用：%s" % (mode, "、".join(available_modes())))
@@ -294,8 +306,12 @@ def awake_loop(seconds, token=""):
             ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
 
 
-def ensure_night():
-    """Repair resume/display changes without replacing the daytime backup."""
+def ensure_night(cover=None):
+    """Repair resume/display changes without replacing the daytime backup.
+
+    cover(True/False) 是黑幕。远程软件把实体屏顶回来时，先盖黑再改拓扑。
+    盖上之后先留着，避免下一次被顶亮时又看见桌面。已经只有虚拟屏时不再套用。
+    """
     c = load()
     if c.get("state") != "night" or c.get("recovery_pending"):
         return
@@ -310,9 +326,17 @@ def ensure_night():
             # 修复夜间拓扑时不要把显示器空闲又禁掉，否则一体机背光会一直亮。
             win_power.enter(keep_display_on=False)
         if not display.verify_virtual_only(match):
+            if cover:
+                shown = False
+                with contextlib.suppress(Exception):
+                    shown = cover(True) is True
+                if shown:
+                    log("实体屏被点亮，先盖上黑幕再收回虚拟屏")
             display.apply_virtual_only(match, log)
             if not display.verify_virtual_only(match):
                 raise RuntimeError("夜间输出已改变，无法重新确认只有虚拟屏")
+            # 收回成功也不揭开。远程软件常常马上又把实体屏顶回来，揭开就会看见桌面。
+            # 这层黑幕排除屏幕采集，远程仍看虚拟屏。回到白天时再关掉。
     elif c.get("night_mode") == "screen_off" and (IS_WIN or IS_MAC):
         # 基础关屏只发一次的话，键鼠把屏幕点亮后会一直亮到下一个时间边界。
         # 失败只记日志，不把夜间状态清掉。

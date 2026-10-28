@@ -186,13 +186,49 @@ def validate_config(cfg):
 
 
 def parse_hm(s):
-    if not re.fullmatch(r"\d{1,2}:\d{2}", str(s).strip()):
+    text = str(s).strip().replace("：", ":")
+    if not re.fullmatch(r"\d{1,2}:\d{2}", text):
         raise ValueError("时间格式应为 HH:MM，例如 20:00")
-    h, m = str(s).strip().split(":")
+    h, m = text.split(":")
     h, m = int(h), int(m)
     if not (0 <= h <= 23 and 0 <= m <= 59):
         raise ValueError("时间格式应为 HH:MM，例如 20:00")
     return h, m
+
+
+def hm_parts(value, fallback=(20, 0)):
+    """拆成小时和分钟。已经坏掉的文本用给定的默认值，避免界面卡在格式错误上。"""
+    try:
+        return parse_hm(value)
+    except ValueError:
+        return fallback
+
+
+def format_hm(hour, minute):
+    """下拉框里的小时和分钟收成 HH:MM。不是 0–23 点、0–59 分就拒绝。"""
+    try:
+        h = int(str(hour).strip())
+        m = int(str(minute).strip())
+    except (TypeError, ValueError):
+        raise ValueError("请从列表里选择时间") from None
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        raise ValueError("请从列表里选择时间")
+    return "%02d:%02d" % (h, m)
+
+
+def export_logs(dest):
+    """把保留的日志按日期合成一个文本文件，供导出。"""
+    logs = sorted(glob.glob(os.path.join(home(), "logs", "????-??-??.log")))
+    with open(dest, "w", encoding="utf-8") as out:
+        for path in logs:
+            out.write("===== %s =====\n" % os.path.basename(path))
+            try:
+                with open(path, encoding="utf-8") as src:
+                    out.write(src.read())
+            except OSError as e:
+                out.write("读取失败：%s\n" % e)
+            out.write("\n")
+    return len(logs)
 
 
 def is_night(start, end, now=None):

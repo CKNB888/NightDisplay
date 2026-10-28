@@ -22,7 +22,7 @@ def normalize(name):
         return u
     if u in ("SPACE", "TAB", "ESCAPE", "ESC"):
         return {"ESCAPE": "Esc", "ESC": "Esc"}.get(u, u.title())
-    raise ValueError("不支持的按键：%s（支持字母、数字、F1-F12、Ctrl/Alt/Shift/Win、Space/Tab/Esc）" % name)
+    raise ValueError("这个键用不了。请用字母、数字，或者 Ctrl、Alt、Shift。")
 
 
 def validate(keys):
@@ -32,11 +32,11 @@ def validate(keys):
         if k not in ks:
             ks.append(k)
     if not 2 <= len(ks) <= 3:
-        raise ValueError("组合键需要 2~3 个不同的按键")
+        raise ValueError("请同时按住 2 个或 3 个不同的键。只按一个不够。")
     if all(k in ("Ctrl", "Alt", "Shift", "Win") for k in ks):
-        raise ValueError("组合键至少要包含一个普通按键（字母/数字/F 键等）")
+        raise ValueError("不能只按 Ctrl、Alt、Shift 或 Win。要带上一个字母或数字，比如 C 和 K。")
     if set(ks) in ({"Ctrl", "Alt", "Esc"}, {"Alt", "Tab"}, {"Alt", "F4"}):
-        raise ValueError("该组合与系统快捷键冲突，请换一个")
+        raise ValueError("这个组合系统自己在用。请换两个键，比如 C 和 K。")
     return ks
 
 

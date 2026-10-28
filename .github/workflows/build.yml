@@ -154,8 +154,22 @@ jobs:
       - run: pip install pyinstaller pillow pystray
       - name: Tag matches code version
         if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
         run: |
-          python -c "import sys; sys.path.insert(0, '.'); from nightdisplay import VERSION; tag='${{ github.ref_name }}'[1:]; assert tag == VERSION, f'tag {tag} != code VERSION {VERSION}'; print(f'tag {tag} == VERSION {VERSION}')"
+          python - <<'PY'
+          import re, sys
+          from pathlib import Path
+          sys.path.insert(0, ".")
+          from nightdisplay import VERSION
+          tag = "${{ github.ref_name }}"[1:]
+          assert tag == VERSION, f"tag {tag} != code VERSION {VERSION}"
+          iss = Path("packaging/windows.iss").read_text(encoding="utf-8-sig")
+          found = re.search(r'#define AppVersion "([^"]+)"', iss)
+          assert found and found.group(1) == VERSION, f"installer AppVersion != {VERSION}"
+          pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+          assert f'version = "{VERSION}"' in pyproject, f"pyproject version != {VERSION}"
+          print(f"tag {tag} == VERSION {VERSION} == installer")
+          PY
       - name: Build Windows
         shell: bash
         run: |

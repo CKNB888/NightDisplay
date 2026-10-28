@@ -58,7 +58,7 @@ def test_reconcile_keeps_manual_night_outside_schedule(monkeypatch):
     calls = []
     monkeypatch.setattr(B, "go_day", lambda *a, **k: calls.append("day"))
     monkeypatch.setattr(B, "go_night", lambda *a, **k: calls.append("night"))
-    monkeypatch.setattr(B, "ensure_night", lambda: calls.append("ensure"))
+    monkeypatch.setattr(B, "ensure_night", lambda cover=None: calls.append("ensure"))
 
     class Frozen(dt.datetime):
         @classmethod
@@ -531,15 +531,51 @@ def test_log_does_not_raise_when_data_directory_fails(monkeypatch):
     core.log("still alive")
 
 
-def test_transition_frames_cover_full_progress():
-    from nightdisplay.ui import transition_frames
+def test_bundled_virtual_connected_ignores_other_virtual_displays(monkeypatch):
+    monkeypatch.setattr(B, "IS_WIN", True)
+    monkeypatch.setattr(W, "describe", lambda flags=0: [{"available": True, "name": "UU Virtual Display"}])
+    assert B.bundled_virtual_connected() is False
+    monkeypatch.setattr(W, "describe", lambda flags=0: [{"available": True, "name": "VDD by MTT"}])
+    assert B.bundled_virtual_connected() is True
+    monkeypatch.setattr(W, "describe", lambda flags=0: [{"available": False, "name": "VDD by MTT"}])
+    assert B.bundled_virtual_connected() is False
 
-    frames = transition_frames(2.5)
-    assert len(frames) == 10
-    assert frames[0] == (1, 10, 1)
-    assert frames[-1] == (10, 10, 2)
-    assert [step for step, _, _ in frames] == list(range(1, 11))
-    assert all(1 <= dots <= 4 for _, _, dots in frames)
+
+def test_lock_copy_uses_the_configured_chord():
+    pytest.importorskip("tkinter")
+    from nightdisplay.ui import lock_hint, prepare_manual_test, settings_block_message
+
+    text = lock_hint({"unlock_chord": ["A", "S"], "state": "night", "lock": True})
+    assert "A + S" in text
+    assert "C+K" not in text
+    assert "这个窗口上的按钮" in text
+    assert "开始菜单" in text
+    night = settings_block_message({"state": "night", "lock": True, "enabled": True, "unlock_chord": ["A", "S"]})
+    assert "A + S" in night
+    assert settings_block_message({"state": "day", "enabled": True, "lock": True}) == "先暂停每天自动黑屏，再改设置。"
+    assert settings_block_message({"state": "day", "enabled": False, "lock": True}) == ""
+    with pytest.raises(RuntimeError, match="请先暂停每天自动黑屏，再测试"):
+        prepare_manual_test({"enabled": True})
+    assert prepare_manual_test({"enabled": False}) is None
+    from nightdisplay.ui import manual_test_request
+    assert manual_test_request({"enabled": False}) == {"action": "test", "mode": "auto", "seconds": 15}
+
+
+def test_env_status_does_not_call_a_remote_display_the_bundled_driver(monkeypatch):
+    pytest.importorskip("tkinter")
+    from nightdisplay import ui
+
+    monkeypatch.setattr(ui.B, "bundled_virtual_connected", lambda: True)
+    assert ui.env_status() == "已经准备好。你这边黑屏时，远程还能用。"
+    monkeypatch.setattr(ui.B, "bundled_virtual_connected", lambda: False)
+    monkeypatch.setattr(ui.B, "has_virtual_display", lambda match="": True)
+    assert ui.env_status() == "已经准备好。用的是另外安装的远程屏幕。"
+    monkeypatch.setattr(ui.B, "has_virtual_display", lambda match="": False)
+    monkeypatch.setattr(ui, "IS_WIN", True)
+    monkeypatch.setattr(ui.B, "win_build", lambda: 19041)
+    assert ui.env_status() == "已经准备好。黑屏时会在你这边盖上黑幕。"
+    monkeypatch.setattr(ui, "IS_WIN", False)
+    assert ui.env_status() == "已经准备好。到点会关掉屏幕，动一下鼠标就会亮。"
 
 
 def test_overlay_geometry_covers_negative_virtual_origin():
@@ -658,6 +694,52 @@ def test_virtual_only_lets_the_panel_power_down(monkeypatch):
     assert B.windows_execution_flags("overlay") == 0x80000003
 
 
+def test_export_logs_joins_every_daily_file(tmp_path):
+    folder = os.path.join(core.home(), "logs")
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "2026-01-01.log"), "w", encoding="utf-8") as handle:
+        handle.write("first\n")
+    with open(os.path.join(folder, "2026-01-02.log"), "w", encoding="utf-8") as handle:
+        handle.write("second\n")
+    dest = str(tmp_path / "NightDisplay-logs.txt")
+    assert core.export_logs(dest) == 2
+    with open(dest, encoding="utf-8") as handle:
+        text = handle.read()
+    assert "===== 2026-01-01.log =====" in text
+    assert "first" in text and "second" in text
+    for name in os.listdir(folder):
+        os.remove(os.path.join(folder, name))
+    assert core.export_logs(str(tmp_path / "empty.txt")) == 0
+
+
+def test_ensure_night_covers_before_reapply(monkeypatch):
+    monkeypatch.setattr(B, "IS_WIN", True)
+    core.update(state="night", night_mode="virtual_only", keep_awake=False, virtual_match="")
+    order = []
+    checks = {"n": 0}
+
+    def verify(match):
+        checks["n"] += 1
+        order.append("verify")
+        return checks["n"] >= 2
+
+    def apply(match, logger):
+        del match, logger
+        order.append("apply")
+
+    def enter(keep_display_on=True):
+        order.append(("power", keep_display_on))
+
+    def cover(on):
+        order.append(("cover", on))
+
+    monkeypatch.setattr(W, "verify_virtual_only", verify)
+    monkeypatch.setattr(W, "apply_virtual_only", apply)
+    monkeypatch.setattr("nightdisplay.win_power.enter", enter)
+    B.ensure_night(cover=cover)
+    assert order == [("power", False), "verify", ("cover", True), "apply", "verify"]
+
+
 def test_ensure_night_virtual_does_not_force_the_panel_on(monkeypatch):
     monkeypatch.setattr(B, "IS_WIN", True)
     core.update(state="night", night_mode="virtual_only", keep_awake=False, virtual_match="")
@@ -676,7 +758,7 @@ def test_night_repair_failure_keeps_the_schedule(monkeypatch):
     core.update(enabled=True, state="night", night_mode="virtual_only", start="20:00", end="10:30")
     monkeypatch.setattr(app, "in_night", lambda cfg: True)
 
-    def boom():
+    def boom(cover=None):
         raise RuntimeError("topology lost")
 
     monkeypatch.setattr(B, "ensure_night", boom)
@@ -953,7 +1035,7 @@ def test_pause_does_not_delete_the_login_entry(monkeypatch):
     assert cfg["autostart_preference"] is True
 
 
-def test_emergency_removes_the_login_entry_without_clearing_preference(monkeypatch):
+def test_emergency_keeps_the_login_entry_when_preference_stays_on(monkeypatch):
     monkeypatch.setattr(app, "IS_WIN", True)
     monkeypatch.setattr(B, "IS_WIN", True)
     monkeypatch.setattr(B, "IS_MAC", False)
@@ -965,8 +1047,23 @@ def test_emergency_removes_the_login_entry_without_clearing_preference(monkeypat
     monkeypatch.setattr(B, "set_autostart", lambda on: calls.append(on))
     core.update(autostart_preference=True, autostart=True, night_mode="overlay")
     app.emergency()
-    assert calls == [False]
+    assert calls == [True]
     assert core.load()["autostart_preference"] is True
+
+
+def test_emergency_removes_the_login_entry_when_preference_is_off(monkeypatch):
+    monkeypatch.setattr(app, "IS_WIN", True)
+    monkeypatch.setattr(B, "IS_WIN", True)
+    monkeypatch.setattr(B, "IS_MAC", False)
+    monkeypatch.setattr(B, "_win_delete_tasks", lambda: 0)
+    monkeypatch.setattr(B, "go_day", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "apply_cursor", lambda hidden: None)
+    calls = []
+    monkeypatch.setattr(B, "set_autostart", lambda on: calls.append(on))
+    core.update(autostart_preference=False, autostart=False, night_mode="overlay")
+    app.emergency()
+    assert calls == [False]
+    assert core.load()["autostart_preference"] is False
 
 
 def test_uninstall_keeps_autostart_off(monkeypatch):

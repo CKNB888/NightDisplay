@@ -70,13 +70,13 @@ def activate(mode, start, end):
         real = tested
     if not (cfg.get("last_test_ok") and mode_matches and tested in B.available_modes()
             and cfg.get("last_recovery_mode") == tested and cfg.get("last_recovery_at")):
-        raise RuntimeError("请先用“%s”完成一次测试（自动恢复），确认屏幕和远程都正常后再启用。" % B.MODES.get(real, real))
+        raise RuntimeError("请先点「测试 15 秒」完成一次测试，等屏幕自己亮回来，再启用每天自动黑屏。")
     try:
         age = (dt.datetime.now() - dt.datetime.fromisoformat(cfg["last_test_at"])).total_seconds()
     except (ValueError, TypeError):
         age = -1
     if not 0 <= age <= 86400:
-        raise RuntimeError("上次测试已超过 24 小时，请重新测试。")
+        raise RuntimeError("上次测试已经超过一天。请再点一次「测试 15 秒」，等屏幕自己亮回来，然后再启用。")
     autostart = cfg.get("autostart_preference", cfg.get("autostart", True))
     scheduled = real if verified_fallback else mode
     candidate = dict(cfg, mode=scheduled, start=start, end=end, autostart=autostart)
@@ -107,9 +107,9 @@ def pause():
 def start_test(mode, seconds, overlay_cb=None):
     cfg = load()
     if cfg.get("enabled"):
-        raise RuntimeError("请先暂停每日计划再测试")
+        raise RuntimeError("请先暂停每天自动黑屏，再测试。")
     if cfg.get("state") == "night" or cfg.get("test_id"):
-        raise RuntimeError("请先恢复显示，等待当前测试完成")
+        raise RuntimeError("屏幕还黑着，或者上一次测试还没结束。等它自己亮回来再试。")
     if not 10 <= seconds <= 3600:
         raise ValueError("测试时长应为 10 到 3600 秒")
     B.validate_mode(mode)
@@ -231,10 +231,9 @@ def emergency(overlay_cb=None, quiet=False):
         pause()
     except Exception as e:
         errors.append(str(e))
-    # 暂停计划不碰登录项。应急恢复要关掉当前这次自启，QA 也检查 Run 值已经删除。
-    # 偏好不改。偏好仍是开时，下次打开会按当前程序重新写上。
+    # 应急只结束这一次黑屏和每日计划。开机自启偏好仍开时，登录项留着，下次开机托盘还在。
     try:
-        B.set_autostart(False)
+        B.set_autostart(bool(load().get("autostart_preference", True)))
     except Exception as e:
         errors.append(str(e))
     update(test_id="", last_test_ok=False, test_aborted=False)
@@ -251,7 +250,7 @@ def emergency(overlay_cb=None, quiet=False):
 @B.serialized
 def uninstall(overlay_cb=None):
     emergency(overlay_cb, quiet=True)
-    # 应急恢复会删掉 Run 值，但自启偏好如果还是开，下次打开又会写回去。
+    # 应急恢复会按自启偏好把登录项留着。卸载必须先把偏好关掉，再删这一项。
     update(autostart_preference=False, autostart=False)
     try:
         B.set_autostart(False)
@@ -301,7 +300,7 @@ def note_manual_night():
 
 
 @B.serialized
-def reconcile(overlay_cb=None):
+def reconcile(overlay_cb=None, repair_cover=None):
     cfg = load()
     if cfg.get("recovery_pending"):
         B.go_day(overlay_cb)
@@ -337,7 +336,7 @@ def reconcile(overlay_cb=None):
     if want == cfg.get("state"):
         if want == "night":
             try:
-                B.ensure_night()
+                B.ensure_night(cover=repair_cover)
             except Exception as e:
                 # 一次拓扑或关屏失败不能关掉每日计划，也不能把屏幕主动亮回去。
                 # 屏幕若被点亮，下一次检查会再关。
@@ -539,25 +538,69 @@ def apply_overlay_chrome(user32, hwnd, build):
 
 
 def make_overlay(root, on_cover=None, on_fail=None):
-    """返回 overlay_cb(on)。Windows 用 WDA_EXCLUDEFROMCAPTURE：本地黑，屏幕采集看不到它；鼠标键盘穿透，不拦截输入。"""
-    state = {"win": None}
+    """返回 overlay_cb(on, hide_cursor=True)。
+
+    Windows 用 WDA_EXCLUDEFROMCAPTURE：本地黑，屏幕采集看不到它；鼠标键盘穿透。
+    hide_cursor 只给真正的防窥黑幕用。虚拟屏修复时盖上的黑幕不改系统光标。
+    """
+    state = {"win": None, "hid_cursor": False}
 
     def fail(window):
         if window is not None:
             with contextlib.suppress(Exception):
                 window.destroy()
         state["win"] = None
-        apply_cursor(False)
+        if state["hid_cursor"]:
+            apply_cursor(False)
+            state["hid_cursor"] = False
         if on_fail:
             on_fail()
 
-    def cb(on):
+    def screen_bounds(widget):
+        x = y = 0
+        width, height = widget.winfo_screenwidth(), widget.winfo_screenheight()
+        if IS_WIN:
+            import ctypes
+            gm = ctypes.windll.user32.GetSystemMetrics
+            vx, vy, vw, vh = gm(76), gm(77), gm(78), gm(79)  # 虚拟屏幕原点与尺寸
+            if vw > 0 and vh > 0:
+                x, y, width, height = vx, vy, vw, vh
+        return x, y, width, height
+
+    def place_windows(widget, x, y, width, height):
+        import ctypes
+        from ctypes import wintypes as T
+        u = ctypes.windll.user32
+        u.GetParent.argtypes = [T.HWND]
+        u.GetParent.restype = T.HWND
+        u.SetWindowPos.argtypes = [T.HWND, T.HWND, ctypes.c_int, ctypes.c_int,
+                                  ctypes.c_int, ctypes.c_int, T.UINT]
+        hwnd = u.GetParent(widget.winfo_id()) or widget.winfo_id()
+        # SWP_NOACTIVATE | SWP_SHOWWINDOW。已有窗口再盖一次时，要跟着新出现的屏挪位置。
+        if not u.SetWindowPos(hwnd, T.HWND(-1), x, y, width, height, 0x10 | 0x40):
+            raise RuntimeError("无法覆盖全部显示器")
+
+    def cb(on, hide_cursor=True):
         box = {"ok": False}
         def do():
             import tkinter as tk
             if on and not overlay_window_alive(state["win"]):
                 state["win"] = None
-            if on and state["win"] is None:
+                state["hid_cursor"] = False
+            if on and state["win"] is not None:
+                w = state["win"]
+                try:
+                    x, y, width, height = screen_bounds(w)
+                    w.geometry(overlay_geometry(x, y, width, height))
+                    w.attributes("-topmost", True)
+                    w.lift()
+                    if IS_WIN:
+                        place_windows(w, x, y, width, height)
+                except Exception as e:
+                    log("防窥黑幕未能重新盖住全部屏幕：%s" % e)
+                    fail(w)
+                    return
+            elif on and state["win"] is None:
                 w = None
                 try:
                     if on_cover:
@@ -565,14 +608,7 @@ def make_overlay(root, on_cover=None, on_fail=None):
                     w = tk.Toplevel(root)
                     w.overrideredirect(True)
                     w.configure(bg="#000000")
-                    x = y = 0
-                    width, height = w.winfo_screenwidth(), w.winfo_screenheight()
-                    if IS_WIN:
-                        import ctypes
-                        gm = ctypes.windll.user32.GetSystemMetrics
-                        vx, vy, vw, vh = gm(76), gm(77), gm(78), gm(79)  # 虚拟屏幕原点与尺寸
-                        if vw > 0 and vh > 0:
-                            x, y, width, height = vx, vy, vw, vh
+                    x, y, width, height = screen_bounds(w)
                     w.geometry(overlay_geometry(x, y, width, height))
                     w.attributes("-topmost", True)
                     # 黑幕上不放文字、图标或动画，避免本机看出电脑还开着。
@@ -606,7 +642,9 @@ def make_overlay(root, on_cover=None, on_fail=None):
                         if not ok:
                             raise RuntimeError("排除采集失败")
                     state["win"] = w
-                    apply_cursor(True)
+                    if hide_cursor:
+                        apply_cursor(True)
+                        state["hid_cursor"] = True
                 except Exception as e:
                     log("防窥黑幕未能确认显示：%s" % e)
                     fail(w)
@@ -614,7 +652,9 @@ def make_overlay(root, on_cover=None, on_fail=None):
             elif not on and state["win"] is not None:
                 state["win"].destroy()
                 state["win"] = None
-                apply_cursor(False)
+                if state["hid_cursor"]:
+                    apply_cursor(False)
+                    state["hid_cursor"] = False
                 log("防窥黑幕已关闭")
             box["ok"] = (state["win"] is not None) if on else True
         if threading.current_thread() is threading.main_thread():
@@ -724,6 +764,10 @@ def run_app(show_window=True, selftest=0):
             apply_cursor(False)
 
     overlay = make_overlay(root, on_cover=conceal_settings, on_fail=reveal_settings)
+
+    def repair_cover(on):
+        # 虚拟屏被顶回来时只盖黑，不把系统光标换成空白，远程指针保持原样。
+        return overlay(on, hide_cursor=False)
     pending = queue.Queue()
     closing = threading.Event()
 
@@ -741,6 +785,9 @@ def run_app(show_window=True, selftest=0):
 
     def _act(name, data):
         if name in ("day", "emergency", "quit") and is_locked():
+            # 托盘没有设置窗口可弹。这里只记日志，不往黑屏上补对话框。
+            keys = chord.fmt(load().get("unlock_chord") or chord.DEFAULT_CHORD)
+            log("屏幕已锁定，本次恢复未执行。请按住 %s 约 0.3 秒。" % keys)
             return "locked"
         if name in ("night", "test") and load().get("lock", True):
             reader = chord.Reader(load().get("unlock_chord") or chord.DEFAULT_CHORD)
@@ -762,7 +809,7 @@ def run_app(show_window=True, selftest=0):
             B.go_day(overlay)
             update(test_id="", last_test_ok=False, test_aborted=False)
         elif name == "reconcile":
-            return reconcile(overlay)
+            return reconcile(overlay, repair_cover)
         elif name == "ping":
             return "ok"
         elif name == "show":
@@ -844,17 +891,17 @@ def run_app(show_window=True, selftest=0):
 
         def tick():
             try:
-                reconcile(overlay)
+                reconcile(overlay, repair_cover)
                 if not load().get("enabled") and load().get("state") == "night":
-                    B.ensure_night()
+                    B.ensure_night(cover=repair_cover)
             except Exception as e:
                 log("定时检查出错: %s" % e)
             finally:
                 # 黑幕窗口被系统拆掉后要重新盖上。光标也要每轮再藏一次。
                 maintain_overlay()
                 sync_night_window(refresh_cursor=True)
-            root.after(5000, tick)
-        root.after(2000, tick)
+            root.after(1000, tick)
+        root.after(1000, tick)
         # A destroyed overlay cannot still be treated as active after a restart.
         if load().get("state") == "night" and load().get("night_mode") == "overlay":
             cfg = load()

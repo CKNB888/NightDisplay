@@ -26,6 +26,14 @@ def test_bad_time():
     with pytest.raises(ValueError):
         core.parse_hm("25:00")
 
+def test_fullwidth_colon_and_dropdown_parts():
+    assert core.parse_hm("20：00") == (20, 0)
+    assert core.parse_hm(" 9:05 ") == (9, 5)
+    assert core.hm_parts("坏的", (10, 30)) == (10, 30)
+    assert core.format_hm("8", "5") == "08:05"
+    with pytest.raises(ValueError, match="请从列表里选择时间"):
+        core.format_hm("时", "分")
+
 def test_config_and_backup_roundtrip():
     core.update(start="21:15")
     assert core.load()["start"] == "21:15"
