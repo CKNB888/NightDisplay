@@ -20,7 +20,7 @@ SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\NightDisplay.exe
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 [Messages]
 WelcomeLabel2=安装完成后，桌面上会出现 NightDisplay，双击就能打开。%n%n它会在你选好的时间把这台电脑的屏幕变黑，远程的人还能继续用。开机以后它会自己在后台运行，不用每次再去找。
 FinishedLabel=装好了。桌面上的 NightDisplay 可以直接双击打开。%n%n第一次打开，先点「测试 15 秒」。屏幕会黑一小会儿，然后自己亮回来。

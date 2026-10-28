@@ -192,7 +192,7 @@ jobs:
           # 注意：上面 cd out 之后当前目录还在 out/ 里，必须先 cd .. 回仓库根，
           # 否则 iscc 找不到 packaging/windows.iss，只报“找不到路径”就退出码 2。
           cd ..
-          choco install innosetup -y --no-progress
+          choco install innosetup --version=6.7.1 -y --no-progress
           iscc packaging/windows.iss
           test -f NightDisplay-Windows-x64-Setup.exe
       - uses: actions/upload-artifact@v4
