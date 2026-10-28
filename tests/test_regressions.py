@@ -119,6 +119,20 @@ def test_atomic_writer_keeps_old_file_on_serialization_failure():
     assert core.load()["start"] == "21:00"
 
 
+def test_windows_replace_retries_then_writes_in_place(monkeypatch, tmp_path):
+    """Windows 拒绝改名覆盖时，状态仍要写进去。否则 15 秒测试恢复后会一直等不到白天。"""
+    path = tmp_path / "config.json"
+    path.write_text('{"state": "night"}\n', encoding="utf-8")
+    def blocked(*_args):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr("nightdisplay.storage.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("nightdisplay.storage.os.replace", blocked)
+    monkeypatch.setattr("nightdisplay.storage.os.name", "nt")
+    write_json(str(path), {"state": "day"})
+    assert json.loads(path.read_text(encoding="utf-8"))["state"] == "day"
+
+
 @pytest.mark.parametrize("data", [[], {"enabled": "true"}, {"extra_ranges": [["10:00"]]}, {"theme": "bad"}])
 def test_corrupt_config_reported(data):
     write_json(core.config_path(), data)

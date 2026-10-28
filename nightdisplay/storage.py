@@ -64,15 +64,34 @@ def file_lock(path, timeout=60):
         lock.release()
 
 
+def _replace_file(tmp, path):
+    """换成新文件。Windows 正在读旧文件时，改名会拒绝访问，先重试再直接写入。"""
+    last = None
+    for _attempt in range(30):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError as blocked:
+            last = blocked
+            time.sleep(0.05)
+    if os.name != "nt":
+        raise last
+    # 旧文件被打开着时，Windows 不允许覆盖改名。内容写进原文件，避免状态停在夜间。
+    with open(tmp, encoding="utf-8") as src, open(path, "w", encoding="utf-8") as dest:
+        dest.write(src.read())
+        dest.flush()
+        os.fsync(dest.fileno())
+
+
 def write_json(path, data):
     """Replace in the same directory; readers see either complete version."""
-    fd, tmp = tempfile.mkstemp(prefix=".nd-", dir=os.path.dirname(path))
+    fd, tmp = tempfile.mkstemp(prefix=".nd-", dir=os.path.dirname(path) or ".")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        _replace_file(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
