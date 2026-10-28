@@ -151,6 +151,14 @@ Say "== VDD install OK =="
 exit 0
 
 } finally {
-  if ($added) { $store.Remove($sig.SignerCertificate) }
-  $store.Close()
+  # Remove 要用商店里的那一份。签名对象对不上会抛错，不能因此跳过 Close，也不能把已经装好的结果改成失败。
+  if ($added -and $sig.SignerCertificate) {
+    try {
+      $again = $store.Certificates.Find('FindByThumbprint', $sig.SignerCertificate.Thumbprint, $false)
+      foreach ($cert in $again) { $store.Remove($cert) }
+    } catch {
+      Say "certificate cleanup failed: $($_.Exception.Message)"
+    }
+  }
+  try { $store.Close() } catch { Say "certificate store close failed: $($_.Exception.Message)" }
 }

@@ -159,7 +159,8 @@ def test_day_does_not_apply_stale_virtual_backup(mode, monkeypatch):
 
 
 def test_emergency_restores_even_if_task_cleanup_fails(monkeypatch):
-    monkeypatch.setattr(B, "schedule_remove", lambda: (_ for _ in ()).throw(RuntimeError("scheduler failed")))
+    monkeypatch.setattr(B, "schedule_remove", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("scheduler failed")))
+    monkeypatch.setattr(B, "set_autostart", lambda on: None)
     restored = []
     monkeypatch.setattr(B, "go_day", lambda *a, **kw: restored.append(True))
     with pytest.raises(RuntimeError, match="scheduler failed"):
@@ -893,6 +894,38 @@ def test_stale_run_command_is_rewritten(monkeypatch):
     assert core.load()["autostart"] is True
 
 
+def test_pause_does_not_delete_the_login_entry(monkeypatch):
+    monkeypatch.setattr(B, "IS_WIN", True)
+    monkeypatch.setattr(B, "IS_MAC", False)
+    monkeypatch.setattr(B, "_win_delete_tasks", lambda: 1)
+    calls = []
+    monkeypatch.setattr(B, "set_autostart", lambda on: calls.append(on))
+    monkeypatch.setattr(B, "autostart_status", lambda: True)
+    core.update(enabled=True, autostart=True, autostart_preference=True)
+    app.pause()
+    cfg = core.load()
+    assert calls == []
+    assert cfg["enabled"] is False
+    assert cfg["autostart"] is True
+    assert cfg["autostart_preference"] is True
+
+
+def test_emergency_removes_the_login_entry_without_clearing_preference(monkeypatch):
+    monkeypatch.setattr(app, "IS_WIN", True)
+    monkeypatch.setattr(B, "IS_WIN", True)
+    monkeypatch.setattr(B, "IS_MAC", False)
+    monkeypatch.setattr(B, "_win_delete_tasks", lambda: 0)
+    monkeypatch.setattr(B, "go_day", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app, "apply_cursor", lambda hidden: None)
+    monkeypatch.setattr(B, "autostart_status", lambda: True)
+    calls = []
+    monkeypatch.setattr(B, "set_autostart", lambda on: calls.append(on))
+    core.update(autostart_preference=True, autostart=True, night_mode="overlay")
+    app.emergency()
+    assert calls == [False]
+    assert core.load()["autostart_preference"] is True
+
+
 def test_uninstall_keeps_autostart_off(monkeypatch):
     cleared = []
     monkeypatch.setattr(app, "emergency", lambda *args, **kwargs: None)
@@ -913,6 +946,7 @@ def test_existing_virtual_display_still_applies_autostart(monkeypatch):
     monkeypatch.setattr(app, "bundled_driver_present", lambda: True)
     monkeypatch.setattr(B, "has_virtual_display", lambda match="": True)
     monkeypatch.setattr(B, "autostart_status", lambda: False)
+    monkeypatch.setattr(B, "autostart_command", lambda: "")
     writes = []
     monkeypatch.setattr(B, "set_autostart", lambda on: writes.append(on))
     core.update(autostart_preference=True)

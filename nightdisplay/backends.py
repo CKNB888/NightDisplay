@@ -728,21 +728,24 @@ def autostart_status():
     return os.path.exists(os.path.expanduser("~/Library/LaunchAgents/com.nightdisplay.tray.plist"))
 
 
-def schedule_remove():
-    """删除计划任务和自启项，并把配置 autostart 置 False。返回实际删除的项目列表。"""
+def schedule_remove(drop_autostart=True):
+    """删除计划任务。drop_autostart 为真时才删登录自启，并把配置里的 autostart 写成关。
+
+    暂停每日计划不删 HKCU Run。登录自启由 autostart_preference 单独决定。
+    """
     removed = []
     if IS_WIN:
         n = _win_delete_tasks()
         if n:
             removed.append("计划任务 %d 个" % n)
-        if autostart_status():
+        if drop_autostart and autostart_status():
             set_autostart(False); removed.append("开机自启(注册表 Run)")
     elif IS_MAC:
         path = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % LA_LABEL)
         if os.path.exists(path):
             run(["launchctl", "unload", path], check=False)
             os.remove(path); removed.append("LaunchAgent")
-        if autostart_status():
+        if drop_autostart and autostart_status():
             set_autostart(False); removed.append("开机自启")
     else:
         tim = os.path.join(_systemd_dir(), SD_UNIT + ".timer")
@@ -753,9 +756,10 @@ def schedule_remove():
             p = os.path.join(_systemd_dir(), SD_UNIT + ext)
             if os.path.exists(p):
                 os.remove(p); removed.append("systemd " + ext[1:])
-        if autostart_status():
+        if drop_autostart and autostart_status():
             set_autostart(False); removed.append("XDG 自启")
-    update(autostart=False)
+    if drop_autostart:
+        update(autostart=False)
     log("已删除：%s" % "、".join(removed) if removed else "无已注册项（计划任务/自启项本来就不存在）")
     return removed
 

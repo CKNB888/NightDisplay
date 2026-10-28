@@ -99,8 +99,8 @@ def activate(mode, start, end):
 @B.serialized
 def pause():
     update(enabled=False, hold_night_until="")
-    B.schedule_remove()
-    log("已暂停每日计划（不改变当前显示）")
+    B.schedule_remove(drop_autostart=False)
+    log("已暂停每日计划（不改变当前显示，也不删除登录自启）")
 
 
 @B.serialized
@@ -229,6 +229,12 @@ def emergency(overlay_cb=None, quiet=False):
             log("应急显示检测失败，仍尝试唤醒：%s" % e)
     try:
         pause()
+    except Exception as e:
+        errors.append(str(e))
+    # 暂停计划不碰登录项。应急恢复要关掉当前这次自启，QA 也检查 Run 值已经删除。
+    # 偏好不改。偏好仍是开时，下次打开会按当前程序重新写上。
+    try:
+        B.set_autostart(False)
     except Exception as e:
         errors.append(str(e))
     update(test_id="", last_test_ok=False, test_aborted=False)

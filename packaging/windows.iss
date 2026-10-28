@@ -36,11 +36,14 @@ function InitializeUninstall(): Boolean;
 var Code: Integer;
 begin
   Result := True;
-  if FileExists(ExpandConstant('{app}\NightDisplay.exe')) then
+  if not FileExists(ExpandConstant('{app}\NightDisplay.exe')) then
   begin
-    Result := Exec(ExpandConstant('{app}\NightDisplay.exe'), '--action uninstall', '', SW_HIDE, ewWaitUntilTerminated, Code);
-    Result := Result and (Code = 0);
-    if not Result then
-      MsgBox('Display recovery failed. Restore the display in NightDisplay before uninstalling.', mbError, MB_OK);
+    { 程序已经不在时，仍只删这一个值名，不动 Run 键里的其他项。 }
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'NightDisplay');
+    Exit;
   end;
+  Result := Exec(ExpandConstant('{app}\NightDisplay.exe'), '--action uninstall', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Result := Result and (Code = 0);
+  if not Result then
+    MsgBox('Display recovery failed. Restore the display in NightDisplay before uninstalling.', mbError, MB_OK);
 end;
