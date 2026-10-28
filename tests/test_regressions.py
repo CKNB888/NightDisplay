@@ -984,14 +984,23 @@ def test_stale_run_command_is_rewritten(monkeypatch):
         HKEY_CURRENT_USER = 0
         KEY_SET_VALUE = 2
 
+        REG_BINARY = 3
+
         def __init__(self):
-            self.values = {"NightDisplay": (1, r"C:\old\NightDisplay.exe --tray")}
+            self.paths = {
+                r"Software\Microsoft\Windows\CurrentVersion\Run": {
+                    "NightDisplay": (1, r"C:\old\NightDisplay.exe --tray"),
+                },
+            }
 
         def OpenKey(self, root, path):
-            return Key(self.values)
+            if path not in self.paths:
+                raise OSError(2, "missing")
+            return Key(self.paths[path])
 
         def CreateKeyEx(self, root, path, reserved, access):
-            return Key(self.values)
+            self.paths.setdefault(path, {})
+            return Key(self.paths[path])
 
         def QueryValueEx(self, key, name):
             if name not in key.store:
@@ -1015,8 +1024,23 @@ def test_stale_run_command_is_rewritten(monkeypatch):
     monkeypatch.setattr(app, "bundled_driver_present", lambda: False)
     core.update(autostart_preference=True, autostart=False)
     app.ensure_environment()
-    assert reg.values["NightDisplay"][1] == r"C:\new\NightDisplay.exe --home C:\data --tray"
+    command = reg.paths[r"Software\Microsoft\Windows\CurrentVersion\Run"]["NightDisplay"][1]
+    assert command == r"C:\new\NightDisplay.exe --home C:\data --tray"
+    approved = reg.paths[B.STARTUP_APPROVED_KEY]["NightDisplay"][1]
+    assert approved[:1] == b"\x02"
     assert core.load()["autostart"] is True
+
+
+def test_retimed_rewrites_the_plan_without_pausing(monkeypatch):
+    installed = []
+    monkeypatch.setattr(B, "schedule_install", lambda cfg: installed.append((cfg["start"], cfg["end"], cfg["enabled"])))
+    monkeypatch.setattr(B, "schedule_remove", lambda **kwargs: pytest.fail("paused"))
+    core.update(enabled=True, start="20:00", end="10:30", autostart=True)
+    app.retimed("21:15", "07:00")
+    cfg = core.load()
+    assert cfg["enabled"] is True
+    assert cfg["start"] == "21:15" and cfg["end"] == "07:00"
+    assert installed == [("21:15", "07:00", True)]
 
 
 def test_pause_does_not_delete_the_login_entry(monkeypatch):
@@ -1173,6 +1197,47 @@ def test_changed_capability_still_requires_a_new_test(monkeypatch):
     monkeypatch.setattr(B, "schedule_install", lambda cfg: pytest.fail("schedule"))
     with pytest.raises(RuntimeError, match="完成一次测试"):
         app.activate("auto", "20:00", "10:30")
+
+
+def test_startup_during_scheduled_blackout_does_not_light(monkeypatch):
+    monkeypatch.setattr(app, "in_night", lambda cfg, now=None: True)
+    core.update(enabled=True, state="night", night_mode="virtual_only",
+                start="20:00", end="10:30", recovery_pending=True, override_until="")
+    monkeypatch.setattr(B, "go_day", lambda *args, **kwargs: pytest.fail("lit"))
+    monkeypatch.setattr(B, "go_night", lambda *args, **kwargs: pytest.fail("reentered"))
+    kept = []
+    monkeypatch.setattr(B, "ensure_night", lambda cover=None: kept.append("keep"))
+    assert app.startup_display() == "night"
+    assert kept == ["keep"]
+    assert core.load()["recovery_pending"] is False
+
+
+def test_startup_outside_the_period_still_restores_a_stuck_night(monkeypatch):
+    monkeypatch.setattr(app, "in_night", lambda cfg, now=None: False)
+    core.update(enabled=True, state="night", night_mode="virtual_only", start="20:00", end="10:30")
+    calls = []
+    monkeypatch.setattr(B, "go_day", lambda *args, **kwargs: calls.append("day") or core.update(state="day", night_mode=""))
+    assert app.startup_display() == "recovered"
+    assert calls == ["day"]
+
+
+def test_startup_after_chord_unlock_does_not_black_again(monkeypatch):
+    monkeypatch.setattr(app, "in_night", lambda cfg, now=None: True)
+    until = (dt.datetime.now() + dt.timedelta(minutes=30)).isoformat()
+    core.update(enabled=True, state="day", night_mode="", override_until=until, start="20:00", end="10:30")
+    monkeypatch.setattr(B, "go_night", lambda *args, **kwargs: pytest.fail("black"))
+    monkeypatch.setattr(B, "go_day", lambda *args, **kwargs: pytest.fail("day"))
+    assert app.startup_display() == "clean"
+
+
+def test_reconcile_does_not_light_a_pending_recovery_during_the_period(monkeypatch):
+    monkeypatch.setattr(app, "in_night", lambda cfg, now=None: True)
+    core.update(enabled=True, state="night", night_mode="virtual_only", recovery_pending=True,
+                start="20:00", end="10:30", override_until="")
+    monkeypatch.setattr(B, "go_day", lambda *args, **kwargs: pytest.fail("lit"))
+    monkeypatch.setattr(B, "ensure_night", lambda cover=None: None)
+    assert app.reconcile() == "unchanged"
+    assert core.load()["recovery_pending"] is False
 
 
 def test_orphaned_virtual_night_is_restored_on_startup(monkeypatch):

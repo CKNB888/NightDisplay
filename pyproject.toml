@@ -1,6 +1,6 @@
 [project]
 name = "nightdisplay"
-version = "3.0.10"
+version = "3.0.11"
 description = "每天定时让本地屏幕变黑、远程照常可用（Windows/macOS/Linux）"
 readme = "README.md"
 license = "MIT"

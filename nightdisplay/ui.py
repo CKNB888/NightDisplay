@@ -1,6 +1,8 @@
 """设置窗口用系统控件，不自绘。
 
 Windows 上 Tk 的 vista 主题走 comctl6 / uxtheme，按钮和输入框由系统绘制。
+Mac 上用 aqua：系统字体、系统次级文字色、主按钮靠右并交给系统画成蓝色。
+不自绘红绿灯、毛玻璃或圆角卡片。那些东西盖住系统控件，也不是 Mac 的界面。
 WinUI 3 和 WPF 要另带一套运行时，而这扇窗口夜里会撤掉，黑屏本体仍是原来的无边框窗口。
 两套界面叠在一起只增加启动和内存，不加快黑屏。这里不放装饰动画，也不另做配色。
 """
@@ -32,8 +34,7 @@ from .core import (
 HOURS = ["%02d" % n for n in range(24)]
 MINUTES = ["%02d" % n for n in range(60)]
 
-SUBTITLE = "这台电脑到点会黑屏，远程的人还能用。"
-GUIDE = "第一次用：先点「测试 15 秒」，等屏幕自己亮回来，再点「启用每天自动黑屏」。开机后会自己在后台运行，桌面上的图标也能打开它。"
+SUBTITLE = "到点这台电脑黑屏，远程还能用。"
 
 
 def use_native_theme(root):
@@ -47,15 +48,36 @@ def use_native_theme(root):
         with contextlib.suppress(tk.TclError):
             style.theme_use("aqua")
     if IS_WIN:
-        family, size = "Microsoft YaHei UI", 9
+        family, size = "Microsoft YaHei UI", 12
     elif IS_MAC:
         family, size = "PingFang SC", 13
     else:
-        family, size = "Noto Sans CJK SC", 10
+        family, size = "Noto Sans CJK SC", 11
     for name in ("TkDefaultFont", "TkTextFont", "TkHeadingFont", "TkMenuFont"):
         with contextlib.suppress(tk.TclError):
             tkfont.nametofont(name).configure(family=family, size=size)
+    # aqua 的按钮高度和圆角由系统定。再写 padding 会把系统按钮撑变形。
+    # Windows 的下拉箭头很小，只在那边加大可点区域。
+    if not IS_MAC:
+        with contextlib.suppress(tk.TclError):
+            style.configure("TButton", padding=(10, 5))
+            style.configure("TMenubutton", padding=(10, 4))
+    # 次级说明用独立样式。Mac 才改成系统灰字；Windows 保持 vista 默认字色。
+    with contextlib.suppress(tk.TclError):
+        style.configure("Hint.TLabel")
+    if IS_MAC:
+        with contextlib.suppress(tk.TclError):
+            style.configure("Hint.TLabel", foreground="systemSecondaryLabelColor")
+        _mac_window(root)
     return style
+
+
+def _mac_window(window):
+    """Mac 窗口底色用系统窗口色。深色模式会跟着变。其他系统不改。"""
+    if not IS_MAC:
+        return
+    with contextlib.suppress(tk.TclError):
+        window.configure(background="systemWindowBackgroundColor")
 
 
 def lock_hint(cfg=None):
@@ -102,17 +124,36 @@ def env_status():
         return "已经准备好。"
 
 
+def _time_menu(parent, variable, values, on_pick):
+    """整颗按钮都能点开。窄下拉框的箭头点不中，计划开着时还会被禁用。"""
+    button = ttk.Menubutton(parent, text=variable.get() or values[0], width=4)
+
+    def choose(value):
+        variable.set(value)
+        button.configure(text=value)
+        if on_pick:
+            on_pick()
+
+    menu = tk.Menu(button, tearoff=0)
+    for value in values:
+        menu.add_command(label=value, command=lambda picked=value: choose(picked))
+    button["menu"] = menu
+
+    def show(*_args):
+        button.configure(text=variable.get())
+
+    variable.trace_add("write", show)
+    return button
+
+
 def pack_clock(parent, hour_var, minute_var, on_pick=None):
-    """小时和分钟两个只读下拉框。不能打字，所以不会再出现时间格式错误。"""
-    hour = ttk.Combobox(parent, textvariable=hour_var, values=HOURS, width=4, state="readonly")
+    """小时和分钟点按钮选出。不能打字，所以不会再出现时间格式错误。"""
+    hour = _time_menu(parent, hour_var, HOURS, on_pick)
     hour.pack(side="left")
-    ttk.Label(parent, text="点").pack(side="left", padx=(2, 4))
-    minute = ttk.Combobox(parent, textvariable=minute_var, values=MINUTES, width=4, state="readonly")
+    ttk.Label(parent, text="点").pack(side="left", padx=(8, 10))
+    minute = _time_menu(parent, minute_var, MINUTES, on_pick)
     minute.pack(side="left")
-    ttk.Label(parent, text="分").pack(side="left")
-    if on_pick:
-        hour.bind("<<ComboboxSelected>>", on_pick)
-        minute.bind("<<ComboboxSelected>>", on_pick)
+    ttk.Label(parent, text="分").pack(side="left", padx=(8, 0))
     return hour, minute
 
 
@@ -159,39 +200,44 @@ def _lock_size(window):
 
 
 class MainWindow:
-    def __init__(self, root, overlay, act):
+    def __init__(self, root, overlay, act, on_user_hide=None):
         self.root, self.overlay, self.act = root, overlay, act
+        self._on_user_hide = on_user_hide
+        self._hide_noted = False
         self.has_tray = False
         use_native_theme(root)
         root.title("NightDisplay")
         root.protocol("WM_DELETE_WINDOW", self.on_close)
-        outer = ttk.Frame(root, padding=11)
+        if IS_WIN:
+            family, body = "Microsoft YaHei UI", 12
+        elif IS_MAC:
+            family, body = "PingFang SC", 13
+        else:
+            family, body = "Noto Sans CJK SC", 11
+        # 分区标题用系统字体加粗。状态只比正文大一号，不再做空标题。
+        self._section_font = tkfont.Font(root, family=family, size=body, weight="bold")
+        status_font = tkfont.Font(root, family=family, size=body + 3)
+
+        outer = ttk.Frame(root, padding=(20, 18, 20, 16))
         outer.pack(fill="both", expand=True)
 
         head = ttk.Frame(outer)
         head.pack(fill="x")
-        ttk.Label(head, text="NightDisplay").pack(side="left")
-        ttk.Label(head, text="v" + VERSION).pack(side="right")
-        ttk.Label(outer, text=SUBTITLE, wraplength=460).pack(anchor="w", pady=(2, 2))
-        ttk.Label(outer, text=GUIDE, wraplength=460).pack(anchor="w", pady=(0, 8))
+        ttk.Label(head, text="NightDisplay", font=self._section_font).pack(side="left")
+        ttk.Label(head, text="v" + VERSION, style="Hint.TLabel").pack(side="right")
+        ttk.Label(outer, text=SUBTITLE, style="Hint.TLabel").pack(anchor="w", pady=(4, 0))
 
-        status = ttk.LabelFrame(outer, text="现在的情况", padding=8)
-        status.pack(fill="x")
-        self.state_text = ttk.Label(status, text="屏幕正常显示")
-        self.state_text.pack(anchor="w")
-        self.detail_text = ttk.Label(status, text="", wraplength=460)
-        self.detail_text.pack(anchor="w", pady=(2, 0))
-        self.mode_text = ttk.Label(status, text="", wraplength=460)
-        self.mode_text.pack(anchor="w")
-        self.test_text = ttk.Label(status, text="", wraplength=460)
-        self.test_text.pack(anchor="w", pady=(2, 0))
-        self.env_text = ttk.Label(status, text="正在检查这台电脑…", wraplength=460)
-        self.env_text.pack(anchor="w", pady=(2, 0))
-        self.boot_text = ttk.Label(status, text="", wraplength=460)
-        self.boot_text.pack(anchor="w", pady=(2, 0))
+        self.state_text = ttk.Label(outer, text="屏幕正常显示", font=status_font)
+        self.state_text.pack(anchor="w", pady=(16, 0))
+        self.detail_text = ttk.Label(outer, text="", style="Hint.TLabel")
+        self.detail_text.pack(anchor="w", pady=(4, 0))
+        self.hint_text = ttk.Label(outer, text="", style="Hint.TLabel", wraplength=420)
+        self.hint_text.pack(anchor="w", pady=(2, 0))
 
-        times = ttk.LabelFrame(outer, text="每天什么时候黑屏", padding=8)
-        times.pack(fill="x", pady=(8, 0))
+        # 开始、结束各占一行。挤在一行里，时间按钮会贴在一起，点不中。
+        section = ttk.Frame(outer)
+        section.pack(fill="x", pady=(18, 0))
+        ttk.Label(section, text="每天", font=self._section_font).pack(anchor="w", pady=(0, 8))
         cfg = load()
         sh, sm = hm_parts(cfg.get("start"), (20, 0))
         eh, em = hm_parts(cfg.get("end"), (10, 30))
@@ -199,34 +245,35 @@ class MainWindow:
         self.start_m = tk.StringVar(value="%02d" % sm)
         self.end_h = tk.StringVar(value="%02d" % eh)
         self.end_m = tk.StringVar(value="%02d" % em)
-        row = ttk.Frame(times)
-        row.pack(anchor="w")
-        ttk.Label(row, text="开始").pack(side="left", padx=(0, 4))
-        start_boxes = pack_clock(row, self.start_h, self.start_m, self._picked_time)
-        ttk.Label(row, text="结束").pack(side="left", padx=(12, 4))
-        end_boxes = pack_clock(row, self.end_h, self.end_m, self._picked_time)
-        self._clocks = start_boxes + end_boxes
-        self.time_hint = ttk.Label(times, text="", wraplength=460)
-        self.time_hint.pack(anchor="w", pady=(6, 0))
+        start_row = ttk.Frame(section)
+        start_row.pack(anchor="w", pady=(0, 8))
+        ttk.Label(start_row, text="开始", width=6, anchor="w").pack(side="left")
+        pack_clock(start_row, self.start_h, self.start_m, self._picked_time)
+        end_row = ttk.Frame(section)
+        end_row.pack(anchor="w")
+        ttk.Label(end_row, text="结束", width=6, anchor="w").pack(side="left")
+        pack_clock(end_row, self.end_h, self.end_m, self._picked_time)
+        self.unlock_text = ttk.Label(section, text="亮回来：同时按住 C 和 K", style="Hint.TLabel")
+        self.unlock_text.pack(anchor="w", pady=(10, 0))
 
-        actions = ttk.Frame(outer)
-        actions.pack(anchor="w", pady=(8, 0))
-        self._button(actions, "测试 15 秒", self.test).pack(side="left", padx=(0, 6))
-        self.enable = self._button(actions, "启用每天自动黑屏", self.toggle)
-        self.enable.pack(side="left", padx=(0, 6))
-        self._button(actions, "现在就黑屏", self.night).pack(side="left", padx=(0, 6))
-        self._button(actions, "恢复屏幕并暂停", self.emergency).pack(side="left")
+        # 主操作靠右，和 Mac 系统设置一样。测试留在左边，避免和启用贴在一起误点。
+        plan = ttk.Frame(outer)
+        plan.pack(fill="x", pady=(18, 0))
+        self._button(plan, "测试 15 秒", self.test).pack(side="left")
+        self.enable = self._button(plan, "启用每天自动黑屏", self.toggle, default="active")
+        self.enable.pack(side="right")
+
+        now = ttk.Frame(outer)
+        now.pack(anchor="w", pady=(8, 0))
+        self._button(now, "现在就黑屏", self.night).pack(side="left", padx=(0, 8))
+        self._button(now, "恢复屏幕并暂停", self.emergency).pack(side="left")
 
         tools = ttk.Frame(outer)
-        tools.pack(fill="x", pady=(8, 0))
-        self._button(tools, "运行日志", self.logs).pack(side="left", padx=(0, 6))
-        self._export_button(tools, self.export_saved_logs).pack(side="left", padx=(0, 6))
+        tools.pack(fill="x", pady=(16, 0))
+        self._button(tools, "运行日志", self.logs).pack(side="left", padx=(0, 8))
+        self._export_button(tools, self.export_saved_logs).pack(side="left", padx=(0, 8))
         self._button(tools, "设置", self.settings).pack(side="left")
-        side = ttk.Frame(tools)
-        side.pack(side="right")
-        ttk.Label(side, text="传康Kk  ·  1837620622").pack(anchor="e")
-        self.unlock_text = ttk.Label(side, text="亮屏：同时按住 C 和 K")
-        self.unlock_text.pack(anchor="e")
+        ttk.Label(tools, text="传康Kk  ·  1837620622", style="Hint.TLabel").pack(side="right")
 
         self._last_state = None
         self._notice = ""
@@ -236,8 +283,12 @@ class MainWindow:
         self.root.after(1000, self.refresh)
         self.root.after(3000, lambda: self.check_update(quiet=True))
 
-    def _button(self, parent, text, command):
-        return ttk.Button(parent, text=text, command=lambda: self.safe(command))
+    def _button(self, parent, text, command, default=None):
+        options = {"text": text, "command": lambda: self.safe(command)}
+        # default=active 在 aqua 上是系统蓝色主按钮，在 vista 上是默认按钮。不另涂颜色。
+        if default:
+            options["default"] = default
+        return ttk.Button(parent, **options)
 
     def _export_button(self, parent, command):
         icon = self._export_icon()
@@ -278,13 +329,12 @@ class MainWindow:
         self.end_m.set("%02d" % em)
 
     def save_times(self):
+        from .app import retimed
         start = format_hm(self.start_h.get(), self.start_m.get())
         end = format_hm(self.end_h.get(), self.end_m.get())
         if start == end:
             raise ValueError("开始和结束不能选同一个时间。")
-        if load().get("enabled"):
-            raise RuntimeError("每天自动黑屏还开着。先暂停，再改时间。")
-        return update(start=start, end=end, mode="auto", keep_awake=True)
+        return retimed(start, end)
 
     def _picked_time(self, _event=None):
         self.safe(self._apply_picked_time)
@@ -295,7 +345,10 @@ class MainWindow:
         except Exception:
             self._show_saved_time(load())
             raise
-        self._note("时间已经记下。到点会自动黑，到结束时间会自动亮。")
+        if load().get("enabled"):
+            self._note("时间已改。每天自动黑屏会按这个时间走。")
+        else:
+            self._note("时间已经记下。到点会自动黑，到结束时间会自动亮。")
 
     def install_driver(self):
         # 只留给设置里的入口用，主界面不再引导用户手动装驱动。
@@ -357,57 +410,40 @@ class MainWindow:
                 self._note("已恢复显示")
             self._last_state = cfg["state"]
             keys = fmt(cfg.get("unlock_chord") or DEFAULT_CHORD)
-            _put(self.unlock_text, "亮屏：同时按住 " + keys)
+            _put(self.unlock_text, "亮回来：同时按住 " + keys)
             _put(self.state_text, "正在黑屏" if cfg["state"] == "night" else "屏幕正常显示")
-            detail = "%s    %s 到 %s" % (
-                "每天自动黑屏已开启" if cfg["enabled"] else "每天自动黑屏还没开",
-                cfg["start"], cfg["end"])
+            span = "%s–%s" % (cfg["start"], cfg["end"])
             if cfg.get("extra_ranges"):
-                detail += "，另外还有 %d 段" % len(cfg["extra_ranges"])
-            _put(self.detail_text, detail)
-            tested = cfg.get("last_test_mode")
+                span += "，另有 %d 段" % len(cfg["extra_ranges"])
+            plan = "每天自动黑屏已开" if cfg["enabled"] else "每天自动黑屏还没开"
+            _put(self.detail_text, "%s  ·  %s" % (span, plan))
             names = {
                 "virtual_only": "你这边黑屏，远程还能用",
                 "overlay": "你这边盖上黑幕，远程还能用",
                 "screen_off": "关掉屏幕。动一下鼠标会亮",
             }
-            if cfg["state"] == "night":
-                mode = names.get(cfg.get("night_mode"), "按系统的方式处理屏幕")
-            else:
-                mode = "到点后：你这边黑，远程还能用" if IS_WIN else "到点后：按系统的方式处理屏幕"
-            _put(self.mode_text, mode)
-            if cfg.get("last_test_ok") and cfg.get("last_test_requested") == "auto" and tested in names and tested != "virtual_only":
-                message = "测试好了。启用之后会是这样：" + names[tested]
-            elif cfg.get("last_test_ok"):
-                message = "测试好了。可以点「启用每天自动黑屏」。"
-            elif cfg.get("test_id"):
-                message = "正在测试。屏幕会自己亮回来，不用按键。"
-            else:
-                message = "还没测试过。点「测试 15 秒」，屏幕黑 15 秒，然后自己亮。"
+            tested = cfg.get("last_test_mode")
             if cfg["state"] == "night" and cfg.get("test_id"):
-                message = "正在测试。大约 15 秒后屏幕会自己亮回来，不用按键。"
+                message = "正在测试。大约 15 秒后自己亮回来。"
             elif cfg["state"] == "night":
                 if cfg.get("night_mode") == "screen_off":
-                    message = "现在是关屏。碰键盘或鼠标会亮。要一直黑着，同时按住 %s，大约半秒。" % keys
+                    message = "现在是关屏，碰一下会亮。要亮着不动，同时按住 %s。" % keys
                 elif cfg.get("lock", True):
-                    message = "你这边是黑的。同时按住 %s，大约半秒，屏幕会亮。暂停不会把屏幕点亮。" % keys
+                    message = "你这边是黑的。同时按住 %s 才会亮。" % keys
                 else:
-                    message = "你这边是黑的。暂停不会点亮屏幕，请点「恢复屏幕并暂停」。"
+                    message = "你这边是黑的。要亮回来，点「恢复屏幕并暂停」。"
             elif self._notice and time.monotonic() < self._notice_until:
                 message = self._notice
-            _put(self.test_text, message)
+            elif cfg.get("last_test_ok") and cfg.get("last_test_requested") == "auto" and tested in names and tested != "virtual_only":
+                message = "测试好了。启用之后：" + names[tested]
+            elif cfg.get("last_test_ok"):
+                message = "测试好了。可以启用每天自动黑屏。"
+            elif cfg.get("test_id"):
+                message = "正在测试。屏幕会自己亮回来。"
+            else:
+                message = "先点「测试 15 秒」。黑 15 秒后自己亮回来。"
+            _put(self.hint_text, message)
             _put(self.enable, "暂停每天自动黑屏" if cfg["enabled"] else "启用每天自动黑屏")
-            _put(self.env_text, env_status())
-            pref = cfg.get("autostart_preference", cfg.get("autostart", True))
-            _put(self.boot_text, "开机后会自动在后台运行，不用自己再打开。" if pref else "开机后不会自动运行。要改的话，打开「设置」。")
-            _put(self.time_hint, "每天自动黑屏开着。要改时间，先点「暂停每天自动黑屏」。" if cfg.get("enabled")
-                 else "点开选择，不用打字。选完会自己记下。测试 15 秒不会改这个时间。")
-            clock_state = "disabled" if cfg.get("enabled") else "readonly"
-            for box in self._clocks:
-                if str(box.cget("state")) != clock_state:
-                    box.configure(state=clock_state)
-            if cfg.get("enabled"):
-                self._show_saved_time(cfg)
         except Exception as e:
             log("界面状态刷新失败：%s" % e)
         finally:
@@ -422,6 +458,7 @@ class MainWindow:
         window = tk.Toplevel(self.root)
         window.title("运行日志")
         window.transient(self.root)
+        _mac_window(window)
         bar = ttk.Frame(window, padding=(8, 8, 8, 0))
         bar.pack(fill="x")
         self._export_button(bar, lambda: self.export_saved_logs(window)).pack(side="left")
@@ -456,14 +493,19 @@ class MainWindow:
         window = tk.Toplevel(self.root)
         window.title("设置")
         window.transient(self.root)
-        body = ttk.Frame(window, padding=11)
+        _mac_window(window)
+        body = ttk.Frame(window, padding=(20, 16, 20, 16))
         body.pack(fill="both", expand=True)
         cfg = load()
 
-        extra_box = ttk.LabelFrame(body, text="其他时段", padding=8)
+        extra_box = ttk.Frame(body)
         extra_box.pack(fill="x")
-        ttk.Label(extra_box, text="除了主窗口上的每天时段，还可以再加几段，比如中午。点开选，不用打字。不需要就不用加。",
-                  wraplength=460).pack(anchor="w")
+        ttk.Label(extra_box, text="其他时段", font=self._section_font).pack(anchor="w")
+        ttk.Label(
+            extra_box,
+            text="主窗口那段之外，还可以再加，比如中午。点时间选出。",
+            style="Hint.TLabel",
+        ).pack(anchor="w", pady=(4, 8))
         rows_host = ttk.Frame(extra_box)
         rows_host.pack(fill="x", pady=(6, 0))
         extra_rows = []
@@ -510,10 +552,14 @@ class MainWindow:
             if isinstance(pair, (list, tuple)) and len(pair) == 2:
                 add_row(pair[0], pair[1])
 
-        chord_box = ttk.LabelFrame(body, text="怎么把屏幕弄亮", padding=8)
-        chord_box.pack(fill="x", pady=(8, 0))
-        ttk.Label(chord_box, text="屏幕黑了以后，在这台电脑上同时按住下面这两个键，大约半秒，屏幕会亮。默认是 C 和 K，一般不用改。",
-                  wraplength=460).pack(anchor="w")
+        chord_box = ttk.Frame(body)
+        chord_box.pack(fill="x", pady=(18, 0))
+        ttk.Label(chord_box, text="怎么把屏幕弄亮", font=self._section_font).pack(anchor="w")
+        ttk.Label(
+            chord_box,
+            text="黑屏后同时按住这两个键，大约半秒。默认 C 和 K。",
+            style="Hint.TLabel",
+        ).pack(anchor="w", pady=(4, 8))
         row = ttk.Frame(chord_box)
         row.pack(anchor="w", pady=(4, 0))
         chord_var = tk.StringVar(value=chord.fmt(cfg.get("unlock_chord") or chord.DEFAULT_CHORD))
@@ -557,12 +603,11 @@ class MainWindow:
         ttk.Button(row, text="改按键", command=record).pack(side="left")
 
         opts = ttk.Frame(body)
-        opts.pack(anchor="w", pady=(8, 0))
+        opts.pack(anchor="w", pady=(16, 0))
         locked = tk.BooleanVar(value=cfg.get("lock", True))
         autostart = tk.BooleanVar(value=cfg.get("autostart_preference", cfg.get("autostart", True)))
-        ttk.Checkbutton(opts, text="黑屏时，这台电脑只能用上面的按键亮回来", variable=locked).pack(anchor="w")
-        ttk.Checkbutton(opts, text="开机后自动在后台运行（建议开着。关掉的话，每次开机都要自己去桌面打开）",
-                        variable=autostart).pack(anchor="w", pady=(4, 0))
+        ttk.Checkbutton(opts, text="黑屏时，只有上面的按键能亮回来", variable=locked).pack(anchor="w")
+        ttk.Checkbutton(opts, text="开机登录后自动运行", variable=autostart).pack(anchor="w", pady=(6, 0))
 
         def save():
             blocked = settings_block_message(load())
@@ -586,14 +631,17 @@ class MainWindow:
             window.destroy()
 
         actions = ttk.Frame(body)
-        actions.pack(anchor="w", pady=(8, 0))
-        ttk.Button(actions, text="保存设置", command=lambda: self.safe(save)).pack(side="left", padx=(0, 6))
-        ttk.Button(actions, text="检查更新", command=self.check_update).pack(side="left", padx=(0, 6))
-        ttk.Button(actions, text="取消每天自动黑屏，并取消开机运行", command=lambda: self.safe(self.remove)).pack(side="left")
+        actions.pack(fill="x", pady=(18, 0))
+        ttk.Button(actions, text="检查更新", command=self.check_update).pack(side="left")
+        ttk.Button(actions, text="保存设置", default="active",
+                   command=lambda: self.safe(save)).pack(side="right")
+        ttk.Button(body, text="取消每天自动黑屏，并取消开机运行",
+                   command=lambda: self.safe(self.remove)).pack(anchor="w", pady=(12, 0))
         if IS_WIN:
-            ttk.Button(body, text="远程看不到画面时，再修一次（平时不用点）",
-                       command=lambda: self.safe(self.install_driver)).pack(anchor="w", pady=(6, 0))
-        ttk.Label(body, text=AUTHOR + "    " + SPONSOR).pack(anchor="w", pady=(8, 0))
+            ttk.Button(body, text="远程看不到画面时，再修一次",
+                       command=lambda: self.safe(self.install_driver)).pack(anchor="w", pady=(8, 0))
+        ttk.Label(body, text=AUTHOR, style="Hint.TLabel").pack(anchor="w", pady=(16, 0))
+        ttk.Label(body, text=SPONSOR, style="Hint.TLabel").pack(anchor="w")
         fit()
 
     def check_update(self, quiet=False):
@@ -638,14 +686,17 @@ class MainWindow:
         self.root.destroy()
 
     def on_close(self):
-        cfg = load()
-        if cfg.get("state") == "night" and cfg.get("lock", True) and not self.has_tray:
-            messagebox.showwarning(APP, lock_hint(cfg), parent=self.root)
-            return
-        if self.has_tray:
+        # 右上角关闭只藏窗口。进程继续按设定时间黑屏，开机登录项也不动。
+        # 真正退出在右下角图标的「退出 NightDisplay」。退出才会把屏幕亮回来。
+        try:
             self.root.withdraw()
-        else:
-            self.root.destroy()
+        except tk.TclError:
+            return
+        if not self._hide_noted:
+            self._hide_noted = True
+            log("窗口已隐藏到右下角。每天的时间和开机登录都还在。")
+            if self._on_user_hide:
+                self._on_user_hide()
 
 
 def start_tray(root, act):
@@ -668,19 +719,22 @@ def start_tray(root, act):
             return None
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    draw.ellipse((6, 6, 58, 58), fill=(32, 32, 32, 255))
+    # 浅色圆底，深色任务栏上也看得见。中间一块黑，表示屏幕是黑的。
+    draw.ellipse((4, 4, 60, 60), fill=(236, 236, 236, 255))
+    draw.rectangle((18, 16, 46, 40), fill=(20, 20, 20, 255))
+    draw.rectangle((30, 40, 34, 48), fill=(20, 20, 20, 255))
     menu = pystray.Menu(
         pystray.MenuItem("打开 NightDisplay", lambda: act("show"), default=True),
         pystray.MenuItem("现在就黑屏", lambda: act("night")),
         pystray.MenuItem("现在恢复屏幕", lambda: act("day")),
         pystray.MenuItem("恢复屏幕并暂停", lambda: act("emergency")),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("退出", lambda: act("quit")))
+        pystray.MenuItem("退出 NightDisplay", lambda: act("quit")))
     extra = {}
     if IS_MAC:
         from AppKit import NSApplication
         extra["darwin_nsapplication"] = NSApplication.sharedApplication()
-    icon = pystray.Icon("NightDisplay", img, "NightDisplay", menu, **extra)
+    icon = pystray.Icon("NightDisplay", img, "NightDisplay 正在后台运行，到点会黑屏", menu, **extra)
     ready, cancelled = threading.Event(), threading.Event()
 
     def setup(icon):

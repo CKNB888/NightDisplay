@@ -97,6 +97,29 @@ def activate(mode, start, end):
 
 
 @B.serialized
+def retimed(start, end):
+    """改每天的开始和结束。计划开着就按新时间重写任务，不用先暂停。"""
+    start, end = ["%02d:%02d" % parse_hm(t) for t in (start, end)]
+    if parse_hm(start) == parse_hm(end):
+        raise RuntimeError("开始和结束时间不能相同")
+    cfg = load()
+    previous = (cfg.get("start"), cfg.get("end"))
+    update(start=start, end=end)
+    if cfg.get("enabled"):
+        try:
+            B.schedule_install(load())
+        except Exception:
+            update(start=previous[0], end=previous[1])
+            try:
+                B.schedule_install(load())
+            except Exception as again:
+                log("改时间失败后，原来的计划也没有写回去：%s" % again)
+            raise
+        log("已改每日计划时间：%s → %s" % (start, end))
+    return load()
+
+
+@B.serialized
 def pause():
     update(enabled=False, hold_night_until="")
     B.schedule_remove(drop_autostart=False)
@@ -259,6 +282,39 @@ def uninstall(overlay_cb=None):
     log("已卸载计划任务和自启项；日志与备份保留在 %s" % home())
 
 
+def _unlock_still_active(cfg):
+    """组合键已经把这一段剩余时间解开。重启后不要又自动黑回去。"""
+    ov = cfg.get("override_until") or ""
+    if not ov:
+        return False
+    try:
+        until = dt.datetime.fromisoformat(ov)
+        return dt.datetime.now(until.tzinfo) < until
+    except (TypeError, ValueError):
+        return False
+
+
+def startup_display(overlay_cb=None, repair_cover=None):
+    """登录自启后按计划黑屏。还在设定时段内就不要先把屏幕点亮。
+
+    断电、崩溃、第二天再开机都走这里。只有已经按过组合键的这一段，才保持亮着。
+    """
+    cfg = load()
+    if cfg.get("enabled") and in_night(cfg) and not _unlock_still_active(cfg):
+        log("开机自启：当前在设定的黑屏时段内，直接保持黑屏")
+        try:
+            if cfg.get("state") == "night" and cfg.get("night_mode"):
+                if cfg.get("recovery_pending"):
+                    update(recovery_pending=False)
+                B.ensure_night(cover=repair_cover)
+            else:
+                B.go_night(cfg.get("mode") or "auto", overlay_cb)
+        except Exception as e:
+            log("开机进入黑屏未完成，下一次检查再试：%s" % e)
+        return "night"
+    return recover_orphaned_night(overlay_cb)
+
+
 def recover_orphaned_night(overlay_cb=None):
     """上次进程被强行结束后，先把实体屏和系统光标拉回来。
 
@@ -303,8 +359,13 @@ def note_manual_night():
 def reconcile(overlay_cb=None, repair_cover=None):
     cfg = load()
     if cfg.get("recovery_pending"):
-        B.go_day(overlay_cb)
-        cfg = load()
+        # 恢复没做完时，设定时段内不能改成亮屏。时段外才把屏幕拉回来。
+        if cfg.get("enabled") and in_night(cfg) and not _unlock_still_active(cfg):
+            update(recovery_pending=False)
+            cfg = load()
+        else:
+            B.go_day(overlay_cb)
+            cfg = load()
     if not cfg.get("enabled"):
         return "disabled"
     want = "night" if in_night(cfg) else "day"
@@ -915,8 +976,8 @@ def run_app(show_window=True, selftest=0):
                 changes.update(test_id="", last_test_ok=False,
                                last_test_night_ok=False, test_aborted=False)
             update(**changes)
-        recover_orphaned_night(overlay)
-        win = ui.MainWindow(root, overlay, dispatch)
+        startup_display(overlay, repair_cover)
+        win = ui.MainWindow(root, overlay, dispatch, on_user_hide=lambda: appearance.__setitem__("restore", False))
         tray = ui.start_tray(root, dispatch)
         win.has_tray = bool(tray)
         if not show_window and not tray:
@@ -1271,7 +1332,9 @@ def _apply_autostart(report):
             current = ""
     report["autostart_actual"] = actual
     stale = bool(IS_WIN and pref and current != B.desired_autostart_command())
-    if actual == pref and not stale:
+    # Run 里的命令还在，但 Windows「启动」把 NightDisplay 关了，登录时不会运行。
+    blocked = bool(IS_WIN and pref and not B.startup_approved())
+    if actual == pref and not stale and not blocked:
         return
     try:
         B.set_autostart(pref)

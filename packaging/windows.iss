@@ -1,8 +1,11 @@
-﻿#define AppVersion "3.0.10"
+﻿#define AppVersion "3.0.11"
 [Setup]
 AppId={{C777459D-E0F3-45A3-96D4-83DC47EE3562}
 AppName=NightDisplay
 AppVersion={#AppVersion}
+; Windows 文件属性要四段数字。向导和关于里仍显示 3.0.11。
+VersionInfoVersion={#AppVersion}.0
+VersionInfoProductVersion={#AppVersion}.0
 AppPublisher=传康Kk
 AppPublisherURL=https://github.com/CKNB888/NightDisplay
 AppSupportURL=https://github.com/CKNB888/NightDisplay/issues

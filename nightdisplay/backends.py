@@ -690,6 +690,9 @@ def _win_delete_tasks():
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+# Windows 可以把「启动」里的这一项标成禁用。Run 里的命令还在，登录时却不会运行。
+STARTUP_APPROVED_KEY = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
+STARTUP_APPROVED_ON = b"\x02" + b"\x00" * 11
 
 
 def desired_autostart_command():
@@ -718,8 +721,25 @@ def autostart_command():
     return value
 
 
+def startup_approved():
+    """Windows 启动开关。没有这项，或第一字节不是 3，都当作允许登录时运行。"""
+    if not IS_WIN:
+        return True
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_APPROVED_KEY) as key:
+            value, _kind = winreg.QueryValueEx(key, "NightDisplay")
+    except (OSError, TypeError, ValueError):
+        return True
+    return not (isinstance(value, bytes) and value[:1] == b"\x03")
+
+
 def set_autostart(on):
-    """开机自启（托盘常驻，负责黑幕和组合键）。Windows: HKCU Run；macOS: LaunchAgent RunAtLoad 已包含；Linux: XDG autostart。"""
+    """开机登录后运行托盘（黑幕和组合键都靠这个进程）。
+
+    Windows 只写 HKCU Run 的 NightDisplay，并把它在「启动」里标成启用。
+    不写 HKLM，也不改 Run 里的其他程序。macOS 用 LaunchAgent，Linux 用 XDG autostart。
+    """
     if IS_WIN:
         import winreg
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
@@ -728,6 +748,12 @@ def set_autostart(on):
             else:
                 with contextlib.suppress(OSError):
                     winreg.DeleteValue(k, "NightDisplay")
+        with contextlib.suppress(OSError), winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER, STARTUP_APPROVED_KEY, 0, winreg.KEY_SET_VALUE) as k:
+            if on:
+                winreg.SetValueEx(k, "NightDisplay", 0, winreg.REG_BINARY, STARTUP_APPROVED_ON)
+            else:
+                winreg.DeleteValue(k, "NightDisplay")
     elif IS_MAC:
         import plistlib
         path = os.path.expanduser("~/Library/LaunchAgents/com.nightdisplay.tray.plist")
