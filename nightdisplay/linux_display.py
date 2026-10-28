@@ -89,6 +89,9 @@ def _has_physical(match=""):
 
 def restore(b, log=print, match=""):
     outputs = (b or {}).get("outputs") or []
+    if any(not isinstance(o, dict) for o in outputs):
+        log("备份里的输出记录无效，改走自动恢复")
+        outputs = []
     active_backup = [o for o in outputs if o.get("active")]
     backup_virtual = bool(active_backup) and all(is_virtual_name(o.get("name", ""), match) for o in active_backup)
     if outputs and not backup_virtual:

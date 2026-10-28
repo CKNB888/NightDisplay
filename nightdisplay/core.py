@@ -83,7 +83,7 @@ DEFAULT = {
     "virtual_match": "",     # 虚拟屏名称关键字，空=自动识别
     "hotkey": "Ctrl+Alt+Shift+R",
     "last_test_mode": "", "last_test_at": "", "last_test_ok": False,
-    "last_test_requested": "", "last_test_night_ok": False,
+    "last_test_requested": "", "last_test_capability": "", "last_test_night_ok": False,
     "last_recovery_at": "", "last_recovery_mode": "",
     "extra_ranges": [], "night_mode": "", "test_id": "", "test_aborted": False,
     "awake_token": "", "recovery_pending": False,
@@ -158,6 +158,7 @@ def validate_config(cfg):
     for key in ("virtual_match", "hotkey", "test_id", "awake_token", "override_until",
                 "hold_night_until",
                 "last_test_at", "last_test_mode", "last_test_requested",
+                "last_test_capability",
                 "last_recovery_at", "last_recovery_mode"):
         if key in cfg and not isinstance(cfg[key], str):
             raise ValueError("%s 必须为字符串" % key)

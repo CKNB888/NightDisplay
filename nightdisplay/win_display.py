@@ -136,6 +136,9 @@ def adapter_name(adapter):
 
 # 不用没有边界的 Virtual，避免普通适配器名字里带这几个字母就被当成虚拟屏。
 VIRTUAL_RE = r"MttVDD|Virtual Display|\bVDD\b|IddSample|Parsec|\bUU\b"
+# 内置驱动的友好名在不同路径里会写成 MttVDD 或 “VDD by MTT”，硬件 ID 是 Root\MttVDD。
+# 不能把 “Virtual Display” 当成内置屏，否则旁边已经活动的 UU 虚拟屏会排到它前面。
+BUNDLED_VDD_RE = r"MttVDD|VDD by MTT|Root\\MttVDD|DISPLAY#MTT"
 
 
 def describe(flags=QDC_ALL_PATHS):
@@ -165,6 +168,30 @@ def is_virtual(d, match=""):
     return bool(re.search(pat, hay, re.I)) or d.get("tech") == 17
 
 
+def bundled_vdd(info):
+    """这台输出是不是包里自带的 Virtual Display Driver，而不是 UU 等另一块虚拟屏。"""
+    if not isinstance(info, dict):
+        return False
+    hay = " ".join(str(v) for v in info.values())
+    return bool(re.search(BUNDLED_VDD_RE, hay, re.I))
+
+
+def virtual_candidate_key(info, active, src_id):
+    """内置 VDD 优先。同一类里再优先空闲输出，避免抢走已经在用的远程虚拟屏。"""
+    return (not bundled_vdd(info), bool(active), src_id)
+
+
+def _backup_displays(backup, log):
+    """返回可信的显示器名单。类型坏了返回 None，调用方改走系统拓扑，不能在这里抛异常。"""
+    raw = (backup or {}).get("displays")
+    if not raw:
+        return []
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
+        log("备份里的显示器记录无效，改走系统恢复")
+        return None
+    return raw
+
+
 def backup_active():
     paths, modes = query(QDC_ONLY_ACTIVE_PATHS)
     return {"paths": [p.hex() for p in paths], "modes": [m.hex() for m in modes],
@@ -181,7 +208,10 @@ def restore(backup, log=print):
     """
     tries = []
     paths = []
-    saved = (backup or {}).get("displays") or []
+    saved = _backup_displays(backup, log)
+    if saved is None:
+        saved = []
+        backup = None
     backup_virtual = bool(saved) and all(is_virtual(d) for d in saved)
     if backup_virtual:
         log("备份里只有虚拟屏，跳过该备份，避免写进系统显示数据库")
@@ -251,8 +281,7 @@ def plan_virtual_only(match=""):
     def priority(bp):
         p = bp[1]
         d = named[(p["tgt_adapter"], p["tgt_id"])]
-        stable = bool(re.search(r"MttVDD|Virtual Display Driver", " ".join(str(v) for v in d.values()), re.I))
-        return (not stable, not p["active"], p["src_id"])
+        return virtual_candidate_key(d, p["active"], p["src_id"])
     cands.sort(key=priority)
     b, p = cands[0]
     return [build_path(b)], named[(p["tgt_adapter"], p["tgt_id"])], len(physical)

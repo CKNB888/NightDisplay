@@ -3,9 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from nightdisplay import VERSION
+from nightdisplay import VERSION, core, updates
 from nightdisplay import backends as B
-from nightdisplay import core, updates
 from nightdisplay import win_power as P
 
 

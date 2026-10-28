@@ -57,10 +57,17 @@ def activate(mode, start, end):
     B.validate_mode(mode)
     real = B.resolve_mode(mode, cfg.get("virtual_match", ""))
     tested = cfg.get("last_test_mode")
-    # The effective mode must match the one that was actually tested.  A
-    # previously tested "auto" request is not enough: auto may now resolve to
-    # a different (untested) mode after a driver or display change.
-    mode_matches = tested == real
+    requested = cfg.get("last_test_requested") or ""
+    fingerprint = B.capability_fingerprint()
+    # 同一套硬件上，自动模式可以降到已经测通的黑幕或关屏。驱动或显示器变了，
+    # 指纹对不上，仍要求重新测试，不能拿旧的降级结果去开计划。
+    same_hardware = bool(cfg.get("last_test_capability")) and cfg.get("last_test_capability") == fingerprint
+    verified_fallback = (mode == "auto" and requested == "auto" and same_hardware
+                         and tested in B.available_modes() and tested not in ("", "auto")
+                         and tested != real)
+    mode_matches = tested == real or verified_fallback
+    if verified_fallback:
+        real = tested
     if not (cfg.get("last_test_ok") and mode_matches and tested in B.available_modes()
             and cfg.get("last_recovery_mode") == tested and cfg.get("last_recovery_at")):
         raise RuntimeError("请先用“%s”完成一次测试（自动恢复），确认屏幕和远程都正常后再启用。" % B.MODES.get(real, real))
@@ -71,7 +78,8 @@ def activate(mode, start, end):
     if not 0 <= age <= 86400:
         raise RuntimeError("上次测试已超过 24 小时，请重新测试。")
     autostart = cfg.get("autostart_preference", cfg.get("autostart", True))
-    candidate = dict(cfg, mode=mode, start=start, end=end, autostart=autostart)
+    scheduled = real if verified_fallback else mode
+    candidate = dict(cfg, mode=scheduled, start=start, end=end, autostart=autostart)
     try:
         B.schedule_install(candidate)
     except Exception:
@@ -81,8 +89,11 @@ def activate(mode, start, end):
         except Exception as e:
             log("清理未完成的计划失败：%s" % e)
         raise
-    update(mode=mode, start=start, end=end, enabled=True, autostart=autostart)
-    log("已启用每日计划：%s → %s，模式 %s" % (start, end, mode))
+    update(mode=scheduled, start=start, end=end, enabled=True, autostart=autostart)
+    if verified_fallback:
+        log("已启用每日计划：%s → %s，自动测试实际通过的是 %s" % (start, end, scheduled))
+    else:
+        log("已启用每日计划：%s → %s，模式 %s" % (start, end, scheduled))
 
 
 @B.serialized
@@ -104,7 +115,9 @@ def start_test(mode, seconds, overlay_cb=None):
     B.validate_mode(mode)
     real = B.resolve_mode(mode, cfg.get("virtual_match", ""))
     test_id = uuid.uuid4().hex
-    update(test_id=test_id, last_test_requested=mode, last_test_mode=real, last_test_at=dt.datetime.now().isoformat(), last_test_ok=False, last_test_night_ok=False,
+    update(test_id=test_id, last_test_requested=mode, last_test_mode=real,
+           last_test_capability=B.capability_fingerprint(),
+           last_test_at=dt.datetime.now().isoformat(), last_test_ok=False, last_test_night_ok=False,
            last_recovery_at="", last_recovery_mode="", test_aborted=False)
     # 先启动独立的恢复进程（窗口被关也会执行），再切换
     try:
@@ -132,6 +145,7 @@ def finish_test(test_id, overlay_cb=None):
         update(test_id="", last_test_ok=False, last_recovery_at="",
                last_test_night_ok=False, test_aborted=False)
         raise
+    restore_cursor_if_dirty()
     update(test_id="", last_recovery_at=dt.datetime.now().isoformat(),
            last_recovery_mode=c.get("last_test_mode"), last_test_ok=not aborted,
            last_test_night_ok=False, test_aborted=False)
@@ -155,6 +169,7 @@ def abort_test(overlay_cb=None):
         return "none"
     update(last_test_ok=False, test_aborted=True)
     B.go_day(overlay_cb, raise_errors=True)
+    restore_cursor_if_dirty()
     update(test_id="", last_test_night_ok=False, test_aborted=False)
     log("测试已中止，显示已恢复；本次不计为成功测试")
     return "aborted"
@@ -193,6 +208,9 @@ def chord_unlock(overlay_cb=None):
 
 @B.serialized
 def emergency(overlay_cb=None, quiet=False):
+    # 独立应急进程没有上一个进程的内存标记，系统光标仍可能是空白的。
+    if IS_WIN:
+        apply_cursor(False)
     errors = []
     try:
         load()
@@ -228,6 +246,33 @@ def emergency(overlay_cb=None, quiet=False):
 def uninstall(overlay_cb=None):
     emergency(overlay_cb, quiet=True)
     log("已卸载计划任务和自启项；日志与备份保留在 %s" % home())
+
+
+def recover_orphaned_night(overlay_cb=None):
+    """上次进程被强行结束后，先把实体屏和系统光标拉回来。
+
+    黑幕窗口随进程消失，原有启动路径已经把它记回白天。仅虚拟屏和基础关屏会留在系统里，
+    新进程不能一启动就把这份残留当成仍在夜间。每日计划如果还在夜间时段，随后的定时检查会再进去。
+    """
+    cfg = load()
+    orphan = cfg.get("state") == "night" and cfg.get("night_mode") in ("virtual_only", "screen_off")
+    dirty = IS_WIN and cursor_is_dirty()
+    if not orphan and not dirty:
+        return "clean"
+    log("检测到上次没有正常退出，先恢复显示和光标")
+    if orphan:
+        try:
+            B.go_day(overlay_cb, raise_errors=True)
+        except Exception as e:
+            log("启动恢复未完成：%s" % e)
+            if dirty:
+                apply_cursor(False)
+            return "failed"
+        if load().get("state") != "day":
+            update(state="day", night_mode="", recovery_pending=False, hold_night_until="")
+    if IS_WIN:
+        apply_cursor(False)
+    return "recovered"
 
 
 def note_manual_night():
@@ -294,10 +339,30 @@ def reconcile(overlay_cb=None):
 
 # ---------------- Windows：黑幕、快捷键 ----------------
 
-# 系统光标资源号。SetSystemCursor 会吃掉句柄，每个都要单独复制一份空白光标。
-CURSOR_IDS = (32512, 32513, 32514, 32515, 32516, 32640, 32641, 32642, 32643,
-              32644, 32645, 32646, 32648, 32649, 32650)
+# SetSystemCursor 文档当前列出的系统光标。OCR_SIZE(32640) 和 OCR_ICON(32641)
+# 已不在支持列表里，替换失败会让前面已经换成空白的光标留在系统里。
+# SetSystemCursor 会吃掉句柄，每个都要单独复制一份空白光标。
+CURSOR_IDS = (32512, 32513, 32514, 32515, 32516, 32642, 32643, 32644, 32645,
+              32646, 32648, 32649, 32650)
 _cursor = {"hidden": False}
+
+
+def cursor_marker_path():
+    return os.path.join(home(), "cursor-hidden.json")
+
+
+def cursor_is_dirty():
+    return os.path.isfile(cursor_marker_path())
+
+
+def mark_cursor_dirty():
+    from .storage import write_json
+    write_json(cursor_marker_path(), {"dirty": True})
+
+
+def clear_cursor_marker():
+    with contextlib.suppress(OSError):
+        os.remove(cursor_marker_path())
 
 
 def overlay_geometry(x, y, width, height):
@@ -373,37 +438,65 @@ def hide_system_cursor(user32):
     blank = user32.CreateCursor(None, 0, 0, width, height, and_mask, xor_mask)
     if not blank:
         raise RuntimeError("无法创建空白光标")
+    changed = False
     try:
         for cid in CURSOR_IDS:
             copy = user32.CopyIcon(blank)
-            if not copy or not user32.SetSystemCursor(copy, cid):
+            if not copy:
                 raise RuntimeError("无法隐藏系统光标")
+            # 成功时系统会销毁 copy。失败时不一定销毁，这里不二次 DestroyCursor，避免句柄被用两次。
+            if not user32.SetSystemCursor(copy, cid):
+                raise RuntimeError("无法隐藏系统光标")
+            if not changed:
+                mark_cursor_dirty()
+            changed = True
+    except Exception:
+        if changed:
+            restore_system_cursor(user32)
+        raise
     finally:
-        user32.DestroyCursor(blank)
+        with contextlib.suppress(Exception):
+            user32.DestroyCursor(blank)
 
 
 def restore_system_cursor(user32):
+    """SPI_SETCURSORS = 0x0057。uiParam 和 pvParam 都是 0，把系统光标方案重新装回来。"""
     import ctypes
     _ctype(user32.SystemParametersInfoW, [ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint], ctypes.c_int)
-    if not user32.SystemParametersInfoW(0x0057, 0, None, 0):  # SPI_SETCURSORS
+    if not user32.SystemParametersInfoW(0x0057, 0, None, 0):
         raise RuntimeError("无法恢复系统光标")
+    clear_cursor_marker()
+
+
+def restore_cursor_if_dirty():
+    """只在本进程藏过光标，或磁盘上还留着跨进程标记时，才重装系统光标方案。"""
+    if IS_WIN and (_cursor["hidden"] or cursor_is_dirty()):
+        apply_cursor(False)
 
 
 def apply_cursor(hidden):
-    """黑幕期间反复换成空白光标。已经是显示状态时不再调用恢复，避免每次检查都重置光标。"""
+    """黑幕期间换成空白光标。恢复调用不看本进程内存标记，新进程也能把系统方案装回来。
+
+    白天的定时检查不要无条件调用恢复，否则会每几秒重置用户自己的光标方案。
+    """
     if not IS_WIN:
-        return
-    if _cursor["hidden"] == hidden and not hidden:
         return
     try:
         import ctypes
-        user32 = ctypes.windll.user32
+        try:
+            user32 = ctypes.windll.user32
+        except Exception:
+            # 句柄取不到时，隐藏做不了；恢复仍要进入恢复函数，由它自己报错。
+            user32 = None
         if hidden:
             hide_system_cursor(user32)
-        elif _cursor["hidden"]:
+            _cursor["hidden"] = True
+        else:
             restore_system_cursor(user32)
-        _cursor["hidden"] = hidden
+            _cursor["hidden"] = False
     except Exception as e:
+        if not hidden:
+            _cursor["hidden"] = cursor_is_dirty()
         log("光标显示切换失败：%s" % e)
 
 
@@ -597,8 +690,11 @@ def run_app(show_window=True, selftest=0):
                 root.deiconify()
         except tk.TclError:
             pass
-        if refresh_cursor or not night:
-            apply_cursor(night and load().get("night_mode") == "overlay")
+        want_hidden = night and load().get("night_mode") == "overlay"
+        if want_hidden and (refresh_cursor or not _cursor["hidden"]):
+            apply_cursor(True)
+        elif not want_hidden and (_cursor["hidden"] or cursor_is_dirty()):
+            apply_cursor(False)
 
     overlay = make_overlay(root, on_cover=conceal_settings, on_fail=reveal_settings)
     pending = queue.Queue()
@@ -723,6 +819,7 @@ def run_app(show_window=True, selftest=0):
                 changes.update(test_id="", last_test_ok=False,
                                last_test_night_ok=False, test_aborted=False)
             update(**changes)
+        recover_orphaned_night(overlay)
         win = ui.MainWindow(root, overlay, dispatch)
         tray = ui.start_tray(root, dispatch)
         win.has_tray = bool(tray)
@@ -833,6 +930,7 @@ def main(argv=None):
                 r = send_ipc("day")
                 if r is None:
                     B.go_day(raise_errors=True)
+                    apply_cursor(False)
                     update(test_id="", last_test_ok=False)
                 elif r != "ok":
                     raise RuntimeError(r)
@@ -992,9 +1090,23 @@ def bundled_driver_present():
     return bool(glob.glob(pattern, recursive=True))
 
 
+def _load_env_file():
+    path = os.path.join(home(), "env.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def environment_report():
-    """不装驱动、不改系统，只检查：返回当前环境是否已就绪、实际可用模式。"""
+    """不装驱动、不改系统，只检查：返回当前环境是否已就绪、实际可用模式。
+
+    重写诊断文件时保留 driver_auto_setup_at。这个时间决定七天内还要不要再弹安装。
+    """
     from .storage import write_json
+    prev = _load_env_file()
     report = {
         "platform": "windows" if IS_WIN else ("macos" if IS_MAC else "linux"),
         "bundled_driver": bundled_driver_present() if IS_WIN else False,
@@ -1029,9 +1141,31 @@ def environment_report():
         report["registry_writable"] = True
     # 黑幕窗口只有纯黑底色，设置窗口里的进度动画在进入夜间后会停掉。
     report["pure_black"] = True
+    if "driver_auto_setup_at" in prev:
+        report["driver_auto_setup_at"] = prev["driver_auto_setup_at"]
     with contextlib.suppress(Exception):
         write_json(os.path.join(home(), "env.json"), report)
     return report
+
+
+def _apply_autostart(report):
+    """按用户保存的自启偏好写注册表。和虚拟屏是否已经存在无关。"""
+    pref = bool(load().get("autostart_preference", True))
+    try:
+        actual = bool(B.autostart_status())
+    except Exception as e:
+        log("环境准备：读取开机自启状态失败：%s" % e)
+        return
+    report["autostart_actual"] = actual
+    if actual == pref:
+        return
+    try:
+        B.set_autostart(pref)
+        report["autostart_actual"] = bool(B.autostart_status())
+        if report["autostart_actual"] != pref:
+            log("环境准备：开机自启注册表写回校验未通过，软件仍可正常打开")
+    except Exception as e:
+        log("环境准备：开机自启写入失败：%s，软件仍可正常打开" % e)
 
 
 def ensure_environment(force=False):
@@ -1047,6 +1181,7 @@ def ensure_environment(force=False):
 
     from .storage import write_json
     report = environment_report()
+    _apply_autostart(report)
     if not IS_WIN:
         return report
     if report["virtual_display"]:
@@ -1056,11 +1191,9 @@ def ensure_environment(force=False):
         return report
     state_path = os.path.join(home(), "env.json")
     try:
-        with open(state_path, encoding="utf-8") as f:
-            prev = json.load(f)
-    except Exception:
-        prev = {}
-    last = prev.get("driver_auto_setup_at", 0)
+        last = float(report.get("driver_auto_setup_at") or 0)
+    except (TypeError, ValueError):
+        last = 0
     if not force and last and _time.time() - last < 7 * 24 * 3600:
         return report
     try:
@@ -1077,13 +1210,5 @@ def ensure_environment(force=False):
     report["driver_auto_setup_at"] = _time.time()
     with contextlib.suppress(Exception):
         write_json(state_path, report)
-    # 开机自启：按用户偏好写 HKCU Run，写完回读校验。
-    try:
-        if load().get("autostart_preference", True):
-            B.set_autostart(True)
-            report["autostart_actual"] = B.autostart_status()
-            if not report["autostart_actual"]:
-                log("环境准备：开机自启注册表写回校验未通过，软件仍可正常打开")
-    except Exception as e:
-        log("环境准备：开机自启写入失败：%s，软件仍可正常打开" % e)
+    _apply_autostart(report)
     return report

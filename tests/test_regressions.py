@@ -741,3 +741,236 @@ def test_environment_report_does_not_install_or_raise():
     assert report["ready_mode"] in ("auto", "virtual_only", "overlay", "screen_off", "")
     assert "virtual_display" in report
     assert "registry_writable" in report
+
+
+def test_supported_cursor_ids_match_the_documented_set():
+    assert 32640 not in app.CURSOR_IDS
+    assert 32641 not in app.CURSOR_IDS
+    assert app.CURSOR_IDS == (32512, 32513, 32514, 32515, 32516, 32642, 32643,
+                              32644, 32645, 32646, 32648, 32649, 32650)
+
+
+def test_partial_cursor_hide_rolls_back_and_does_not_free_the_failed_copy():
+    class User32:
+        def __init__(self):
+            self.changed = []
+            self.destroyed = []
+            self.restores = 0
+            self._next = 10
+
+        def GetSystemMetrics(self, index):
+            return 32
+
+        def CreateCursor(self, *args):
+            self._next += 1
+            self.blank = self._next
+            return self.blank
+
+        def CopyIcon(self, handle):
+            self._next += 1
+            return self._next
+
+        def SetSystemCursor(self, handle, cursor_id):
+            if cursor_id == 32514:
+                self.failed = handle
+                return False
+            self.changed.append(cursor_id)
+            return True
+
+        def DestroyCursor(self, handle):
+            self.destroyed.append(handle)
+            return True
+
+        def SystemParametersInfoW(self, action, param, value, flags):
+            assert (action, param, value, flags) == (0x0057, 0, None, 0)
+            self.restores += 1
+            self.changed.clear()
+            return True
+
+    user = User32()
+    with pytest.raises(RuntimeError, match="无法隐藏系统光标"):
+        app.hide_system_cursor(user)
+    assert user.changed == []
+    assert user.restores == 1
+    assert user.destroyed == [user.blank]
+    assert user.failed not in user.destroyed
+    assert not app.cursor_is_dirty()
+
+
+def test_fresh_process_reloads_cursor_scheme(monkeypatch):
+    import ctypes
+    monkeypatch.setattr(app, "IS_WIN", True)
+    monkeypatch.setattr(ctypes, "windll", SimpleNamespace(user32=object()), raising=False)
+    app._cursor["hidden"] = False
+    calls = []
+    monkeypatch.setattr(app, "restore_system_cursor", lambda user: calls.append(True))
+    try:
+        app.apply_cursor(False)
+        assert calls == [True]
+        assert app._cursor["hidden"] is False
+    finally:
+        app._cursor["hidden"] = False
+
+
+def test_environment_report_keeps_driver_retry_timestamp(monkeypatch):
+    from unittest.mock import MagicMock
+    monkeypatch.setattr(app, "IS_WIN", True)
+    monkeypatch.setattr(app, "IS_MAC", False)
+    monkeypatch.setitem(sys.modules, "winreg", MagicMock())
+    write_json(os.path.join(core.home(), "env.json"), {"driver_auto_setup_at": 1234567.0})
+    report = app.environment_report()
+    with open(os.path.join(core.home(), "env.json"), encoding="utf-8") as handle:
+        saved = json.load(handle)
+    assert report["driver_auto_setup_at"] == 1234567.0
+    assert saved["driver_auto_setup_at"] == 1234567.0
+
+
+def test_failed_driver_install_waits_seven_days(monkeypatch):
+    from unittest.mock import MagicMock
+    monkeypatch.setattr(app, "IS_WIN", True)
+    monkeypatch.setattr(app, "IS_MAC", False)
+    monkeypatch.setitem(sys.modules, "winreg", MagicMock())
+    monkeypatch.setattr(B, "has_virtual_display", lambda match="": False)
+    monkeypatch.setattr(app, "bundled_driver_present", lambda: True)
+    monkeypatch.setattr(B, "autostart_status", lambda: True)
+    monkeypatch.setattr(B, "set_autostart", lambda on: None)
+    calls = []
+    monkeypatch.setattr(app, "install_vdd", lambda op: calls.append(op) or 1)
+    app.ensure_environment()
+    app.ensure_environment()
+    assert calls == ["install"]
+
+
+def test_existing_virtual_display_still_applies_autostart(monkeypatch):
+    from unittest.mock import MagicMock
+    monkeypatch.setattr(app, "IS_WIN", True)
+    monkeypatch.setattr(app, "IS_MAC", False)
+    monkeypatch.setitem(sys.modules, "winreg", MagicMock())
+    monkeypatch.setattr(app, "bundled_driver_present", lambda: True)
+    monkeypatch.setattr(B, "has_virtual_display", lambda match="": True)
+    monkeypatch.setattr(B, "autostart_status", lambda: False)
+    writes = []
+    monkeypatch.setattr(B, "set_autostart", lambda on: writes.append(on))
+    core.update(autostart_preference=True)
+    app.ensure_environment()
+    assert writes == [True]
+
+
+def test_null_display_backup_uses_system_topology(monkeypatch):
+    calls = []
+    monkeypatch.setattr(W, "set_topology", lambda flag: calls.append(flag) or 0)
+    monkeypatch.setattr(W, "describe", lambda *args, **kwargs: [{"name": "Physical", "tech": 5, "active": True}])
+    assert W.restore({"displays": [None]}, lambda *_args: None) == 1
+    assert calls == [W.SDC_TOPOLOGY_INTERNAL]
+
+
+def test_idle_bundled_vdd_beats_an_active_remote_display(monkeypatch):
+    import struct
+    def raw(src, tgt, active):
+        buf = bytearray(W.PATH_SIZE)
+        struct.pack_into("<IiIII", buf, 0, 1, 0, src, 0, 1)
+        struct.pack_into("<IiIIIIIIIIiI", buf, 20, 9, 0, tgt, 0, 17, 0, 0, 0, 0, 0, 1, 1)
+        struct.pack_into("<I", buf, 68, W.PATH_ACTIVE if active else 0)
+        return bytes(buf)
+    remote = raw(1, 7, True)
+    bundled = raw(2, 8, False)
+    monkeypatch.setattr(W, "query", lambda flags: ([remote, bundled], []))
+    def names(adapter, tgt):
+        if tgt == 7:
+            return "UU Virtual Display", r"\\?\DISPLAY#UU#1"
+        return "VDD by MTT", r"\\?\DISPLAY#MTT0001"
+    monkeypatch.setattr(W, "target_name", names)
+    monkeypatch.setattr(W, "adapter_name", lambda adapter: r"Root\MttVDD" if adapter == (9, 0) else r"Root\UU")
+    _paths, info, physical = W.plan_virtual_only()
+    assert info["name"] == "VDD by MTT"
+    assert physical == 0
+    idle = {"name": "VDD by MTT", "device_path": "DISPLAY#MTT1"}
+    busy = {"name": "VDD by MTT", "device_path": "DISPLAY#MTT2"}
+    other = {"name": "UU Virtual Display", "device_path": "DISPLAY#UU"}
+    assert W.virtual_candidate_key(idle, False, 3) < W.virtual_candidate_key(busy, True, 1)
+    assert W.virtual_candidate_key(busy, True, 1) < W.virtual_candidate_key(other, False, 0)
+
+
+def test_verified_auto_fallback_is_saved(monkeypatch):
+    now = dt.datetime.now().isoformat()
+    core.update(last_test_ok=True, last_test_mode="overlay", last_test_requested="auto",
+                last_test_capability="same", last_recovery_mode="overlay",
+                last_test_at=now, last_recovery_at=now, enabled=False)
+    monkeypatch.setattr(B, "capability_fingerprint", lambda: "same")
+    monkeypatch.setattr(B, "resolve_mode", lambda mode, match="": "virtual_only" if mode == "auto" else mode)
+    monkeypatch.setattr(B, "available_modes", lambda: ["auto", "virtual_only", "overlay", "screen_off"])
+    seen = []
+    monkeypatch.setattr(B, "schedule_install", lambda cfg: seen.append(cfg["mode"]))
+    app.activate("auto", "20:00", "10:30")
+    assert seen == ["overlay"]
+    assert core.load()["mode"] == "overlay"
+    assert core.load()["enabled"] is True
+
+
+def test_changed_capability_still_requires_a_new_test(monkeypatch):
+    now = dt.datetime.now().isoformat()
+    core.update(last_test_ok=True, last_test_mode="overlay", last_test_requested="auto",
+                last_test_capability="old", last_recovery_mode="overlay",
+                last_test_at=now, last_recovery_at=now)
+    monkeypatch.setattr(B, "capability_fingerprint", lambda: "new")
+    monkeypatch.setattr(B, "resolve_mode", lambda mode, match="": "virtual_only" if mode == "auto" else mode)
+    monkeypatch.setattr(B, "available_modes", lambda: ["auto", "virtual_only", "overlay", "screen_off"])
+    monkeypatch.setattr(B, "schedule_install", lambda cfg: pytest.fail("schedule"))
+    with pytest.raises(RuntimeError, match="完成一次测试"):
+        app.activate("auto", "20:00", "10:30")
+
+
+def test_orphaned_virtual_night_is_restored_on_startup(monkeypatch):
+    core.update(state="night", night_mode="virtual_only", enabled=False, recovery_pending=False)
+    calls = []
+    monkeypatch.setattr(B, "go_day", lambda *args, **kwargs: calls.append("day") or "virtual_only")
+    assert app.recover_orphaned_night() == "recovered"
+    cfg = core.load()
+    assert calls == ["day"]
+    assert cfg["state"] == "day" and cfg["night_mode"] == ""
+    assert cfg["recovery_pending"] is False and cfg["hold_night_until"] == ""
+
+
+def test_failed_orphan_recovery_does_not_pretend_it_is_day(monkeypatch):
+    core.update(state="night", night_mode="screen_off", enabled=False)
+    monkeypatch.setattr(B, "go_day", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("display")))
+    assert app.recover_orphaned_night() == "failed"
+    assert core.load()["state"] == "night"
+
+
+def test_clean_startup_does_not_touch_the_display(monkeypatch):
+    core.update(state="day", night_mode="")
+    monkeypatch.setattr(B, "go_day", lambda *args, **kwargs: pytest.fail("day"))
+    assert app.recover_orphaned_night() == "clean"
+
+
+def test_test_recovery_restores_a_dirty_cursor(monkeypatch):
+    core.update(test_id="t", state="night", night_mode="overlay",
+                last_test_night_ok=True, last_test_mode="overlay")
+    app.mark_cursor_dirty()
+    monkeypatch.setattr(app, "IS_WIN", True)
+    monkeypatch.setattr(B, "go_day", lambda *args, **kwargs: core.update(state="day", night_mode=""))
+    called = []
+    monkeypatch.setattr(app, "apply_cursor", lambda hidden: called.append(hidden))
+    try:
+        assert app.finish_test("t") == "ok"
+        assert called == [False]
+    finally:
+        app.clear_cursor_marker()
+        app._cursor["hidden"] = False
+
+
+def test_virtual_test_recovery_does_not_reset_custom_cursors(monkeypatch):
+    core.update(test_id="t", state="night", night_mode="virtual_only",
+                last_test_night_ok=True, last_test_mode="virtual_only")
+    app._cursor["hidden"] = False
+    monkeypatch.setattr(app, "IS_WIN", True)
+    monkeypatch.setattr(B, "go_day", lambda *args, **kwargs: core.update(state="day", night_mode=""))
+    monkeypatch.setattr(app, "apply_cursor", lambda hidden: pytest.fail("cursor"))
+    assert app.finish_test("t") == "ok"
+
+
+def test_linux_bad_output_records_fall_through(monkeypatch):
+    monkeypatch.setattr(L, "_run", lambda cmd: None)
+    monkeypatch.setattr(L, "query", lambda: [{"name": "HDMI-1", "active": True, "connected": True}])
+    assert L.restore({"outputs": [None]}, lambda *_args: None) == 2

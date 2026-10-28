@@ -98,6 +98,20 @@ def resolve_reason(match=""):
     return "macOS 暂无内置虚拟屏，使用基础关屏"
 
 
+def capability_fingerprint():
+    """硬件能力指纹。自动降级测过之后，只有指纹没变才允许按测到的方式启用。"""
+    try:
+        modes = ",".join(available_modes())
+    except Exception:
+        modes = ""
+    try:
+        virtual = 1 if has_virtual_display(load().get("virtual_match", "")) else 0
+    except Exception:
+        virtual = 0
+    build = win_build() if IS_WIN else 0
+    return "modes=%s;virtual=%s;build=%s" % (modes, virtual, build)
+
+
 def resolve_mode(mode, match=""):
     """auto：有虚拟屏→仅虚拟屏；Windows 10 2004+→防窥黑幕；否则基础关屏。"""
     validate_mode(mode)
@@ -607,7 +621,12 @@ def schedule_install(cfg):
             _win_register_tasks(plan)
         except Exception as e:
             # 计划任务模块不可用时仍要有每日任务，只是睡眠期间错过的点要等下一次到点。
+            # PowerShell 可能已经登记了一部分同名任务，先删掉再交给 schtasks /F。
             log("补跑计划注册失败，改用基础计划任务：%s" % e)
+            try:
+                _win_delete_tasks()
+            except Exception as cleanup:
+                log("清理未完成的计划任务失败：%s" % cleanup)
             tr = subprocess.list2cmdline(self_cmd() + ["--action", "reconcile"])
             for task in plan["tasks"]:
                 run(["schtasks", "/Create", "/F", "/TN", task["name"], "/SC", "DAILY",

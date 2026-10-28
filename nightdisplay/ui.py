@@ -277,8 +277,16 @@ class MainWindow:
             self.canvas.itemconfigure(self.detail_text, text=("%s    %s — %s" % (
                 "每日计划已开启" if cfg["enabled"] else "每日计划已暂停", cfg["start"], cfg["end"])) +
                 (" · 另有 %d 段" % len(cfg["extra_ranges"]) if cfg.get("extra_ranges") else ""))
-            message = "测试已恢复，可启用计划" if cfg.get("last_test_ok") else \
-                      "测试进行中，稍后自动恢复" if cfg.get("test_id") else "首次使用请先测试，并确认远程画面正常"
+            tested = cfg.get("last_test_mode")
+            names = {"virtual_only": "仅虚拟屏", "overlay": "防窥黑幕", "screen_off": "基础关屏"}
+            if cfg.get("last_test_ok") and cfg.get("last_test_requested") == "auto" and tested in names and tested != "virtual_only":
+                message = "测试已恢复，启用后使用" + names[tested]
+            elif cfg.get("last_test_ok"):
+                message = "测试已恢复，可启用计划"
+            elif cfg.get("test_id"):
+                message = "测试进行中，稍后自动恢复"
+            else:
+                message = "首次使用请先测试，并确认远程画面正常"
             if cfg["state"] == "night":
                 self.canvas.itemconfigure(self.mode_text, text={"virtual_only": "仅虚拟屏", "overlay": "防窥黑幕", "screen_off": "基础关屏"}.get(cfg.get("night_mode"), "系统显示控制"))
                 if cfg.get("night_mode") == "screen_off":
