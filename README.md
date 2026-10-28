@@ -160,6 +160,10 @@ GitHub Actions 按平台分开跑。Windows 2022 和 Windows latest 的测试通
 
 ## 更新记录
 
+### 3.0.8
+
+- 读取 `HKCU\...\Run` 里的 `NightDisplay` 命令失败时，不再把开机自启整段跳过。读不到就当作没有这项。偏好是开，就按当前程序写上。
+
 ### 3.0.7
 
 - 开机自启仍然只写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `NightDisplay` 这一项，不写 HKLM，也不删除整个 Run 键。

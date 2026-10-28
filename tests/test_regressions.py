@@ -942,11 +942,12 @@ def test_existing_virtual_display_still_applies_autostart(monkeypatch):
     from unittest.mock import MagicMock
     monkeypatch.setattr(app, "IS_WIN", True)
     monkeypatch.setattr(app, "IS_MAC", False)
+    monkeypatch.setattr(B, "IS_WIN", True)
+    monkeypatch.setattr(B, "IS_MAC", False)
     monkeypatch.setitem(sys.modules, "winreg", MagicMock())
     monkeypatch.setattr(app, "bundled_driver_present", lambda: True)
     monkeypatch.setattr(B, "has_virtual_display", lambda match="": True)
     monkeypatch.setattr(B, "autostart_status", lambda: False)
-    monkeypatch.setattr(B, "autostart_command", lambda: "")
     writes = []
     monkeypatch.setattr(B, "set_autostart", lambda on: writes.append(on))
     core.update(autostart_preference=True)

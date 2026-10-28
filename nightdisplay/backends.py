@@ -674,14 +674,20 @@ def desired_autostart_command():
 
 
 def autostart_command():
-    """读出 Run 里的 NightDisplay 命令。没有这一项，或类型不是字符串时，返回空串。"""
+    """读出 Run 里的 NightDisplay 命令。没有这一项、类型不对或读失败时，返回空串。
+
+    不把读取异常抛出去。调用方还要按自启偏好决定写不写，读失败不能把写入一起跳过。
+    """
     if not IS_WIN:
         return ""
     import winreg
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
-            value, kind = winreg.QueryValueEx(key, "NightDisplay")
-    except OSError:
+            got = winreg.QueryValueEx(key, "NightDisplay")
+        if not isinstance(got, tuple) or len(got) < 2:
+            return ""
+        value, kind = got[0], got[1]
+    except (OSError, TypeError, ValueError, AttributeError):
         return ""
     if kind not in (winreg.REG_SZ, winreg.REG_EXPAND_SZ) or not isinstance(value, str):
         return ""

@@ -1175,10 +1175,17 @@ def _apply_autostart(report):
     pref = bool(load().get("autostart_preference", True))
     try:
         actual = bool(B.autostart_status())
-        current = B.autostart_command() if IS_WIN else ""
     except Exception as e:
         log("环境准备：读取开机自启状态失败：%s" % e)
         return
+    current = ""
+    if IS_WIN:
+        try:
+            current = B.autostart_command()
+        except Exception as e:
+            # 命令读失败只说明这项不可信，不能因此放弃按偏好写入。
+            log("环境准备：读取开机自启命令失败：%s" % e)
+            current = ""
     report["autostart_actual"] = actual
     stale = bool(IS_WIN and pref and current != B.desired_autostart_command())
     if actual == pref and not stale:
