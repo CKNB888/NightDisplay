@@ -1066,6 +1066,22 @@ def test_emergency_removes_the_login_entry_when_preference_is_off(monkeypatch):
     assert core.load()["autostart_preference"] is False
 
 
+def test_uninstall_command_uses_resident_when_it_is_open(monkeypatch):
+    calls = []
+    monkeypatch.setattr(app, "send_ipc", lambda cmd: calls.append(cmd) or "ok")
+    monkeypatch.setattr(app, "uninstall", lambda *args, **kwargs: pytest.fail("本地又卸了一次"))
+    assert app.main(["--action", "uninstall"]) == 0
+    assert calls == ["uninstall"]
+
+
+def test_uninstall_command_runs_locally_without_resident(monkeypatch):
+    called = []
+    monkeypatch.setattr(app, "send_ipc", lambda cmd: None)
+    monkeypatch.setattr(app, "uninstall", lambda *args, **kwargs: called.append(True))
+    assert app.main(["--action", "uninstall"]) == 0
+    assert called == [True]
+
+
 def test_uninstall_keeps_autostart_off(monkeypatch):
     cleared = []
     monkeypatch.setattr(app, "emergency", lambda *args, **kwargs: None)

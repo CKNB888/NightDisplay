@@ -820,6 +820,10 @@ def run_app(show_window=True, selftest=0):
             appearance["restore"] = False
             root.deiconify()
             root.lift()
+        elif name == "uninstall":
+            # 卸载器在程序开着时走这里。必须先关登录项再退出，不能只做应急恢复。
+            uninstall(overlay)
+            root.after(50, root.destroy)
         elif name == "quit":
             root.after(50, root.destroy)
         else:
@@ -834,7 +838,7 @@ def run_app(show_window=True, selftest=0):
         if not done.wait(55):
             # 解锁和应急已经进队列后不能丢掉。客户端可以先超时返回，主线程空出来仍要执行。
             name = command.get("action") if isinstance(command, dict) else command
-            if name not in ("unlock", "emergency", "remote_emergency"):
+            if name not in ("unlock", "emergency", "remote_emergency", "uninstall"):
                 box["cancelled"] = True
             return "error: 操作超时，请查看状态"
         return box.get("result", "error: 程序正在退出")
@@ -1052,13 +1056,12 @@ def main(argv=None):
             elif r != "ok":
                 raise RuntimeError("托盘进程返回：%s" % r)
         elif a.action == "uninstall":
-            r = send_ipc("remote_emergency")
-            if r is not None and r != "ok":
-                raise RuntimeError("托盘进程返回：%s" % r)
+            # 托盘还在时由它自己卸载。只发应急再退出会按自启偏好把登录项留着。
+            r = send_ipc("uninstall")
             if r is None:
                 uninstall()
-            else:
-                send_ipc("quit")
+            elif r != "ok":
+                raise RuntimeError("托盘进程返回：%s" % r)
         elif a.action == "backup":
             B._backup_display()
         elif a.action == "restore":
