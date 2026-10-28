@@ -672,6 +672,42 @@ def test_ensure_night_virtual_does_not_force_the_panel_on(monkeypatch):
     assert seen["keep"] is False
 
 
+def test_night_repair_failure_keeps_the_schedule(monkeypatch):
+    core.update(enabled=True, state="night", night_mode="virtual_only", start="20:00", end="10:30")
+    monkeypatch.setattr(app, "in_night", lambda cfg: True)
+
+    def boom():
+        raise RuntimeError("topology lost")
+
+    monkeypatch.setattr(B, "ensure_night", boom)
+    days = []
+    monkeypatch.setattr(B, "go_day", lambda *args, **kwargs: days.append("day"))
+    assert app.reconcile() == "unchanged"
+    cfg = core.load()
+    assert cfg["enabled"] is True
+    assert cfg["state"] == "night"
+    assert days == []
+
+
+def test_destroyed_overlay_is_not_treated_as_covering():
+    class Dead:
+        def winfo_exists(self):
+            return 0
+
+    class Gone:
+        def winfo_exists(self):
+            raise RuntimeError("destroyed")
+
+    class Live:
+        def winfo_exists(self):
+            return 1
+
+    assert app.overlay_window_alive(None) is False
+    assert app.overlay_window_alive(Dead()) is False
+    assert app.overlay_window_alive(Gone()) is False
+    assert app.overlay_window_alive(Live()) is True
+
+
 def test_screen_off_is_reissued_and_failure_stays_in_night(monkeypatch):
     monkeypatch.setattr(B, "IS_WIN", True)
     core.update(state="night", night_mode="screen_off", keep_awake=False)
@@ -686,6 +722,13 @@ def test_screen_off_is_reissued_and_failure_stays_in_night(monkeypatch):
     monkeypatch.setattr(B, "screen_off", boom)
     B.ensure_night()
     assert core.load()["state"] == "night"
+
+    monkeypatch.setattr(B, "IS_WIN", False)
+    monkeypatch.setattr(B, "IS_MAC", True)
+    calls.clear()
+    monkeypatch.setattr(B, "screen_off", lambda quiet=False: calls.append(quiet))
+    B.ensure_night()
+    assert calls == [True]
 
 
 def test_windows_tasks_catch_up_after_sleep(monkeypatch):

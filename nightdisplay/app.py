@@ -338,10 +338,10 @@ def reconcile(overlay_cb=None):
         if want == "night":
             try:
                 B.ensure_night()
-            except Exception:
-                update(enabled=False, last_test_ok=False)
-                B.go_day(overlay_cb)
-                raise
+            except Exception as e:
+                # 一次拓扑或关屏失败不能关掉每日计划，也不能把屏幕主动亮回去。
+                # 屏幕若被点亮，下一次检查会再关。
+                log("夜间保持失败，计划仍开启，下一次检查再试：%s" % e)
         return "unchanged"
     if want == "night":
         B.go_night(cfg["mode"], overlay_cb)
@@ -375,6 +375,16 @@ def mark_cursor_dirty():
 def clear_cursor_marker():
     with contextlib.suppress(OSError):
         os.remove(cursor_marker_path())
+
+
+def overlay_window_alive(window):
+    """黑幕窗口还在。Tk 已经销毁时不能再把它当成盖住了屏幕。"""
+    if window is None:
+        return False
+    try:
+        return bool(window.winfo_exists())
+    except Exception:
+        return False
 
 
 def overlay_geometry(x, y, width, height):
@@ -545,6 +555,8 @@ def make_overlay(root, on_cover=None, on_fail=None):
         box = {"ok": False}
         def do():
             import tkinter as tk
+            if on and not overlay_window_alive(state["win"]):
+                state["win"] = None
             if on and state["win"] is None:
                 w = None
                 try:
@@ -610,7 +622,7 @@ def make_overlay(root, on_cover=None, on_fail=None):
         else:
             raise RuntimeError("黑幕操作必须由界面主线程执行")
         return box["ok"]
-    cb.is_on = lambda: state["win"] is not None
+    cb.is_on = lambda: overlay_window_alive(state["win"])
     return cb
 
 
@@ -683,6 +695,9 @@ def run_app(show_window=True, selftest=0):
                 root.withdraw()
 
     def reveal_settings():
+        # 夜间重新盖黑幕失败时，不能把设置窗口亮出来。
+        if load().get("state") == "night":
+            return
         _hide, deiconify, remembered = settings_visibility(_viewable(), False, appearance["restore"])
         appearance["restore"] = remembered
         if deiconify:
@@ -810,6 +825,23 @@ def run_app(show_window=True, selftest=0):
         if IS_MAC:
             chord.request_permission()
 
+        def maintain_overlay():
+            if not IS_WIN:
+                return
+            try:
+                cfg = load()
+            except Exception:
+                return
+            if cfg.get("state") != "night" or cfg.get("night_mode") != "overlay":
+                return
+            if overlay.is_on():
+                return
+            try:
+                if overlay(True) is not True:
+                    log("防窥黑幕未能重新盖上，下次检查再试")
+            except Exception as e:
+                log("防窥黑幕未能重新盖上：%s" % e)
+
         def tick():
             try:
                 reconcile(overlay)
@@ -818,7 +850,8 @@ def run_app(show_window=True, selftest=0):
             except Exception as e:
                 log("定时检查出错: %s" % e)
             finally:
-                # 黑幕期间每轮都重新盖住光标。别的程序可能把系统光标改回去。
+                # 黑幕窗口被系统拆掉后要重新盖上。光标也要每轮再藏一次。
+                maintain_overlay()
                 sync_night_window(refresh_cursor=True)
             root.after(5000, tick)
         root.after(2000, tick)

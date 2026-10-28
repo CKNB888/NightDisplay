@@ -313,9 +313,9 @@ def ensure_night():
             display.apply_virtual_only(match, log)
             if not display.verify_virtual_only(match):
                 raise RuntimeError("夜间输出已改变，无法重新确认只有虚拟屏")
-    elif IS_WIN and c.get("night_mode") == "screen_off":
+    elif c.get("night_mode") == "screen_off" and (IS_WIN or IS_MAC):
         # 基础关屏只发一次的话，键鼠把屏幕点亮后会一直亮到下一个时间边界。
-        # 失败只记日志：这里抛出去会让定时检查关掉每日计划。
+        # 失败只记日志，不把夜间状态清掉。
         try:
             screen_off(quiet=True)
         except Exception as e:
