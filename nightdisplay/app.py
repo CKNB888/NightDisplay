@@ -245,6 +245,12 @@ def emergency(overlay_cb=None, quiet=False):
 @B.serialized
 def uninstall(overlay_cb=None):
     emergency(overlay_cb, quiet=True)
+    # 应急恢复会删掉 Run 值，但自启偏好如果还是开，下次打开又会写回去。
+    update(autostart_preference=False, autostart=False)
+    try:
+        B.set_autostart(False)
+    except Exception as e:
+        log("卸载时关闭开机自启失败：%s" % e)
     log("已卸载计划任务和自启项；日志与备份保留在 %s" % home())
 
 
@@ -1132,9 +1138,15 @@ def environment_report():
         import winreg
         try:
             with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, B.RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
-                winreg.SetValueEx(k, "NightDisplayEnvTest", 0, winreg.REG_SZ, "ok")
-                winreg.DeleteValue(k, "NightDisplayEnvTest")
-            report["registry_writable"] = True
+                try:
+                    winreg.SetValueEx(k, "NightDisplayEnvTest", 0, winreg.REG_SZ, "ok")
+                    winreg.DeleteValue(k, "NightDisplayEnvTest")
+                    report["registry_writable"] = True
+                except OSError:
+                    # 探测值写进去之后如果删除失败，不能把 NightDisplayEnvTest 留在 Run 里。
+                    with contextlib.suppress(OSError):
+                        winreg.DeleteValue(k, "NightDisplayEnvTest")
+                    report["registry_writable"] = False
         except OSError:
             report["registry_writable"] = False
     else:
@@ -1149,21 +1161,32 @@ def environment_report():
 
 
 def _apply_autostart(report):
-    """按用户保存的自启偏好写注册表。和虚拟屏是否已经存在无关。"""
+    """按用户保存的自启偏好写注册表。和虚拟屏是否已经存在无关。
+
+    偏好仍是开、但 Run 里的命令已经不是当前程序时，也要重写。
+    只比较“有没有这一项”会在安装目录变化后继续启动旧路径。
+    """
     pref = bool(load().get("autostart_preference", True))
     try:
         actual = bool(B.autostart_status())
+        current = B.autostart_command() if IS_WIN else ""
     except Exception as e:
         log("环境准备：读取开机自启状态失败：%s" % e)
         return
     report["autostart_actual"] = actual
-    if actual == pref:
+    stale = bool(IS_WIN and pref and current != B.desired_autostart_command())
+    if actual == pref and not stale:
         return
     try:
         B.set_autostart(pref)
-        report["autostart_actual"] = bool(B.autostart_status())
+        if IS_WIN and pref:
+            report["autostart_actual"] = B.autostart_command() == B.desired_autostart_command()
+        else:
+            report["autostart_actual"] = bool(B.autostart_status())
         if report["autostart_actual"] != pref:
             log("环境准备：开机自启注册表写回校验未通过，软件仍可正常打开")
+        else:
+            update(autostart=pref)
     except Exception as e:
         log("环境准备：开机自启写入失败：%s，软件仍可正常打开" % e)
 

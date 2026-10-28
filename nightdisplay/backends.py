@@ -668,13 +668,33 @@ def _win_delete_tasks():
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
+def desired_autostart_command():
+    """当前程序应写入 HKCU Run 的命令。路径含空格时由 list2cmdline 加引号。"""
+    return subprocess.list2cmdline(self_cmd() + ["--tray"])
+
+
+def autostart_command():
+    """读出 Run 里的 NightDisplay 命令。没有这一项，或类型不是字符串时，返回空串。"""
+    if not IS_WIN:
+        return ""
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            value, kind = winreg.QueryValueEx(key, "NightDisplay")
+    except OSError:
+        return ""
+    if kind not in (winreg.REG_SZ, winreg.REG_EXPAND_SZ) or not isinstance(value, str):
+        return ""
+    return value
+
+
 def set_autostart(on):
     """开机自启（托盘常驻，负责黑幕和组合键）。Windows: HKCU Run；macOS: LaunchAgent RunAtLoad 已包含；Linux: XDG autostart。"""
     if IS_WIN:
         import winreg
         with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
             if on:
-                winreg.SetValueEx(k, "NightDisplay", 0, winreg.REG_SZ, subprocess.list2cmdline(self_cmd() + ["--tray"]))
+                winreg.SetValueEx(k, "NightDisplay", 0, winreg.REG_SZ, desired_autostart_command())
             else:
                 with contextlib.suppress(OSError):
                     winreg.DeleteValue(k, "NightDisplay")
@@ -702,12 +722,7 @@ def set_autostart(on):
 
 def autostart_status():
     if IS_WIN:
-        import winreg
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
-                return bool(winreg.QueryValueEx(k, "NightDisplay")[0])
-        except OSError:
-            return False
+        return bool(autostart_command())
     if IS_LINUX:
         return os.path.exists(os.path.expanduser("~/.config/autostart/nightdisplay.desktop"))
     return os.path.exists(os.path.expanduser("~/Library/LaunchAgents/com.nightdisplay.tray.plist"))

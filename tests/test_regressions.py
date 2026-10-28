@@ -841,6 +841,70 @@ def test_failed_driver_install_waits_seven_days(monkeypatch):
     assert calls == ["install"]
 
 
+def test_stale_run_command_is_rewritten(monkeypatch):
+    class Key:
+        def __init__(self, store):
+            self.store = store
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class Reg:
+        REG_SZ = 1
+        REG_EXPAND_SZ = 2
+        HKEY_CURRENT_USER = 0
+        KEY_SET_VALUE = 2
+
+        def __init__(self):
+            self.values = {"NightDisplay": (1, r"C:\old\NightDisplay.exe --tray")}
+
+        def OpenKey(self, root, path):
+            return Key(self.values)
+
+        def CreateKeyEx(self, root, path, reserved, access):
+            return Key(self.values)
+
+        def QueryValueEx(self, key, name):
+            if name not in key.store:
+                raise OSError(2, "missing")
+            kind, value = key.store[name]
+            return value, kind
+
+        def SetValueEx(self, key, name, reserved, kind, value):
+            key.store[name] = (kind, value)
+
+        def DeleteValue(self, key, name):
+            key.store.pop(name, None)
+
+    reg = Reg()
+    monkeypatch.setattr(app, "IS_WIN", True)
+    monkeypatch.setattr(app, "IS_MAC", False)
+    monkeypatch.setitem(sys.modules, "winreg", reg)
+    monkeypatch.setattr(B, "IS_WIN", True)
+    monkeypatch.setattr(B, "desired_autostart_command", lambda: r"C:\new\NightDisplay.exe --home C:\data --tray")
+    monkeypatch.setattr(B, "has_virtual_display", lambda match="": True)
+    monkeypatch.setattr(app, "bundled_driver_present", lambda: False)
+    core.update(autostart_preference=True, autostart=False)
+    app.ensure_environment()
+    assert reg.values["NightDisplay"][1] == r"C:\new\NightDisplay.exe --home C:\data --tray"
+    assert core.load()["autostart"] is True
+
+
+def test_uninstall_keeps_autostart_off(monkeypatch):
+    cleared = []
+    monkeypatch.setattr(app, "emergency", lambda *args, **kwargs: None)
+    monkeypatch.setattr(B, "set_autostart", lambda on: cleared.append(on))
+    core.update(autostart_preference=True, autostart=True)
+    app.uninstall()
+    cfg = core.load()
+    assert cfg["autostart_preference"] is False
+    assert cfg["autostart"] is False
+    assert cleared == [False]
+
+
 def test_existing_virtual_display_still_applies_autostart(monkeypatch):
     from unittest.mock import MagicMock
     monkeypatch.setattr(app, "IS_WIN", True)
