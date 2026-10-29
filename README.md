@@ -3,12 +3,11 @@
 按计划把这台电脑的屏幕变黑 —— **本机看是纯黑，远程软件照常能看到桌面、照常能操作，画面不冻也不闪。**
 
 > **平台**：只支持 **Windows 10 2004（build 19041）及以上，x64**。
-> 4.0 是 Rust 重写，macOS 和 Linux 支持取消了 —— 旧版在这两个平台上从来没真正做到
-> "本地黑屏、远程正常"，与其留半成品，不如把 Windows 这一条路做扎实。
-> 3.x 的代码保留在 [`legacy-python/`](legacy-python/)。
+> 4.0 是 Rust 重写，只做 Windows 这一条路 —— 只有在这里，"本地黑屏、远程正常"
+> 才真的做得到。
 
 作者：传康Kk。赞助及联系：1837620622。
-[下载](https://github.com/CKNB888/NightDisplay/releases/latest) · [反馈](https://github.com/CKNB888/NightDisplay/issues)
+[下载最新版（4.x）](https://github.com/CKNB888/NightDisplay/releases/latest) · [反馈](https://github.com/CKNB888/NightDisplay/issues) · [3.x 历史版本](https://github.com/CKNB888/NightDisplay/releases)
 
 ---
 
@@ -315,8 +314,8 @@ crates/nd-gui    Tauri 2 界面：视图模型、命令层、托盘、窗口几�
 crates/nd-cli    唯一的 exe（NightDisplay.exe）：参数解析 + 各动作 + 常驻进程
 resources/       安装包资源（install_vdd.ps1、VDD 配置、驱动许可）
 packaging/       Inno Setup 脚本与中文语言文件
-legacy-python/   3.x 的 Python 实现，留作行为对照
 docs/            架构说明、发布说明
+legacy-python/   已归档：3.x 的 Python 实现，只作行为对照，不再构建、不再发布
 ```
 
 CI（`.github/workflows/rust.yml`）：
@@ -326,13 +325,19 @@ CI（`.github/workflows/rust.yml`）：
 | `windows` | `fmt --check` → `clippy -D warnings`（含 pedantic）→ `test --workspace` → release 构建 → 命令行冒烟（含诊断包） |
 | `linux-logic` | 只跑 `nd-core` 的单元测试（时间计划、组合键、模式降级、显示路径选择） |
 | `package` | Inno Setup 安装器 + 便携 zip（都带随包驱动），并**真的静默安装一遍再卸载** |
-| `release` | 打 `v*` 标签时发布到 Releases，附 `SHA256SUMS.txt` |
+| `deep-qa` | 在两个 Windows 版本上各跑两轮：真装一遍、真装驱动、真切夜间，验"单次提交、零目标不出现、实体屏不消失、模式一致、误操作不恢复" |
+| `release` | 打 `v*` 标签时发布到 Releases（等 `deep-qa` 全绿），附 `SHA256SUMS.txt` |
 
 架构、状态机、IPC 协议、看门狗契约和 lint 策略见 [`docs/architecture.md`](docs/architecture.md)。
 
 ---
 
 ## 十、更新记录
+
+当前版本是 **4.x**（Rust）。3.x 的 Python 实现已归档在
+[`legacy-python/`](legacy-python/)，只作行为对照，不再构建也不发布；
+3.x 的更新记录和历史安装包见 [`legacy-python/README.md`](legacy-python/README.md)
+与 [Releases 历史](https://github.com/CKNB888/NightDisplay/releases)。
 
 ### 4.0.0
 
@@ -348,7 +353,6 @@ CI（`.github/workflows/rust.yml`）：
 * 首次运行向导：一次 UAC、六步、每步真实结果、装完永不弹出、修复只重跑失败步骤。
 * 所有特权动作收敛到一个提升助手，界面始终不以管理员身份运行。
 
-3.x 的更新记录见 [`legacy-python/README.md`](legacy-python/README.md) 与历史提交。
 
 ---
 

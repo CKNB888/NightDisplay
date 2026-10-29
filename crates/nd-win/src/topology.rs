@@ -19,7 +19,6 @@
 #![cfg(windows)]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use windows::Win32::Foundation::LUID;
 
@@ -309,20 +308,20 @@ pub fn backup() -> Result<DisplayBackup> {
     })
 }
 
-/// 自本次进程启动以来 `SetDisplayConfig` 的真实调用次数（按标志分开统计）。
+/// `SetDisplayConfig` 的真实调用次数（跨进程累计）。
 ///
 /// 这是给自检、诊断包和 Windows QA 用的**事实**，不是估算：
 /// 用户抱怨的"闪一下""远程冻住"都跟"到底改了几次显示配置"直接相关，
 /// 所以宁可在这里记一笔，也不要在报告里写"应该只有一次"。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApplyStats {
     /// 带 `SDC_VALIDATE` 的调用次数（只校验，不改配置）。
     pub validate_calls: u64,
     /// 带 `SDC_APPLY` 且传入了完整路径集的调用次数（真正改拓扑）。
     pub apply_calls: u64,
-    /// 带 `SDC_APPLY` 但没传路径集的调用次数（`SDC_TOPOLOGY_*` 之类的快捷调用）。
+    /// 带 `SDC_APPLY` 但没传路径集的调用次数（`SDC_TOPOLOGY_*` 兜底）。
     pub apply_shortcut_calls: u64,
-    /// 提交时路径集里活动 target 的最小值。`0` 表示**出现过零 target** —— 这正是要避免的。
+    /// 提交时路径集里活动 target 的最小值。`0` 表示**出现过零 target**。
     pub min_active_submitted: u32,
     /// 是否有任何一次提交换走了最后一块活动屏。
     pub ever_zero_target: bool,
@@ -330,40 +329,93 @@ pub struct ApplyStats {
     pub last_apply_ms: u64,
 }
 
-static STATS_VALIDATE: AtomicU64 = AtomicU64::new(0);
-static STATS_APPLY: AtomicU64 = AtomicU64::new(0);
-static STATS_APPLY_SHORTCUT: AtomicU64 = AtomicU64::new(0);
-static STATS_MIN_ACTIVE: AtomicU64 = AtomicU64::new(u64::MAX);
-static STATS_ZERO: AtomicBool = AtomicBool::new(false);
-static STATS_LAST_MS: AtomicU64 = AtomicU64::new(0);
+/// 统计文件的位置：`<home>/topology-stats.json`。
+///
+/// 为什么落盘而不是放内存：命令行每个动作都是**独立进程**，真正的切换发生在
+/// 常驻进程里 —— 只放内存的话 `--action probe` 永远读到 0，QA 就断言不了
+/// "只有一次 apply"。所以文件是唯一事实来源，读写都在一把进程内锁里做。
+#[must_use]
+pub fn stats_file() -> std::path::PathBuf {
+    nd_core::paths::home_dir().join("topology-stats.json")
+}
 
-/// 读取累计统计（不会清零）。
+/// 进程内的读-改-写锁，避免同一进程里两个线程互相覆盖。
+static STATS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn read_stats() -> ApplyStats {
+    std::fs::read_to_string(stats_file())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn write_stats(stats: &ApplyStats) {
+    let Ok(text) = serde_json::to_string(stats) else {
+        return;
+    };
+    let path = stats_file();
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+/// 读累计统计（不会清零）。
 #[must_use]
 pub fn apply_stats() -> ApplyStats {
-    let min = STATS_MIN_ACTIVE.load(Ordering::SeqCst);
-    ApplyStats {
-        validate_calls: STATS_VALIDATE.load(Ordering::SeqCst),
-        apply_calls: STATS_APPLY.load(Ordering::SeqCst),
-        apply_shortcut_calls: STATS_APPLY_SHORTCUT.load(Ordering::SeqCst),
-        // 从没提交过时报告 0 而不是 u64::MAX。
-        min_active_submitted: if min == u64::MAX {
-            0
-        } else {
-            u32::try_from(min).unwrap_or(u32::MAX)
-        },
-        ever_zero_target: STATS_ZERO.load(Ordering::SeqCst),
-        last_apply_ms: STATS_LAST_MS.load(Ordering::SeqCst),
+    let _guard = STATS_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    read_stats()
+}
+
+/// 记一次调用。`active` 是这次提交的活动 target 数（没有提交路径集时传 `None`）。
+fn record(kind: CallKind, active: Option<usize>, elapsed_ms: u64) {
+    let _guard = STATS_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut stats = read_stats();
+    match kind {
+        CallKind::Validate => {
+            stats.validate_calls = stats.validate_calls.saturating_add(1);
+        }
+        CallKind::Apply => {
+            stats.apply_calls = stats.apply_calls.saturating_add(1);
+            stats.last_apply_ms = elapsed_ms;
+        }
+        CallKind::Shortcut => {
+            stats.apply_shortcut_calls = stats.apply_shortcut_calls.saturating_add(1);
+            stats.last_apply_ms = elapsed_ms;
+        }
     }
+    if let Some(n) = active {
+        let n = u32::try_from(n).unwrap_or(u32::MAX);
+        // 从没见过任何一次提交时，min 直接取本次。
+        if stats.validate_calls + stats.apply_calls + stats.apply_shortcut_calls <= 1 {
+            stats.min_active_submitted = n;
+        } else {
+            stats.min_active_submitted = stats.min_active_submitted.min(n);
+        }
+        if n == 0 {
+            stats.ever_zero_target = true;
+        }
+    }
+    write_stats(&stats);
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CallKind {
+    Validate,
+    Apply,
+    Shortcut,
 }
 
 /// 把统计清零，QA 每轮开始时调用，好让每次断言只看自己那一段。
 pub fn reset_apply_stats() {
-    STATS_VALIDATE.store(0, Ordering::SeqCst);
-    STATS_APPLY.store(0, Ordering::SeqCst);
-    STATS_APPLY_SHORTCUT.store(0, Ordering::SeqCst);
-    STATS_MIN_ACTIVE.store(u64::MAX, Ordering::SeqCst);
-    STATS_ZERO.store(false, Ordering::SeqCst);
-    STATS_LAST_MS.store(0, Ordering::SeqCst);
+    let _guard = STATS_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _ = std::fs::remove_file(stats_file());
 }
 
 /// 一次切换的完整计划：提交给 `SetDisplayConfig` 的**全部**路径和模式。
@@ -628,16 +680,18 @@ pub fn plan_detach(match_pat: &str) -> Result<SwitchPlan> {
     })
 }
 
+fn active_in_plan(plan: &SwitchPlan) -> usize {
+    plan.paths.iter().filter(|p| is_active(p)).count()
+}
+
 /// 提交前的硬不变量：这一份路径集里**必须**还有活动 target。
 ///
 /// 这是整套方案的核心承诺 —— "任何一次提交都不会让活动显示数变成 0"。
 /// 一旦计划有问题，宁可在这里直接失败（屏幕保持原样），也绝不提交一个
 /// 会把桌面摘空的配置：那种提交正是用户看到的"闪一下、远程黑屏"。
 fn guard_active_targets(plan: &SwitchPlan) -> Result<()> {
-    let active = plan.paths.iter().filter(|p| is_active(p)).count();
-    STATS_MIN_ACTIVE.fetch_min(u64::try_from(active).unwrap_or(0), Ordering::SeqCst);
+    let active = active_in_plan(plan);
     if active == 0 {
-        STATS_ZERO.store(true, Ordering::SeqCst);
         tracing::error!("计划里没有任何活动显示，拒绝提交（屏幕保持原样）");
         return Err(nd_core::error::user(
             "计划里没有任何活动显示，已拒绝提交（屏幕保持原样）",
@@ -654,7 +708,7 @@ fn commit(plan: &SwitchPlan, dry_run: bool) -> Result<(u64, u64, u64)> {
     let flags = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES;
 
     let t0 = std::time::Instant::now();
-    STATS_VALIDATE.fetch_add(1, Ordering::SeqCst);
+    record(CallKind::Validate, Some(active_in_plan(plan)), 0);
     // SAFETY: 路径数组和模式数组都按完整长度传入，索引都在范围内。
     let status =
         unsafe { SetDisplayConfig(Some(&plan.paths), Some(&plan.modes), SDC_VALIDATE | flags) };
@@ -670,12 +724,11 @@ fn commit(plan: &SwitchPlan, dry_run: bool) -> Result<(u64, u64, u64)> {
     }
 
     let t1 = std::time::Instant::now();
-    STATS_APPLY.fetch_add(1, Ordering::SeqCst);
     // SAFETY: 与校验时完全相同的参数，只多了 SDC_APPLY。
     let status =
         unsafe { SetDisplayConfig(Some(&plan.paths), Some(&plan.modes), SDC_APPLY | flags) };
     let apply_ms = t1.elapsed().as_millis() as u64;
-    STATS_LAST_MS.store(apply_ms, Ordering::SeqCst);
+    record(CallKind::Apply, Some(active_in_plan(plan)), apply_ms);
     if status != 0 {
         return Err(nd_core::error::user(format!(
             "提交显示配置失败（{}）",
@@ -950,7 +1003,7 @@ pub fn restore() -> Result<&'static str> {
     ];
     let mut tried = Vec::new();
     for (label, flag) in attempts {
-        STATS_APPLY_SHORTCUT.fetch_add(1, Ordering::SeqCst);
+        record(CallKind::Shortcut, None, 0);
         // SAFETY: 只用拓扑标志，标准兜底恢复方式。
         let status = unsafe { SetDisplayConfig(None, None, SDC_APPLY | flag) };
         if status != 0 {
