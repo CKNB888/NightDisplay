@@ -81,6 +81,7 @@ const ACTIONS: &[&str] = &[
     "tray",
     "night",
     "day",
+    "unlock",
     "reconcile",
     "test",
     "activate",
@@ -123,7 +124,8 @@ const HELP: &str = r"NightDisplay —— 夜间本地黑屏、远程正常
   gui, tray      打开图形界面（4.1 起提供；现在请用 setup）
   serve          常驻进程（托盘自启、计划任务都调它）
   night          立刻进入夜间（按计划里的模式）
-  day            立刻恢复白天
+  day            立刻恢复白天（黑屏锁定期间会被拒绝，请用 emergency 或组合键）
+  unlock         走一遍组合键解锁的完整逻辑（恢复白天并保持本段白天）
   test           测试 N 秒后自动恢复（先暂停每日计划）
   activate       启用每日计划（必须先成功测试过一次）
   pause          暂停每日计划（不改变当前屏幕）
@@ -253,6 +255,7 @@ fn run(args: &Args) -> Result<ExitCode> {
         "uninstall-vdd" => Ok(actions::uninstall_vdd()),
         "night" => actions::night(args),
         "day" => actions::day(args),
+        "unlock" => actions::unlock(),
         "reconcile" => actions::reconcile(),
         "test" => actions::test(args),
         "activate" => actions::activate(args),

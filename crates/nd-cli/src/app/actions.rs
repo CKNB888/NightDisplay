@@ -655,6 +655,25 @@ pub fn emergency() -> Result<ExitCode> {
     Ok(report(&outcome))
 }
 
+/// 走一遍「组合键解锁」的完整逻辑：恢复白天 + 本段剩余时间保持白天。
+///
+/// 为什么要有这个动作：组合键本身是低级键盘钩子里检测的，钩子只能被**真实**
+/// 按键推进（注入事件故意被忽略，免得远程注入伪造解锁），所以在无人值守的
+/// CI 里没法真的按住 C+K。这个动作走的是钩子触发后**完全相同**的那条路径
+/// （`Engine::chord_unlock`），所以解锁行为本身是可以被验证的，
+/// 不能验证的只有"真按下去能不能被钩子认出来"那一步。
+pub fn unlock() -> Result<ExitCode> {
+    if let Some(text) = ask_daemon("unlock", None)? {
+        println!("{text}");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let platform = WinPlatform::new();
+    let engine = Engine::new(&platform);
+    let outcome = engine.chord_unlock(chrono::Local::now())?;
+    platform.shutdown();
+    Ok(report(&outcome))
+}
+
 pub fn uninstall() -> Result<ExitCode> {
     if let Some(text) = ask_daemon("uninstall", None)? {
         println!("{text}");
