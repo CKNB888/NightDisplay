@@ -439,10 +439,35 @@ pub struct SwitchPlan {
     pub active_after: usize,
     /// 虚拟屏切换前后的身份（target 适配器 + id），用来确认采集表面没被动过。
     pub vdd_identity: Option<(u32, i32, u32)>,
+    /// 这份"计划"其实和当前状态一模一样，**不要**提交。
+    ///
+    /// 白天预热是幂等的：虚拟屏已经接着桌面时再来一次，不该再动显示配置。
+    /// 多提交一次就等于多一次采集表面刷新的机会，正是要避免的那种抖动。
+    pub no_change: bool,
 }
 
 fn is_active(p: &DISPLAYCONFIG_PATH_INFO) -> bool {
     (p.flags & PATH_FLAGS_ACTIVE) != 0
+}
+
+/// 把**未激活**路径的两个 `modeInfoIdx` 都写成 `DISPLAYCONFIG_PATH_MODE_IDX_INVALID`。
+///
+/// 这是 `SDC_USE_SUPPLIED_DISPLAY_CONFIG` 的硬性要求，不是可选的清理动作：
+/// `QueryDisplayConfig(QDC_ALL_PATHS)` 返回的未激活路径本来带的是哨兵值，
+/// 可我们为了"让实体屏的 target 继续留在路径集里"而把它的 ACTIVE 标志清掉时，
+/// 模式索引还留在原处（指向实体屏原来的模式）。带着"未激活 + 有效模式索引"
+/// 提交，`SetDisplayConfig` 直接返回 `ERROR_INVALID_PARAMETER`（87）——
+/// 也就是线上那条「显卡驱动不接受这个显示配置（参数无效）」。
+///
+/// 清掉之后语义也正好对上：这块 target 仍然枚举得到、仍然在路径集里，
+/// 只是它当前没有桌面、没有信号模式。虚拟屏那条活动路径的索引一个字节都不动。
+fn clear_modes_of_inactive(paths: &mut [DISPLAYCONFIG_PATH_INFO]) {
+    for path in paths.iter_mut() {
+        if !is_active(path) {
+            path.sourceInfo.Anonymous.modeInfoIdx = MODE_IDX_INVALID;
+            path.targetInfo.Anonymous.modeInfoIdx = MODE_IDX_INVALID;
+        }
+    }
 }
 
 fn needles(match_pat: &str) -> Vec<String> {
@@ -594,6 +619,11 @@ pub fn plan_arm(match_pat: &str) -> Result<SwitchPlan> {
             virtual_name,
             active_before,
             vdd_identity: Some(identity),
+            // 虚拟屏已经接进桌面 —— 预热的目标状态已经达成，**绝不**再提交一次。
+            // 入夜只需要摘掉实体屏那一条，那才是"一次 SetDisplayConfig"。
+            // 白天每次自检、每次进夜间都会走到这里，多提交一次就是多一次
+            // 采集表面刷新的机会，正好是要避免的抖动。
+            no_change: true,
         });
     };
 
@@ -639,6 +669,7 @@ pub fn plan_arm(match_pat: &str) -> Result<SwitchPlan> {
         active_before,
         active_after: planned.active_after,
         vdd_identity: Some(identity),
+        no_change: false,
     })
 }
 
@@ -662,6 +693,9 @@ pub fn plan_detach(match_pat: &str) -> Result<SwitchPlan> {
     for index in &planned.deactivated {
         out[*index].flags &= !PATH_FLAGS_ACTIVE;
     }
+    // 摘掉桌面的那几条必须同时把模式索引置为无效，否则整份配置会被
+    // `SetDisplayConfig` 判为参数无效（见 `clear_modes_of_inactive`）。
+    clear_modes_of_inactive(&mut out);
     let vdd_idx = planned.virtual_index;
     Ok(SwitchPlan {
         paths: out,
@@ -672,6 +706,7 @@ pub fn plan_detach(match_pat: &str) -> Result<SwitchPlan> {
         shared_source: true,
         active_before: planned.active_before,
         active_after: planned.active_after,
+        no_change: false,
         vdd_identity: Some((
             paths[vdd_idx].targetInfo.adapterId.LowPart,
             paths[vdd_idx].targetInfo.adapterId.HighPart,
@@ -707,11 +742,16 @@ fn commit(plan: &SwitchPlan, dry_run: bool) -> Result<(u64, u64, u64)> {
     guard_active_targets(plan)?;
     let flags = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES;
 
+    // 不管计划是怎么算出来的，提交前一律把未激活路径的模式索引清成哨兵值。
+    // 这里做而不是只靠各计划函数自律：漏一处就是 ERROR_INVALID_PARAMETER，
+    // 而那个错误在用户眼里就是"点了黑屏没反应"。
+    let mut paths = plan.paths.clone();
+    clear_modes_of_inactive(&mut paths);
+
     let t0 = std::time::Instant::now();
     record(CallKind::Validate, Some(active_in_plan(plan)), 0);
     // SAFETY: 路径数组和模式数组都按完整长度传入，索引都在范围内。
-    let status =
-        unsafe { SetDisplayConfig(Some(&plan.paths), Some(&plan.modes), SDC_VALIDATE | flags) };
+    let status = unsafe { SetDisplayConfig(Some(&paths), Some(&plan.modes), SDC_VALIDATE | flags) };
     let validate_ms = t0.elapsed().as_millis() as u64;
     if status != 0 {
         return Err(nd_core::error::user(format!(
@@ -725,8 +765,7 @@ fn commit(plan: &SwitchPlan, dry_run: bool) -> Result<(u64, u64, u64)> {
 
     let t1 = std::time::Instant::now();
     // SAFETY: 与校验时完全相同的参数，只多了 SDC_APPLY。
-    let status =
-        unsafe { SetDisplayConfig(Some(&plan.paths), Some(&plan.modes), SDC_APPLY | flags) };
+    let status = unsafe { SetDisplayConfig(Some(&paths), Some(&plan.modes), SDC_APPLY | flags) };
     let apply_ms = t1.elapsed().as_millis() as u64;
     record(CallKind::Apply, Some(active_in_plan(plan)), apply_ms);
     if status != 0 {
@@ -824,7 +863,40 @@ pub enum Stage {
 /// 预热：让虚拟屏接进桌面并保持活动。**幂等**，重复调用不会反复改拓扑。
 pub fn arm(match_pat: &str, dry_run: bool) -> Result<VirtualReport> {
     let plan = plan_arm(match_pat)?;
+    if plan.no_change {
+        // 已经是"虚拟屏接着桌面、和实体屏复制"的状态：不提交、不计数。
+        // 这条分支是白天每次自检、每次进夜间都会走到的，必须一字节都不改。
+        let report = VirtualReport {
+            applied: true,
+            virtual_display: plan.virtual_name.clone(),
+            active_before: plan.active_before,
+            active_after: plan.active_before,
+            mode_matched: true,
+            ..Default::default()
+        };
+        tracing::info!(display = %plan.virtual_name, "虚拟屏已在预热状态，无需改动");
+        return Ok(report);
+    }
     apply_plan(&plan, dry_run, Stage::Arm)
+}
+
+/// 提前预热虚拟屏（幂等）。装完驱动、常驻进程启动时各调一次。
+///
+/// 为什么要在"白天"预热：入夜那一刻只允许有**一次** `SetDisplayConfig`。
+/// 如果等到入夜才把虚拟屏接进桌面，那一次入夜就会变成两次提交
+/// （先接虚拟屏、再摘实体屏），屏幕会多刷一次、远程画面也跟着抖一下。
+/// 装驱动时装好就先接好，之后每天入夜都只是"摘掉实体屏"这一下。
+pub fn prewarm(match_pat: &str) -> Result<VirtualReport> {
+    let report = arm(match_pat, false)?;
+    if report.applied {
+        tracing::info!(display = %report.virtual_display, "虚拟屏已预热待命");
+    } else {
+        tracing::warn!(
+            error = %report.error.clone().unwrap_or_else(|| "未知原因".into()),
+            "虚拟屏预热未成功，入夜会退回黑幕模式"
+        );
+    }
+    Ok(report)
 }
 
 /// 入夜：把桌面交给虚拟屏。调用前虚拟屏必须已经预热（`arm`）。
@@ -835,9 +907,21 @@ pub fn detach(match_pat: &str, dry_run: bool) -> Result<VirtualReport> {
 
 /// 白天：把实体屏接回桌面，虚拟屏退回"复制预热"状态。
 ///
-/// 也是一次 `SetDisplayConfig`：实体屏那条路径原样恢复活动（它的模式索引一直在）。
+/// 也是**一次** `SetDisplayConfig`，和入夜同一套机制：虚拟屏那条路径原样不动
+/// （采集表面不重建），实体屏那条重新接回**同一个桌面源**（复制），
+/// 所以白天看到的就是入夜前的样子。
+///
+/// 为什么不能靠"把入夜时那条路径的模式索引再拿回来"：入夜提交之后，
+/// `QueryDisplayConfig` 对未激活路径返回的模式索引本来就是无效哨兵值，
+/// 原来的索引（指向实体屏的源模式/目标模式）已经不在任何地方了。
+/// 早先的实现就是靠这个索引找候选，于是永远找不到、退回 `SDC_TOPOLOGY_*`
+/// 兜底 —— 那一步会重建采集表面，正是"远程要重连"的来源。
+///
+/// 现在改成按**当前的虚拟屏路径**反推：源用虚拟屏正在用的那个 source，
+/// 目标模式交给驱动自己推荐（`GET_TARGET_PREFERRED_MODE`），
+/// 一条完整路径集一次提交，中途不出现空显示目标。
 pub fn reattach() -> Result<VirtualReport> {
-    let (paths, modes) = query(QDC_ALL_PATHS)?;
+    let (paths, mut modes) = query(QDC_ALL_PATHS)?;
     let patterns = needles("");
     let active = paths.iter().filter(|p| is_active(p)).count();
     let has_physical_active = paths
@@ -854,34 +938,76 @@ pub fn reattach() -> Result<VirtualReport> {
             ..Default::default()
         });
     }
-    // 找一条"实体屏 + 有模式索引"的路径：它就是我们入夜时摘掉的那条。
-    let candidate = paths
+
+    // 正在接管桌面的虚拟屏路径：它的 source 就是"桌面"的定义。
+    let Some(vdd_idx) = paths
         .iter()
-        .enumerate()
-        .filter(|(_, p)| {
-            !path_is_virtual(p, &patterns)
-                && p.targetInfo.targetAvailable.as_bool()
-                && source_mode_idx(p).is_some()
-                && target_mode_idx(p).is_some()
-        })
-        .max_by_key(|(_, p)| p.targetInfo.outputTechnology.0)
-        .map(|(i, _)| i);
-    let Some(idx) = candidate else {
+        .position(|p| is_active(p) && path_is_virtual(p, &patterns))
+    else {
         return Err(nd_core::error::user(
-            "找不到带桌面模式的实体屏路径，请按 Win+P 手动选择显示方式",
+            "当前没有活动显示，无法判断该把桌面接回哪块屏，请按 Win+P 手动选择显示方式",
         ));
     };
+    let src_id = paths[vdd_idx].sourceInfo.id;
+    let src_adapter = paths[vdd_idx].sourceInfo.adapterId;
+    let src_mode = source_mode_idx(&paths[vdd_idx]);
+
+    // 候选实体屏：驱动说插着东西、不是虚拟屏。优先有目标模式的（真接过信号的）。
+    let Some(idx) = paths
+        .iter()
+        .enumerate()
+        .filter(|(i, p)| {
+            *i != vdd_idx
+                && !path_is_virtual(p, &patterns)
+                && p.targetInfo.targetAvailable.as_bool()
+        })
+        .max_by_key(|(_, p)| (p.targetInfo.outputTechnology.0, !is_active(p)))
+        .map(|(i, _)| i)
+    else {
+        return Err(nd_core::error::user(
+            "找不到可用的实体屏路径，请按 Win+P 手动选择显示方式",
+        ));
+    };
+
+    // 目标模式：让这块实体屏的驱动推荐一个（它自己最清楚支持什么信号）。
+    let target = preferred_target_mode(&paths[idx].targetInfo.adapterId, paths[idx].targetInfo.id)
+        .or_else(|| {
+            // 推荐不到就照抄虚拟屏的目标模式（仅换 id/adapter），交给
+            // SDC_ALLOW_CHANGES 让系统收拾细节。
+            target_mode_idx(&paths[vdd_idx])
+                .and_then(|i| modes.get(i as usize).copied())
+                .map(|mut m| {
+                    m.id = paths[idx].targetInfo.id;
+                    m.adapterId = paths[idx].targetInfo.adapterId;
+                    m
+                })
+        })
+        .ok_or_else(|| nd_core::error::user("实体屏没有可用模式，无法接回桌面"))?;
+    let tgt_idx = modes.len() as u32;
+    modes.push(target);
+
     let mut out = paths.clone();
-    out[idx].flags |= PATH_FLAGS_ACTIVE;
+    {
+        let phys = &mut out[idx];
+        phys.flags |= PATH_FLAGS_ACTIVE;
+        // 和虚拟屏共用同一个桌面源 = 复制；桌面内容和分辨率都不变。
+        phys.sourceInfo.adapterId = src_adapter;
+        phys.sourceInfo.id = src_id;
+        if let Some(m) = src_mode {
+            phys.sourceInfo.Anonymous.modeInfoIdx = m;
+        }
+        phys.targetInfo.Anonymous.modeInfoIdx = tgt_idx;
+    }
     let plan = SwitchPlan {
         paths: out,
         modes,
-        virtual_name: path_display_name(&paths[idx]),
+        virtual_name: path_display_name(&paths[vdd_idx]),
         physical_count: 0,
         mode_matched: true,
         shared_source: true,
         active_before: active,
         active_after: active + 1,
+        no_change: false,
         vdd_identity: None,
     };
     let mut report = VirtualReport {
@@ -1085,6 +1211,45 @@ mod tests {
     fn error_codes_have_chinese_text() {
         assert_eq!(describe_error(5), "拒绝访问（需要管理员权限）");
         assert!(describe_error(9999).contains("9999"));
+    }
+
+    /// 回归：入夜时被摘掉桌面的实体屏路径，`modeInfoIdx` 必须同时置为哨兵值。
+    ///
+    /// 线上表现就是「显卡驱动不接受这个显示配置（参数无效）」—— 因为
+    /// `SDC_USE_SUPPLIED_DISPLAY_CONFIG` 不接受"未激活 + 有效模式索引"的路径。
+    #[test]
+    fn deactivated_paths_lose_their_mode_indices() {
+        let mut phys = DISPLAYCONFIG_PATH_INFO::default();
+        phys.flags = PATH_FLAGS_ACTIVE;
+        phys.sourceInfo.Anonymous.modeInfoIdx = 3;
+        phys.targetInfo.Anonymous.modeInfoIdx = 4;
+        let mut vdd = DISPLAYCONFIG_PATH_INFO::default();
+        vdd.flags = PATH_FLAGS_ACTIVE;
+        vdd.sourceInfo.Anonymous.modeInfoIdx = 3;
+        vdd.targetInfo.Anonymous.modeInfoIdx = 5;
+
+        // 摘掉实体屏的桌面（只清 ACTIVE 位，和 plan_detach 一样）。
+        let mut paths = vec![phys, vdd];
+        paths[0].flags &= !PATH_FLAGS_ACTIVE;
+        clear_modes_of_inactive(&mut paths);
+
+        assert!(!is_active(&paths[0]), "实体屏不再接桌面");
+        // SAFETY: 两个联合分支都是 u32 布局，读取总是合法的（与 source_mode_idx 同理）。
+        let read = |p: &DISPLAYCONFIG_PATH_INFO| unsafe {
+            (
+                p.sourceInfo.Anonymous.modeInfoIdx,
+                p.targetInfo.Anonymous.modeInfoIdx,
+            )
+        };
+        assert_eq!(
+            read(&paths[0]),
+            (MODE_IDX_INVALID, MODE_IDX_INVALID),
+            "未激活路径的两个模式索引都必须是哨兵值"
+        );
+
+        // 虚拟屏那条一个字节都不能动：它的索引就是采集表面的锚点。
+        assert!(is_active(&paths[1]));
+        assert_eq!(read(&paths[1]), (3, 5));
     }
 
     #[test]
