@@ -1,0 +1,53 @@
+[package]
+name = "nd-win"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "NightDisplay Windows 平台层：黑幕窗口、采集排除、gamma、DDC/CI 背光、键鼠钩子"
+
+[dependencies]
+nd-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_Graphics_Dwm",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_HiDpi",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_Devices_Display",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Threading",
+  "Win32_System_SystemInformation",
+  "Win32_System_Registry",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Win32_System_Console",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_Storage_FileSystem",
+  "Win32_Security",
+  "Win32_UI_ColorSystem",
+  "Win32_UI_Shell",
+  "Win32_System_Com",
+  "Win32_System_Environment",
+  "Win32_System_Power",
+  "Wdk_System_SystemServices",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

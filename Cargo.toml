@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = ["crates/nd-core", "crates/nd-win", "crates/nd-cli", "crates/nd-gui"]
+
+[workspace.package]
+version = "4.0.0"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT"
+authors = ["传康Kk <CKNB888@users.noreply.github.com>"]
+repository = "https://github.com/CKNB888/NightDisplay"
+description = "每天定时让本地屏幕变黑、远程照常可用（Windows 10 2004+）"
+
+[workspace.dependencies]
+nd-core = { path = "crates/nd-core" }
+nd-win = { path = "crates/nd-win" }
+nd-gui = { path = "crates/nd-gui" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "ansi", "local-time", "env-filter", "registry", "std"] }
+fs4 = "1"
+rand = "0.9"
+regex = "1"
+
+# Lint policy. Everything below is an explicit, documented decision — see
+# `docs/architecture.md` §"Lint policy". The goal is `-D warnings -W clippy::pedantic`
+# passing with no blanket `#[allow]` sprinkled through the code.
+[workspace.lints.rust]
+# Every `unsafe` block must say why it is sound; an unsafe fn body is treated the
+# same as an unsafe block so the invariant has to be written down even there.
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+# Clippy allows live at each crate root (`#![allow(...)]`), because a command-line
+# `-W clippy::pedantic` overrides anything set here. See `docs/architecture.md`
+# § "Lint policy" for the full list and the reason for each entry.
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

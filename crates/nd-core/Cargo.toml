@@ -1,0 +1,32 @@
+[package]
+name = "nd-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "NightDisplay 引擎：配置、时间计划、组合键、模式选择、IPC 协议（平台无关）"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+fs4.workspace = true
+tracing-subscriber.workspace = true
+rand.workspace = true
+regex.workspace = true
+
+[features]
+# 暴露 `engine::testing::FakePlatform`，给别的 crate 的单元测试当假平台层用。
+# 生产构建不会启用（只在 dev-dependencies 里打开）。
+testing = []
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

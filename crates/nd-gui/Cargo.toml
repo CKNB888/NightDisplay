@@ -1,0 +1,31 @@
+[package]
+name = "nd-gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "NightDisplay 图形界面（Tauri 2 + WebView2）：薄客户端，所有动作经本地 IPC 交给常驻进程"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+nd-core.workspace = true
+nd-win.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2"
+
+[dev-dependencies]
+nd-core = { workspace = true, features = ["testing"] }
+tempfile = "3"
+
+[lints]
+workspace = true
