@@ -423,7 +423,32 @@ impl Platform for WinPlatform {
 
     fn set_autostart(&self, on: bool) -> NdResult<()> {
         let home = nd_core::paths::home_dir();
-        crate::autostart::set(on, &home)
+        if on {
+            // 三条自启路径一起开：HKCU Run、登录计划任务、开机（SYSTEM）计划任务。
+            // 任一条失败都不算致命，但要把真实结果说清楚。
+            crate::autostart::set(true, &home)?;
+            if let Err(e) = tasks::install_autostart(&home) {
+                tracing::warn!(error = %e, "登记自启计划任务失败，仅 Run 键可用");
+                return Err(e);
+            }
+            Ok(())
+        } else {
+            // 关掉时必须三条一起删：只删 Run 的话，登录任务还会把它拉起来。
+            let mut first_error = None;
+            if let Err(e) = crate::autostart::set(false, &home) {
+                first_error = Some(e);
+            }
+            if let Err(e) = tasks::remove_autostart() {
+                tracing::warn!(error = %e, "删除自启计划任务失败");
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
+            match first_error {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
+        }
     }
 
     fn autostart_actual(&self) -> NdResult<bool> {
@@ -433,6 +458,20 @@ impl Platform for WinPlatform {
     fn install_schedule(&self, cfg: &Config) -> NdResult<()> {
         let home = nd_core::paths::home_dir();
         tasks::install(cfg, &home)?;
+        // 自启是按用户偏好来的：关掉了就一条都不登记，下次启动也不会偷偷加回来。
+        if cfg.autostart_preference {
+            if let Err(e) = tasks::install_autostart(&home) {
+                tracing::warn!(error = %e, "登记自启任务失败（每日计划仍然有效）");
+            }
+        } else if let Err(e) = tasks::remove_autostart() {
+            tracing::warn!(error = %e, "用户已关闭自启，清理残留自启任务失败");
+        }
+        // 用户偏好是关的时候，Run 键也不该在。
+        if !cfg.autostart_preference {
+            if let Err(e) = crate::autostart::set(false, &home) {
+                tracing::warn!(error = %e, "用户已关闭自启，删除 Run 键失败");
+            }
+        }
         // 看门狗一并登记；失败不算致命（主功能仍然可用）。
         if let Err(e) = tasks::install_watchdog(&home) {
             tracing::warn!(error = %e, "登记看门狗任务失败，主进程仍可用");
