@@ -61,9 +61,22 @@ def say(msg=""):
 
 
 def check(name, ok, detail=""):
-    results.append({"check": name, "ok": bool(ok), "detail": detail})
+    results.append({"check": name, "ok": bool(ok), "skipped": False, "detail": detail})
     say(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"  —— {detail}" if detail else ""))
     return ok
+
+
+def skip(name, reason):
+    """记一条"跳过，并写明为什么"。
+
+    为什么需要它：GitHub 的 Windows runner 是**无头**的（没有真实显示器、
+    没有交互桌面会话），有些事在这里根本测不出来。这种检查绝不能悄悄写成
+    PASS —— 那等于告诉用户"验过了"，其实没验。跳过要带原因，报告里单独列出来，
+    让人一眼看到"这一条要上真机补"。
+    """
+    results.append({"check": name, "ok": True, "skipped": True, "detail": f"跳过：{reason}"})
+    say(f"SKIP  {name}  —— {reason}")
+    return True
 
 
 def note(name, value):
@@ -180,14 +193,18 @@ class Continuity(threading.Thread):
     def __init__(self, interval=0.15):
         super().__init__(daemon=True)
         self.interval = interval
-        self._stop = threading.Event()
+        # 不能叫 `self._stop`：`threading.Thread` 自己有一个 `_stop()` 方法，
+        # 实例属性会把它盖掉，`join()` 里 `self._stop()` 就会抛
+        # "TypeError: 'Event' object is not callable" —— 那会把整轮 QA 变成
+        # 一条毫无信息的失败，且掩盖真正要看的断言。
+        self._stop_evt = threading.Event()
         self.samples = 0
         self.physical_min = None
         self.active_min = None
         self.errors = 0
 
     def run(self):
-        while not self._stop.is_set():
+        while not self._stop_evt.is_set():
             try:
                 # 走 run()：它用文件收输出、到点杀整棵进程树。
                 # 这里绝不能再直接用 capture_output，否则一旦有子进程攥着句柄
@@ -195,7 +212,7 @@ class Continuity(threading.Thread):
                 code, out = run(["--action", "probe"], timeout=30, check_code=False)
                 if code != 0:
                     self.errors += 1
-                    self._stop.wait(self.interval)
+                    self._stop_evt.wait(self.interval)
                     continue
                 body = out[out.find("{"):]
                 snap = json.loads(body)
@@ -206,10 +223,10 @@ class Continuity(threading.Thread):
                 self.active_min = active if self.active_min is None else min(self.active_min, active)
             except Exception:  # noqa: BLE001 - a poll may race the switch; count it, don't crash
                 self.errors += 1
-            self._stop.wait(self.interval)
+            self._stop_evt.wait(self.interval)
 
     def stop(self):
-        self._stop.set()
+        self._stop_evt.set()
         self.join(timeout=10)
         return self
 
@@ -314,6 +331,17 @@ def _first_line(text):
 # ---------------------------------------------------------------------------
 
 def step_night_switch():
+    # 入夜前先记下实体屏的真实信号（分辨率/刷新率）。入夜之后实体屏不再活动，
+    # `QDC_ONLY_ACTIVE_PATHS` 就查不到它了 —— 想断言"虚拟屏与实体屏同模式"，
+    # 只能在切换前把这个数字留下来做对比。
+    before = probe()
+    before_phys = []
+    if before:
+        before_phys = [m for m in before["active_modes"] if not m["virtual"]]
+        if before_phys:
+            note("physical_mode_before",
+                 f"{before_phys[0]['width']}x{before_phys[0]['height']}"
+                 f"@{before_phys[0]['refresh_hz']}")
     probe_reset()
     sampler = Continuity()
     sampler.start()
@@ -389,15 +417,20 @@ def step_night_switch():
         note("virtual_mode", f"{virt[0]['width']}x{virt[0]['height']}@{virt[0]['refresh_hz']}")
     if phys:
         note("physical_mode", f"{phys[0]['width']}x{phys[0]['height']}@{phys[0]['refresh_hz']}")
-    if virt and phys:
+    # 对比基准：优先用"切换前那一次"的实体屏模式（切换后实体屏已经不活动了）；
+    # 实体屏还活动时（例如复制模式没退干净）就用当前这块。
+    baseline = phys[0] if phys else (before_phys[0] if before_phys else None)
+    if virt and baseline:
         matched = (virt[0]["width"], virt[0]["height"], virt[0]["refresh_hz"]) == \
-                  (phys[0]["width"], phys[0]["height"], phys[0]["refresh_hz"])
+                  (baseline["width"], baseline["height"], baseline["refresh_hz"])
         check("虚拟屏模式与实体屏一致", matched,
               f"virtual={virt[0]['width']}x{virt[0]['height']}@{virt[0]['refresh_hz']} "
-              f"physical={phys[0]['width']}x{phys[0]['height']}@{phys[0]['refresh_hz']}")
+              f"physical={baseline['width']}x{baseline['height']}@{baseline['refresh_hz']}")
     else:
-        # 摘掉后实体屏不再活动是正常的，这里只要求虚拟屏有模式。
         check("虚拟屏报出了真实模式", bool(virt), f"{len(virt)} 块")
+    check("虚拟屏报的是真实分辨率（不是 0x0）",
+          bool(virt) and virt[0]["width"] > 0 and virt[0]["height"] > 0,
+          f"{virt[0]['width']}x{virt[0]['height']}" if virt else "没有虚拟屏模式")
     check("未降级到黑幕模式", (session.get("effective") or "virtual_screen") == "virtual_screen",
           f"effective={session.get('effective')}")
     return True
@@ -482,12 +515,22 @@ def read_config():
 # ---------------------------------------------------------------------------
 
 def step_chord_and_emergency():
-    code, out = run(["--action", "day"], timeout=180)
-    check("白天恢复成功", code == 0, _first_line(out))
+    # 先按解锁组合键那条路径恢复：它走的是钩子触发后完全相同的逻辑
+    # （恢复白天 + 本段剩余时间保持白天），所以"解锁能不能真的把屏弄回来"是可以验的。
+    probe_reset()
+    code, out = run(["--action", "unlock"], timeout=180)
+    check("组合键解锁路径可执行", code == 0, _first_line(out))
     p = probe()
-    check("恢复后实体屏重新接桌面",
+    check("解锁后实体屏重新接桌面",
           any(d["active"] and not d["virtual"] for d in p["displays"]),
           f"active={p['active_count']}")
+    check("解锁只提交了一次显示配置",
+          p["stats"]["apply_calls"] == 1,
+          f"apply_calls={p['stats']['apply_calls']} "
+          f"shortcut={p['stats']['apply_shortcut_calls']}")
+    check("解锁没有走拓扑快捷方式兜底",
+          p["stats"]["apply_shortcut_calls"] == 0,
+          f"apply_shortcut_calls={p['stats']['apply_shortcut_calls']}")
 
     # 再进夜间，然后用 emergency 兜底。
     code, _ = run(["--action", "night", "--mode", "virtual_screen"], timeout=180)
@@ -508,38 +551,72 @@ def step_chord_and_emergency():
 # 6. watchdog restarts a killed daemon; simulated reboot re-enters night
 # ---------------------------------------------------------------------------
 
-def step_watchdog():
-    # 起常驻进程，然后强杀它，看门狗任务应当把它拉回来。
+def daemon_pids():
+    """所有 `--action serve` 进程的 PID（按命令行找，不靠记 PID）。"""
+    out = subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--action serve*' } | "
+         "Select-Object -ExpandProperty ProcessId"],
+        capture_output=True, text=True, timeout=60).stdout
+    return [int(x) for x in re.findall(r"^\s*(\d+)\s*$", out, re.M)]
+
+
+def start_daemon():
     env = dict(os.environ)
     env["NIGHTDISPLAY_HOME"] = str(HOME)
-    proc = subprocess.Popen([str(EXE_INSTALLED), "--action", "serve"], env=env,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(4)
+    subprocess.Popen([str(EXE_INSTALLED), "--action", "serve"], env=env,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     creationflags=CREATE_NEW_PROCESS_GROUP)
 
-    def daemon_pids():
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--action serve*' } | "
-             "Select-Object -ExpandProperty ProcessId"],
-            capture_output=True, text=True, timeout=60).stdout
-        return [int(x) for x in re.findall(r"^\s*(\d+)\s*$", out, re.M)]
 
+def step_watchdog():
+    # 先把状态弄成"夜里，虚拟屏在扛着"，这才有东西可被看门狗救回来。
+    code, out = run(["--action", "night", "--mode", "virtual_screen"], timeout=180)
+    if not check("看门狗检查前先进入夜间", code == 0, _first_line(out)):
+        return False
+
+    start_daemon()
+    time.sleep(5)
     first = daemon_pids()
     check("常驻进程已启动", bool(first), f"pids={first}")
     if not first:
         return False
 
-    # 真杀（不带 graceful 消息），模拟崩溃。
+    # 真杀（不带 graceful 消息），模拟崩溃/被任务管理器结束。
     for pid in first:
         subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, timeout=60)
-    time.sleep(2)
+    time.sleep(1)
     check("常驻进程已被强杀", not daemon_pids(), "还在跑说明没杀掉")
 
-    # 看门狗：程序自己的 watchdog 动作或计划任务应当把它拉回来。
-    run(["--action", "watchdog"], timeout=180, check_code=False)
-    time.sleep(6)
-    revived = daemon_pids()
-    check("看门狗把常驻进程拉回来了", bool(revived), f"pids={revived}")
+    # 看门狗是**常驻**进程（它会一直等父进程消失），所以必须后台起、
+    # 然后等它动作，不能前台等它退出 —— 前台等就是前面那次"卡死"的成因。
+    env = dict(os.environ)
+    env["NIGHTDISPLAY_HOME"] = str(HOME)
+    wd = subprocess.Popen([str(EXE_INSTALLED), "--action", "watchdog", "--parent", str(first[0])],
+                          env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                          creationflags=CREATE_NEW_PROCESS_GROUP)
+    try:
+        # 父进程已经死了，看门狗最多等 GRACE(3s) 就会动手；再给重启留 10s。
+        deadline = time.monotonic() + 30
+        revived = []
+        while time.monotonic() < deadline:
+            time.sleep(1)
+            revived = daemon_pids()
+            if revived:
+                break
+        note("watchdog_revive_s", round(30 - (deadline - time.monotonic()), 1))
+        check("看门狗把常驻进程拉回来了", bool(revived), f"pids={revived}")
+        # 看门狗在恢复时会把屏幕还原成白天，并把配置写成 day。
+        cfg = read_config()
+        p = probe()
+        check("看门狗恢复后不再是夜间状态",
+              cfg.get("state") == "day" and not p["virtual_holding"],
+              f"state={cfg.get('state')} holding={p['virtual_holding']}")
+        check("看门狗恢复后实体屏重新接桌面",
+              any(d["active"] and not d["virtual"] for d in p["displays"]),
+              f"active={p['active_count']}")
+    finally:
+        kill_tree(wd.pid)
 
     # 模拟重启：清掉运行态但保留配置，reconcile 应当按当前时间重新判定。
     cfg = read_config()
@@ -548,22 +625,40 @@ def step_watchdog():
     code, out = run(["--action", "reconcile"], timeout=180)
     check("reconcile 在白天不误开夜间", code == 0, _first_line(out))
 
-    # 把时段设成"现在"，再模拟断电重启后的一次 reconcile：必须自己进夜间。
+    # 模拟断电重启：常驻进程不在、配置还写着夜间、恢复点还在 ——
+    # 这时 `reconcile` 必须先按恢复点把屏幕还原，而不是把黑屏继续挂着。
+    cfg = read_config()
+    cfg["state"] = "night"
+    cfg["night_mode"] = "virtual_screen"
+    (HOME / "config.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+    code, out = run(["--action", "night", "--mode", "virtual_screen"], timeout=180, check_code=False)
+    for pid in daemon_pids():
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, timeout=60)
+    time.sleep(1)
+    code, out = run(["--action", "reconcile"], timeout=300, check_code=False)
+    cfg = read_config()
+    p = probe()
+    check("重启后残留夜间状态会被收拾掉（不会一直黑着）",
+          cfg.get("state") == "day" or not p["virtual_holding"],
+          f"state={cfg.get('state')} holding={p['virtual_holding']}")
+
+    # 时段覆盖到"现在"时，重启后必须自己回到夜间。
     now = time.localtime()
     start = f"{now.tm_hour:02d}:{max(0, now.tm_min - 1):02d}"
     end = f"{(now.tm_hour + 1) % 24:02d}:{now.tm_min:02d}"
-    run(["--action", "status"], check_code=False)
-    code, out = run(["--action", "activate", "--start", start, "--end", end], timeout=180, check_code=False)
-    if code != 0:
-        # 没测试记录时 activate 会拒绝，这是设计；这里不把它当失败。
-        say(f"      提示：activate 被拒绝（{_first_line(out)}），跳过重启自动入夜断言")
-        return True
+    cfg = read_config()
+    cfg["enabled"] = True
+    cfg["ranges"] = [[start, end]]
+    cfg["state"] = "day"
+    cfg["override_until"] = None
+    cfg["hold_night_until"] = None
+    (HOME / "config.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
     code, out = run(["--action", "reconcile"], timeout=300, check_code=False)
     cfg = read_config()
     p = probe()
     check("重启后仍在时段内会自动入夜",
           cfg.get("state") == "night" and p["virtual_holding"],
-          f"state={cfg.get('state')} holding={p['virtual_holding']}")
+          f"state={cfg.get('state')} holding={p['virtual_holding']} range={start}-{end}")
     return True
 
 
@@ -593,23 +688,59 @@ def step_diag():
 
 
 # ---------------------------------------------------------------------------
+# 8. 明确记录 CI 上测不了的东西
+# ---------------------------------------------------------------------------
+
+def step_limits():
+    """把无头 runner 上**真的没法验**的项目记成"跳过 + 原因"。
+
+    这些不是偷懒：GitHub 的 Windows runner 没有真实显示器、没有交互式桌面
+    会话、也没有远程客户端。硬要在上面"验"，只能验出假象（比如把
+    "没有显示目标" 当成黑屏成功）。所以宁可写成跳过，让报告里看得见。
+    """
+    skip("黑屏是否真的肉眼不可见",
+         "runner 是虚拟显卡、无真实面板，没有可观测的物理输出；"
+         "本项目用'实体屏已脱离桌面 + 桌面只剩虚拟屏'来证明，需真机目视复核")
+    skip("DDC/CI 背光与伽马的实际效果",
+         "无头环境没有支持 DDC/CI 的显示器，SetMonitorBrightness 只返回"
+         "不支持；代码路径与降级日志已覆盖，实际观感需真机补验")
+    skip("远程客户端在切换瞬间是否掉帧/重连",
+         "runner 上不跑真实的远程软件；本 QA 用'实体屏 target 在切换全程"
+         "始终枚举存在'作为采集表面未消失的代理指标，真机需连一次实际远程复核")
+    skip("长按 C+K 组合键的真实按键时序",
+         "注入的键鼠事件被产品刻意忽略（防误触设计），无法用 SendInput 模拟真人长按；"
+         "本 QA 改验组合键触发后走的同一条恢复路径（--action unlock）")
+    skip("驱动签名与重启后的持久状态",
+         "runner 每次都是干净环境且 testsigning 需要重启才生效；"
+         "安装/卸载与设备枚举已验，重启后的驱动驻留需真机补验")
+    return True
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
 def write_reports():
     OUT.mkdir(exist_ok=True)
+    failed = [r for r in results if not r["ok"]]
+    skipped = [r for r in results if r.get("skipped")]
     (OUT / "qa-results.json").write_text(
         json.dumps({"checks": results, "timings": timings}, ensure_ascii=False, indent=2),
         encoding="utf-8")
+    say(f"（跳过 {len(skipped)} 条，失败 {len(failed)} 条）")
     lines = ["## NightDisplay 4.0 深度 Windows QA", ""]
-    failed = [r for r in results if not r["ok"]]
-    lines.append(f"**{len(results) - len(failed)}/{len(results)} 通过**"
-                 f"（失败 {len(failed)}）")
+    lines.append(f"**{len(results) - len(failed) - len(skipped)}/{len(results) - len(skipped)} 通过**"
+                 f"（跳过 {len(skipped)}，失败 {len(failed)}）")
     lines.append("")
     lines.append("| 检查 | 结果 | 实测 |")
     lines.append("|---|---|---|")
     for r in results:
-        lines.append(f"| {r['check']} | {'✅' if r['ok'] else '❌'} | {r['detail']} |")
+        mark = "⏭️" if r.get("skipped") else ("✅" if r["ok"] else "❌")
+        lines.append(f"| {r['check']} | {mark} | {r['detail']} |")
+    if skipped:
+        lines += ["", "### 在 CI runner 上无法验证、需要在真机补验的项目", ""]
+        for r in skipped:
+            lines.append(f"- {r['check']}：{r['detail']}")
     if timings:
         lines += ["", "### 实测数字", "", "| 指标 | 值 |", "|---|---|"]
         for k, v in timings.items():
@@ -653,6 +784,7 @@ def main():
         except Exception as exc:  # noqa: BLE001 - QA 脚本：任何异常都要记录而不是崩掉
             check("看门狗检查", False, f"异常：{exc}")
         step_diag()
+        step_limits()
     except Exception as exc:  # noqa: BLE001
         # 任何一步抛异常都不能让整轮"没有任何报告"——那等于把证据一起丢掉。
         # 记一条失败，仍然走 finally 导出诊断包，最后照常写报告。
