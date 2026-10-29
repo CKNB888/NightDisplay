@@ -740,10 +740,33 @@ def step_watchdog():
         return False
 
     # 真杀（不带 graceful 消息），模拟崩溃/被任务管理器结束。
+    #
+    # 注意：常驻进程自己会拉起一个看门狗（`spawn_watchdog`），看门狗发现父进程
+    # 消失就会**立刻**把常驻进程重新拉起来 —— 这是产品设计，不是 bug。
+    # 所以这里不能断言"杀掉之后就一个都不剩"；能断言的是：旧 PID 确实没了。
     for pid in first:
         subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, timeout=60)
     time.sleep(1)
-    check("常驻进程已被强杀", not daemon_pids(), "还在跑说明没杀掉")
+    after_kill = daemon_pids()
+    alive = [pid for pid in first if pid in after_kill]
+    check("原常驻进程已被强杀", not alive, f"仍在运行={alive}")
+    # 常驻进程启动时就自带了看门狗，所以杀掉之后通常会被**它自己**立刻拉起来。
+    # 这是产品最核心的卖点（"进程被杀屏幕也会自己恢复"），应当单独验：
+    # 新起来的必须是另一个 PID，而不是旧进程其实没死。
+    auto_revived = [pid for pid in after_kill if pid not in first]
+    if auto_revived:
+        check("内置看门狗自动把常驻进程拉回来了", True, f"新 pid={auto_revived}")
+        # 已经自动复活了，就不用再手工起一个看门狗去重复同一件事。
+        note("watchdog_revive", "自动（内置看门狗，杀掉后立即复活）")
+        cfg = read_config()
+        p = probe()
+        check("看门狗恢复后不再是夜间状态",
+              cfg.get("state") == "day" and not p["virtual_holding"],
+              f"state={cfg.get('state')} holding={p['virtual_holding']}")
+        check("看门狗恢复后实体屏重新接桌面",
+              any(d["active"] and not d["virtual"] for d in p["displays"]),
+              f"active={p['active_count']}")
+        return _after_watchdog()
 
     # 看门狗是**常驻**进程（它会一直等父进程消失），所以必须后台起、
     # 然后等它动作，不能前台等它退出 —— 前台等就是前面那次"卡死"的成因。
@@ -761,7 +784,7 @@ def step_watchdog():
             revived = daemon_pids()
             if revived:
                 break
-        note("watchdog_revive_s", round(30 - (deadline - time.monotonic()), 1))
+        note("watchdog_revive", f"{round(30 - (deadline - time.monotonic()), 1)} s（手工起的看门狗）")
         check("看门狗把常驻进程拉回来了", bool(revived), f"pids={revived}")
         # 看门狗在恢复时会把屏幕还原成白天，并把配置写成 day。
         cfg = read_config()
@@ -775,6 +798,11 @@ def step_watchdog():
     finally:
         kill_tree(wd.pid)
 
+    return _after_watchdog()
+
+
+def _after_watchdog():
+    """看门狗验完之后：模拟重启、模拟断电、以及"时段内自动重新入夜"。"""
     # 模拟重启：清掉运行态但保留配置，reconcile 应当按当前时间重新判定。
     cfg = read_config()
     cfg["state"] = "day"
