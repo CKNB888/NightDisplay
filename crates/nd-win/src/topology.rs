@@ -964,12 +964,16 @@ mod tests {
     /// `nd_core::display_paths` 里测，这里只钉住"搬运没搬错"。
     #[test]
     fn path_view_carries_the_win32_facts() {
+        // `Default` 会把 modeInfoIdx 清零，而 0 是一个**合法**索引；
+        // "没有模式"的哨兵值是 0xFFFF_FFFF，必须显式写进去。
         let mut p = DISPLAYCONFIG_PATH_INFO::default();
         p.flags = PATH_FLAGS_ACTIVE;
+        p.sourceInfo.Anonymous.modeInfoIdx = MODE_IDX_INVALID;
+        p.targetInfo.Anonymous.modeInfoIdx = MODE_IDX_INVALID;
         let view = path_view(&p, &needles(""));
         assert!(view.active);
-        assert!(!view.has_source_mode, "默认路径没有有效源模式索引");
-        assert!(!view.has_target_mode);
+        assert!(!view.has_source_mode, "哨兵值必须当成没有源模式");
+        assert!(!view.has_target_mode, "哨兵值必须当成没有目标模式");
         assert!(!view.virtual_output);
 
         // 间接虚拟（17）= 虚拟屏，即使名字不像。

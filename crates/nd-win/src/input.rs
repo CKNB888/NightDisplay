@@ -77,8 +77,11 @@ pub fn vk_for(key: ChordKey) -> Option<u32> {
     Some(u32::from(vk.0))
 }
 
-/// 配置组合键。`modifier` 标记只是记录用途，判定时统一按虚拟键码比较。
-pub fn configure_chord(keys: &[ChordKey], hold_ms: u64) {
+/// 把一组 `ChordKey` 展开成"要监视的虚拟键码"表。
+///
+/// `modifier` 标记只是记录用途，判定时统一按虚拟键码比较。纯函数，
+/// 所以能在并行测试里直接断言，不用去读进程级全局量。
+fn chord_table(keys: &[ChordKey]) -> Vec<(i32, bool)> {
     let mut list: Vec<(i32, bool)> = keys
         .iter()
         .filter_map(|k| vk_for(*k).map(|vk| (vk as i32, k.is_modifier())))
@@ -91,10 +94,25 @@ pub fn configure_chord(keys: &[ChordKey], hold_ms: u64) {
         }
     }
     list.extend(extended);
+    list
+}
+
+/// 配置组合键。
+pub fn configure_chord(keys: &[ChordKey], hold_ms: u64) {
+    let list = chord_table(keys);
     if let Ok(mut guard) = CHORD_VK.lock() {
         *guard = list;
     }
-    HOLD_MS.store(hold_ms.clamp(100, 3000), Ordering::SeqCst);
+    HOLD_MS.store(clamp_hold(hold_ms), Ordering::SeqCst);
+}
+
+/// 按住时长的合法区间由 `nd_core::chord::HOLD_MS_RANGE` 定义，这里只做夹取。
+///
+/// 单独拿出来是为了能被单独测 —— `HOLD_MS` 是进程级全局量，
+/// 并行跑的其它测试会同时 `configure_chord`，直接断言全局值必然随机失败。
+fn clamp_hold(ms: u64) -> u64 {
+    let (lo, hi) = nd_core::chord::HOLD_MS_RANGE;
+    ms.clamp(lo, hi)
 }
 
 /// 同一个修饰键的另一侧虚拟键码。
@@ -405,12 +423,18 @@ mod tests {
 
     #[test]
     fn configure_chord_accepts_default() {
-        configure_chord(&nd_core::chord::default_chord(), 300);
-        let list = CHORD_VK.lock().unwrap();
-        // C + K = 两个键
+        // C + K = 两个键，且都不带左右分身。
+        let list = chord_table(&nd_core::chord::default_chord());
         assert_eq!(list.len(), 2);
         assert!(list.iter().any(|(vk, _)| *vk == 0x43));
         assert!(list.iter().any(|(vk, _)| *vk == 0x4B));
+        // Ctrl+Alt+N 里的 Ctrl 和 Alt 要各展开成左右两个。
+        let with_mods: Vec<ChordKey> = ["Ctrl", "Alt", "N"]
+            .into_iter()
+            .map(|n| ChordKey::parse(n).unwrap())
+            .collect();
+        let list = chord_table(&with_mods);
+        assert_eq!(list.len(), 1 + 2 + 2, "N + 左右 Ctrl + 左右 Alt");
     }
 
     #[test]
@@ -423,9 +447,14 @@ mod tests {
 
     #[test]
     fn hold_ms_is_clamped() {
-        configure_chord(&nd_core::chord::default_chord(), 5);
-        assert_eq!(hold_ms(), 100);
-        configure_chord(&nd_core::chord::default_chord(), 99_999);
-        assert_eq!(hold_ms(), 3000);
+        let (lo, hi) = nd_core::chord::HOLD_MS_RANGE;
+        assert_eq!(clamp_hold(0), lo);
+        assert_eq!(clamp_hold(5), lo);
+        assert_eq!(clamp_hold(lo), lo);
+        assert_eq!(clamp_hold(1200), 1200);
+        assert_eq!(clamp_hold(hi), hi);
+        assert_eq!(clamp_hold(99_999), hi);
+        // 界面上限和核心区间必须是同一个数，不能各写一份。
+        assert_eq!((lo, hi), (100, 3000));
     }
 }
