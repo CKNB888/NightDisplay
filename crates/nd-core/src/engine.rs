@@ -345,7 +345,16 @@ impl<'a, P: Platform> Engine<'a, P> {
                 Mode::Auto => unreachable!("attempt_chain 不含 auto"),
             };
             match result {
-                Ok(report) => {
+                Ok(mut report) => {
+                    // 报告里的"请求模式/实际生效模式"必须以**这一次真正执行的**
+                    // 模式为准。平台层只会拿配置里存的 `cfg.mode`，而命令行
+                    // `--mode overlay` 和 auto→黑幕 的自动降级都会覆盖它 ——
+                    // 否则报告会说"虚拟屏生效"，可实际跑的是黑幕，`success()`
+                    // 于是永远判假，用户只看到一句"未知原因"。
+                    if let Some(r) = report.as_mut() {
+                        r.requested = mode;
+                        r.effective = candidate;
+                    }
                     let ok = report
                         .as_ref()
                         .is_none_or(super::mode::NightReport::success);
@@ -614,7 +623,11 @@ impl<'a, P: Platform> Engine<'a, P> {
                     self.platform.repair_guard()?;
                 } else {
                     tracing::warn!("黑幕不在了，重新创建");
-                    let report = self.platform.enter_guard(&cfg)?;
+                    let mut report = self.platform.enter_guard(&cfg)?;
+                    // 这一夜是黑幕，配置里存的 `cfg.mode` 却可能是 auto：
+                    // 报告必须以实际重建的模式为准，否则 success() 永远判假。
+                    report.requested = Mode::Overlay;
+                    report.effective = Mode::Overlay;
                     if !report.success() {
                         let _ = self.platform.exit_guard();
                         return Err(user(format!(
@@ -1193,15 +1206,17 @@ pub mod testing {
             caps
         }
 
-        fn enter_guard(&self, _cfg: &Config) -> NdResult<NightReport> {
+        fn enter_guard(&self, cfg: &Config) -> NdResult<NightReport> {
             self.record("enter_guard");
             if let Some(e) = self.guard_result.borrow().as_ref() {
                 return Err(anyhow::anyhow!("{e}"));
             }
             *self.guard_active.borrow_mut() = true;
+            // 和真平台保持一致：这里只能看到配置里存的模式，看不到引擎这次
+            // 实际要跑哪个。引擎必须负责把报告纠正过来。
             Ok(NightReport {
-                requested: Mode::Overlay,
-                effective: Mode::Overlay,
+                requested: cfg.mode,
+                effective: crate::mode::resolve(cfg.mode),
                 overlays: vec![OverlayOutcome {
                     display: "DISPLAY1".into(),
                     shown: true,
@@ -1471,6 +1486,39 @@ mod tests {
             assert!(out.message.contains("虚拟屏"), "{}", out.message);
             let cfg = Config::load().unwrap();
             assert_eq!(cfg.night_mode, Some(Mode::Overlay));
+        });
+    }
+
+    #[test]
+    fn explicit_overlay_succeeds_even_when_config_says_auto() {
+        // 命令行 `--mode overlay` 会覆盖配置里的默认 auto。平台层只看得到
+        // `cfg.mode`，早期版本因此报出 effective=virtual_screen 而实际跑的是
+        // 黑幕，success() 永远判假，用户只拿到一句"未知原因"。
+        with_home(|| {
+            seed(&Config::default());
+            assert_eq!(Config::load().unwrap().mode, Mode::Auto);
+            let p = FakePlatform::new();
+            let e = Engine::new(&p);
+            let out = e.night(Mode::Overlay, at(21, 0, 0)).unwrap();
+            assert_eq!(out.mode, Some(Mode::Overlay));
+            assert!(!p.called("virtual_screen"), "显式 overlay 不能去碰显示拓扑");
+            let cfg = Config::load().unwrap();
+            assert_eq!(cfg.state, RunState::Night);
+            assert_eq!(cfg.night_mode, Some(Mode::Overlay));
+        });
+    }
+
+    #[test]
+    fn ensure_night_rebuilds_overlay_even_when_config_says_auto() {
+        // 同一类错误出现在夜间修复路径上：cfg.mode 是 auto，实际这一夜是黑幕。
+        with_home(|| {
+            seed(&Config::default());
+            let p = FakePlatform::new();
+            let e = Engine::new(&p);
+            e.night(Mode::Overlay, at(21, 0, 0)).unwrap();
+            *p.guard_active.borrow_mut() = false;
+            e.ensure_night(at(21, 1, 0)).unwrap();
+            assert_eq!(p.call_count("enter_guard"), 2);
         });
     }
 

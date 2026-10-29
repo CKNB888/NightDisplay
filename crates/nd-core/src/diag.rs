@@ -39,10 +39,16 @@ pub fn bundle_name() -> String {
 
 /// 把文本里的本机标识抹掉：用户目录、账号名、令牌。
 ///
-/// 规则很保守，只处理三种确定会泄漏身份的东西：
+/// 规则很保守，只处理这几种确定会泄漏身份的东西：
 /// * 用户主目录的绝对路径 → `<home>`；
-/// * 一串 64 位十六进制（IPC 令牌就是这个形状）→ `<token>`；
-/// * 当前登录用户名出现在路径里的部分 → `<user>`。
+/// * `C:\Users\<名字>\…`、`/home/<名字>/…`、`/Users/<名字>/…` 里的名字 → `<user>`；
+/// * 环境变量里的当前登录用户名（至少 3 个字符）→ `<user>`；
+/// * 一串 64 位十六进制（IPC 令牌就是这个形状）→ `<token>`。
+///
+/// 为什么要专门处理 `C:\Users\<名字>`：只替换**数据目录**是不够的。
+/// 日志里还有安装路径（`%LOCALAPPDATA%\Programs\NightDisplay`）和
+/// 开机自启命令行，它们带的是同一个用户名 —— 诊断包会被贴到 issue 里，
+/// 那等于把报问题的人的账号名一起公开了。
 #[must_use]
 pub fn redact(text: &str, home: &Path) -> String {
     let home_text = home.to_string_lossy();
@@ -53,7 +59,56 @@ pub fn redact(text: &str, home: &Path) -> String {
             out = out.replace(name, "<user>");
         }
     }
+    out = redact_users(&out);
     out = redact_tokens(&out);
+    out
+}
+
+/// 用户目录标记：这些片段后面紧跟的那一段就是账号名。
+const USER_DIR_MARKERS: [&str; 4] = ["\\users\\", "/users/", "/home/", "\\home\\"];
+
+/// 把路径里的账号名换成 `<user>`。
+///
+/// 按**字节**扫描，但只在 ASCII 标记上定位；大小写用 `to_ascii_lowercase`
+/// 消除，它只映射 ASCII，字节长度不变，所以下标可以直接用来切片中文文本。
+fn redact_users(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for marker in USER_DIR_MARKERS {
+        let mut from = 0;
+        while let Some(found) = lower[from..].find(marker) {
+            let name_start = from + found + marker.len();
+            let tail = &lower[name_start..];
+            // 账号名到下一个路径分隔符或空白为止。必须在空白处也停下：
+            // `C:\Users\ 后面没有名字` 这种句子不能把后半句整段吃掉。
+            let name_end = tail
+                .find(['\\', '/', ' ', '\t', '\n', '\r', '"', '\'', ')', ',', ';'])
+                .map_or(text.len(), |i| name_start + i);
+            if name_end > name_start
+                && !spans
+                    .iter()
+                    .any(|(s, e)| name_start >= *s && name_start < *e)
+            {
+                spans.push((name_start, name_end));
+            }
+            from = name_start;
+        }
+    }
+    if spans.is_empty() {
+        return text.to_string();
+    }
+    spans.sort_unstable();
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for (start, end) in spans {
+        if start < cursor {
+            continue;
+        }
+        out.push_str(&text[cursor..start]);
+        out.push_str("<user>");
+        cursor = end;
+    }
+    out.push_str(&text[cursor..]);
     out
 }
 
@@ -257,6 +312,34 @@ mod tests {
         assert!(out.contains("<token>"), "{out}");
         assert!(!out.contains(&token), "{out}");
         assert!(!out.contains("alice"), "{out}");
+    }
+
+    #[test]
+    fn redact_hides_account_name_in_install_paths() {
+        let home = PathBuf::from("C:\\Users\\runneradmin\\AppData\\Local\\NightDisplay");
+        // 只替换数据目录是不够的：安装路径和自启命令行里的账号名会漏出去。
+        let text = "command=C:\\Users\\runneradmin\\AppData\\Local\\Programs\\NightDisplay\\NightDisplay.exe";
+        let out = redact(text, &home);
+        assert!(out.contains("<user>"), "{out}");
+        assert!(!out.contains("runneradmin"), "{out}");
+        assert!(out.contains("NightDisplay.exe"), "{out}");
+    }
+
+    #[test]
+    fn redact_hides_unix_and_forward_slash_accounts() {
+        let home = PathBuf::from("/home/alice/.local/state/nightdisplay");
+        let out = redact("/home/alice/bin/x 和 C:/Users/bob/y", &home);
+        assert!(!out.contains("alice"), "{out}");
+        assert!(!out.contains("bob"), "{out}");
+        assert!(out.contains("<user>"), "{out}");
+    }
+
+    #[test]
+    fn redact_keeps_a_bare_users_segment() {
+        let home = PathBuf::from("C:\\Users\\runneradmin\\AppData\\Local\\NightDisplay");
+        // 没有账号名可替换时不能把文本改坏。
+        let text = "路径 C:\\Users\\ 后面没有名字";
+        assert_eq!(redact(text, &home), text);
     }
 
     #[test]
