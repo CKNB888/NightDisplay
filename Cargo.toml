@@ -20,7 +20,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "local-time", "env-filter"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "ansi", "local-time", "env-filter", "registry", "std"] }
 fs4 = "1"
 rand = "0.9"
 regex = "1"

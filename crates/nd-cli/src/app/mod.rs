@@ -170,10 +170,14 @@ pub fn main_entry() -> ExitCode {
         std::env::set_var("NIGHTDISPLAY_HOME", paths::absolute(home));
     }
     let _ = paths::ensure_home();
-    if let Err(e) = logging::init() {
+    let component = logging::Component::for_action(&args.action);
+    if let Err(e) = logging::init(component) {
         eprintln!("提示：日志没能初始化（{e}），程序继续运行。");
     }
-    logging::prune_old_logs(30);
+    if args.debug {
+        // --debug 要把级别调高，而且不能要求重启：reload 句柄在 init 里已存好。
+        logging::set_debug();
+    }
 
     match run(&args) {
         Ok(code) => code,

@@ -117,14 +117,21 @@ pub fn run(options: &WatchdogOptions) -> Result<()> {
                 continue;
             }
             tracing::warn!(parent = options.parent, "主程序已退出，开始恢复屏幕");
+            // 先把屏幕还原：这一步无论如何都要做，不能因为"反正要重启"就跳过。
             restore_everything();
-            if options.restart_daemon {
-                if let Err(e) = restart_daemon() {
-                    tracing::warn!(error = %e, "重启常驻进程失败");
-                }
+            if !options.restart_daemon {
+                tracing::info!("看门狗完成恢复并退出（不重启）");
+                return Ok(());
             }
-            // 恢复完就退出，别在这里常驻（主进程重新起来会再拉一个新的看门狗）。
-            tracing::info!("看门狗完成恢复并退出");
+            // 再尝试把它拉回来，最多两次；两次都起不来就保持还原状态退出。
+            if revive_daemon(MAX_RESTARTS) {
+                tracing::info!("常驻进程已重新拉起，看门狗退出");
+            } else {
+                tracing::error!(
+                    attempts = MAX_RESTARTS,
+                    "常驻进程连续重启失败，屏幕已保持还原状态，请手动启动 NightDisplay"
+                );
+            }
             return Ok(());
         }
         // 父进程为 0（登录任务拉起的那种）：只在出现"夜间状态 + 父进程已死"时动作，
@@ -190,6 +197,32 @@ pub fn restore_everything() {
     });
     crate::screen_state::clear();
     tracing::info!("看门狗已把屏幕恢复到白天状态");
+}
+
+/// 最多重启几次常驻进程。
+const MAX_RESTARTS: u32 = 2;
+
+/// 重启常驻进程并等它真的拿到单实例锁。
+///
+/// 返回 `true` 表示它就绪了；两次都失败说明有更深的问题（例如程序被删了、
+/// 权限被改），这时屏幕已经还原，交给用户处理比无限重启更安全。
+fn revive_daemon(attempts: u32) -> bool {
+    for attempt in 1..=attempts {
+        if let Err(e) = restart_daemon() {
+            tracing::warn!(attempt, error = %e, "重启常驻进程失败");
+            continue;
+        }
+        // 等它起来并拿到锁：每 250ms 看一眼，最多 10 秒。
+        for _ in 0..40 {
+            std::thread::sleep(Duration::from_millis(250));
+            if daemon_running() {
+                tracing::info!(attempt, "常驻进程重新就绪");
+                return true;
+            }
+        }
+        tracing::warn!(attempt, "常驻进程没有在 10 秒内就绪");
+    }
+    false
 }
 
 /// 重新拉起常驻进程（夜间状态还在的话它会自己把黑幕搭回去）。
