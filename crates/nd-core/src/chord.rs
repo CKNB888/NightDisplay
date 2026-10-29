@@ -301,6 +301,89 @@ mod tests {
         assert!(w.poll(down, t1 + Duration::from_millis(300)));
     }
 
+    /// 表驱动的解析用例：每一个用户可能写出来的写法都在这里，
+    /// 成功的要求落到同一个 `ChordKey`，失败的要求必须报错。
+    #[test]
+    fn parse_table() {
+        // (输入, 期望)
+        let ok: &[(&str, ChordKey)] = &[
+            ("ctrl", ChordKey::Ctrl),
+            ("CTRL", ChordKey::Ctrl),
+            ("Ctrl_L", ChordKey::Ctrl),
+            ("control", ChordKey::Ctrl),
+            ("alt_l", ChordKey::Alt),
+            ("option", ChordKey::Alt),
+            ("shift_r", ChordKey::Shift),
+            ("win", ChordKey::Win),
+            ("cmd", ChordKey::Win),
+            ("super", ChordKey::Win),
+            ("a", ChordKey::Char('A')),
+            ("Z", ChordKey::Char('Z')),
+            ("0", ChordKey::Char('0')),
+            ("9", ChordKey::Char('9')),
+            ("space", ChordKey::Space),
+            ("tab", ChordKey::Tab),
+            ("esc", ChordKey::Esc),
+            ("escape", ChordKey::Esc),
+            ("f1", ChordKey::Function(1)),
+            ("F12", ChordKey::Function(12)),
+            ("  k  ", ChordKey::Char('K')),
+        ];
+        for (input, want) in ok {
+            assert_eq!(&ChordKey::parse(input).unwrap(), want, "输入 {input:?}");
+        }
+        // `Ctrl_L`/`Ctrl_R` 的后缀是先剥掉再匹配的，所以 `Ctrl_L_L` 也会被当成
+        // Ctrl —— 宽容但无害（物理上不存在这个键名，用户不可能真的想区分）。
+        let bad = ["", "  ", "f0", "f13", "hello", "ctrl+alt", "C+K", "ä", "10"];
+        for input in bad {
+            assert!(ChordKey::parse(input).is_err(), "输入 {input:?} 不该被接受");
+        }
+    }
+
+    /// 表驱动的校验用例：哪些组合能用、哪些必须拒绝。
+    #[test]
+    fn validate_table() {
+        // (按键, 是否合法, 说明)
+        let table: &[(&[&str], bool, &str)] = &[
+            (&["C", "K"], true, "默认组合"),
+            (&["Ctrl", "K"], true, "修饰键 + 字母"),
+            (&["Ctrl", "Alt", "K"], true, "两个修饰键 + 字母（3 键上限）"),
+            (&["Ctrl", "Shift", "F9"], true, "功能键"),
+            (&["F9", "F10"], true, "两个功能键"),
+            (&["C"], false, "一个键不够"),
+            (&["C", "K", "L", "M"], false, "超过三个键"),
+            (&["Ctrl", "Alt", "Shift"], false, "全是修饰键"),
+            (&["Ctrl", "Alt", "Esc"], false, "系统占用：Ctrl+Alt+Esc"),
+            (&["Alt", "Tab"], false, "系统占用：Alt+Tab"),
+            (&["Alt", "F4"], false, "系统占用：Alt+F4"),
+            (&["K", "K"], false, "去重后只剩一个键"),
+        ];
+        for (keys_in, want_ok, why) in table {
+            let keys: Vec<ChordKey> = keys_in
+                .iter()
+                .map(|s| ChordKey::parse(s).expect("用例里的键名都合法"))
+                .collect();
+            assert_eq!(validate(&keys).is_ok(), *want_ok, "用例：{why}");
+        }
+    }
+
+    /// 表驱动的按键时长用例。
+    #[test]
+    fn hold_ms_table() {
+        let table: &[(u64, bool)] = &[
+            (0, false),
+            (99, false),
+            (100, true),
+            (300, true),
+            (3000, true),
+            (3001, false),
+            (5000, false),
+        ];
+        for (ms, want_ok) in table {
+            assert_eq!(validate_hold_ms(*ms).is_ok(), *want_ok, "{ms} ms");
+        }
+    }
+
     #[test]
     fn watcher_requires_all_keys() {
         let mut w = ChordWatcher::new(default_chord(), 100);

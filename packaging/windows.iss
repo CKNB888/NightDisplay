@@ -75,15 +75,13 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"
 ; 装完直接打开界面，向导会自己弹出来。
 Filename: "{app}\{#AppExe}"; Description: "打开 {#AppName}"; Flags: nowait postinstall skipifsilent
 
-[UninstallRun]
-; 先让程序自己收尾：恢复 gamma/背光/显示拓扑，删掉三条自启和每日计划任务。
-Filename: "{app}\{#AppExe}"; Parameters: "--action uninstall"; Flags: runhidden waituntilterminated; RunOnceId: "NightDisplayCleanup"
-
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\resources\vdd"
 
 [Code]
-{ 卸载前确认屏幕真的恢复回来了。没有恢复就不能静默卸掉 —— 用户会面对一块黑屏。 }
+{ 卸载前让程序自己收尾：恢复 gamma/背光/显示拓扑，删掉三条自启和每日计划任务。
+  没恢复成功时不能静默卸掉 —— 用户会面对一块黑屏；但静默卸载（CI、批量部署）
+  没有人在旁边点按钮，所以那种情况只记录并继续。 }
 function InitializeUninstall(): Boolean;
 var
   Code: Integer;
@@ -100,6 +98,8 @@ begin
              ewWaitUntilTerminated, Code);
   if (not Ok) or (Code <> 0) then
   begin
+    if UninstallSilent then
+      Exit;
     if MsgBox('屏幕没能自动恢复正常。' + #13#10 + #13#10 +
               '建议先打开 NightDisplay，点「恢复显示」，确认画面正常后再卸载。' + #13#10 +
               '仍要继续卸载吗？',

@@ -409,6 +409,70 @@ mod tests {
         assert!(parse_ranges_text("12:00").is_err());
     }
 
+    /// 表驱动的边界用例：每个边界前后一分钟的状态必须相反，
+    /// 且 `next_switch` 报的秒数和边界对得上。
+    ///
+    /// 这张表覆盖了"跨午夜"、"同一天"、"首尾相接"、"分钟级"这四种形状，
+    /// 是所有"到点没黑/到点没亮"类 bug 的回归网。
+    #[test]
+    fn boundary_table() {
+        // (区间文本, 边界, 边界前 1 秒是否夜间)
+        let table: &[(&str, &str, bool)] = &[
+            ("20:00-10:30", "20:00", false),
+            ("20:00-10:30", "10:30", true),
+            ("12:00-13:30", "12:00", false),
+            ("12:00-13:30", "13:30", true),
+            ("00:00-00:01", "00:00", false),
+            ("00:00-00:01", "00:01", true),
+            ("23:59-00:00", "23:59", false),
+            ("23:59-00:00", "00:00", true),
+            ("08:00-09:00", "08:00", false),
+            ("08:00-09:00", "09:00", true),
+        ];
+        for (text, boundary, night_before) in table {
+            let ranges = parse_ranges_text(text).unwrap();
+            let s = Schedule::new(ranges);
+            let b: MinuteOfDay = boundary.parse().unwrap();
+            let before = at(b.hour(), b.minute(), 0) - chrono::TimeDelta::seconds(1);
+            assert_eq!(
+                s.is_night_at(before),
+                *night_before,
+                "{text} 在 {boundary} 前 1 秒的状态"
+            );
+            let after = at(b.hour(), b.minute(), 0);
+            assert_eq!(
+                s.is_night_at(after),
+                !*night_before,
+                "{text} 在 {boundary} 整点的状态"
+            );
+            // 边界前 1 秒算出来的下一次切换必须是 1 秒后，且方向正确。
+            assert_eq!(
+                s.next_switch(before),
+                Some((!*night_before, 1)),
+                "{text} 在 {boundary} 前 1 秒的 next_switch"
+            );
+        }
+    }
+
+    /// 多个区间时，任务要按时间顺序登记：`boundaries()` 必须升序去重。
+    #[test]
+    fn boundary_list_is_stable_for_task_registration() {
+        let table: &[(&str, &[&str])] = &[
+            ("20:00-10:30", &["10:30", "20:00"]),
+            (
+                "12:00-13:30, 02:00-04:00, 20:00-10:30",
+                &["02:00", "04:00", "10:30", "12:00", "13:30", "20:00"],
+            ),
+            ("23:00-01:00, 01:00-02:00", &["01:00", "02:00", "23:00"]),
+            ("00:00-12:00, 12:00-23:59", &["00:00", "12:00", "23:59"]),
+        ];
+        for (text, want) in table {
+            let s = Schedule::new(parse_ranges_text(text).unwrap());
+            let got: Vec<String> = s.boundaries().iter().map(|m| m.to_hm()).collect();
+            assert_eq!(got, *want, "区间 {text}");
+        }
+    }
+
     #[test]
     fn crosses_midnight_flag() {
         assert!(NightRange {
