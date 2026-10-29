@@ -59,12 +59,9 @@ pub fn redact(text: &str, home: &Path) -> String {
         let escaped = home_text.replace('\\', "\\\\");
         out = out.replace(&escaped, "<home>");
     }
-    if let Some(name) = home.file_name().and_then(|n| n.to_str()) {
-        // 只替换长度 >= 3 的用户名，避免把 "box" 这种词误伤。
-        if name.len() >= 3 && name != "Users" && name != "home" {
-            out = out.replace(name, "<user>");
-        }
-    }
+    // 这里**不能**拿 `home.file_name()` 当账号名去全局替换：数据目录名是
+    // `NightDisplay`，把它当用户名会把 `NightDisplay.exe` 一起吃掉，产物里
+    // 就只剩 `<user>.exe`。账号名一律交给 `redact_users` 按用户目录结构识别。
     out = redact_users(&out);
     out = redact_tokens(&out);
     out
