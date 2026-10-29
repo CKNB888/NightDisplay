@@ -102,6 +102,12 @@ pub struct Capabilities {
     /// 每条自启路径的真实状态。
     #[serde(default)]
     pub registration: Registration,
+    /// 显卡与驱动版本（自检、诊断包用；非 Windows 为空）。
+    #[serde(default)]
+    pub gpu: Vec<GpuInfo>,
+    /// 每一块显示器：名字、分辨率、是否支持 DDC/CI。
+    #[serde(default)]
+    pub monitors: Vec<MonitorInfo>,
 }
 
 /// 一行状态文本。
@@ -349,6 +355,15 @@ impl SelfCheck {
         if !registration.all() {
             notes.push(registration.summary());
         }
+        if caps.gpu.is_empty() {
+            notes.push("读不到显卡信息（诊断包里这一项会是空的）。".to_string());
+        }
+        let virtuals = caps.monitors.iter().filter(|m| m.virtual_output).count();
+        if virtuals > 1 {
+            notes.push(format!(
+                "检测到 {virtuals} 块虚拟屏，夜间的切换会挑随包 VDD 那一块；                 其他虚拟屏（例如远程软件自带的）不受影响。"
+            ));
+        }
 
         SelfCheck {
             version: VERSION.to_string(),
@@ -363,8 +378,8 @@ impl SelfCheck {
             virtual_display: caps.virtual_display,
             virtual_screen_holding: caps.virtual_screen_holding,
             registration,
-            gpu: Vec::new(),
-            monitors: Vec::new(),
+            gpu: caps.gpu.clone(),
+            monitors: caps.monitors.clone(),
             autostart_config: cfg.autostart,
             autostart_actual: caps.autostart,
             mode: cfg.mode,

@@ -983,3 +983,54 @@ mod tests {
         assert_eq!(PATH_FLAGS_ACTIVE, 1);
     }
 }
+
+/// 一块活动显示器的真实信号时序（自检和诊断包用）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorMode {
+    /// 友好名。
+    pub name: String,
+    /// 水平像素数。
+    pub width: u32,
+    /// 垂直像素数。
+    pub height: u32,
+    /// 刷新率（四舍五入到整数 Hz）。
+    pub refresh_hz: u32,
+    /// 这块屏是不是虚拟的。
+    pub virtual_output: bool,
+}
+
+/// 读出所有**活动**显示器的分辨率与刷新率。
+///
+/// 用 target mode 的信号时序，而不是桌面坐标：缩放比例不是 100% 时，
+/// 桌面坐标和真实分辨率对不上，而这块信息要放进诊断包给驱动问题定位。
+pub fn monitor_modes() -> Result<Vec<MonitorMode>> {
+    let (paths, modes) = query(QDC_ONLY_ACTIVE_PATHS)?;
+    let patterns = needles("");
+    let mut out = Vec::new();
+    for path in &paths {
+        if !is_active(path) {
+            continue;
+        }
+        let Some(index) = target_mode_idx(path) else {
+            continue;
+        };
+        let Some(mode) = modes.get(index as usize) else {
+            continue;
+        };
+        // SAFETY: 这条路径的 targetMode 索引来自系统，类型就是 TARGET。
+        let signal = unsafe { mode.Anonymous.targetMode.targetVideoSignalInfo };
+        let refresh = signal
+            .vSyncFreq
+            .Numerator
+            .checked_div(signal.vSyncFreq.Denominator)
+            .unwrap_or(0);
+        out.push(MonitorMode {
+            name: path_display_name(path),
+            width: signal.activeSize.cx,
+            height: signal.activeSize.cy,
+            refresh_hz: refresh,
+            virtual_output: path_is_virtual(path, &patterns),
+        });
+    }
+    Ok(out)
+}

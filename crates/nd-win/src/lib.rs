@@ -42,6 +42,7 @@ pub mod brightness;
 #[cfg(windows)]
 pub mod gamma;
 #[cfg(windows)]
+pub mod hardware;
 pub mod helper;
 #[cfg(windows)]
 pub mod input;

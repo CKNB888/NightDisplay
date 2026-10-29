@@ -1062,6 +1062,8 @@ pub mod testing {
                 virtual_screen_holding: false,
                 autostart: true,
                 registration: crate::status::Registration::default(),
+                gpu: Vec::new(),
+                monitors: Vec::new(),
             };
             caps.build = 19045;
             Self {

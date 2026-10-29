@@ -192,6 +192,8 @@ impl Platform for WinPlatform {
             virtual_screen_holding: cfg!(windows) && topology::virtual_screen_holding(),
             autostart: crate::autostart::is_enabled(),
             registration: crate::tasks::registration(),
+            gpu: crate::hardware::gpus(),
+            monitors: crate::hardware::monitors(),
         }
     }
 
@@ -659,6 +661,8 @@ pub fn current_capabilities() -> Capabilities {
         virtual_screen_holding: topology::virtual_screen_holding(),
         autostart: crate::autostart::is_enabled(),
         registration: crate::tasks::registration(),
+        gpu: crate::hardware::gpus(),
+        monitors: crate::hardware::monitors(),
     }
 }
 
