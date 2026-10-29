@@ -53,6 +53,12 @@ pub fn bundle_name() -> String {
 pub fn redact(text: &str, home: &Path) -> String {
     let home_text = home.to_string_lossy();
     let mut out = text.replace(home_text.as_ref(), "<home>");
+    // JSON 日志里反斜杠是转义的（`D:\\a\\...`），原样匹配不到。
+    // 同一段路径换个写法照样会漏，所以两种形式都要替换。
+    if home_text.contains('\\') {
+        let escaped = home_text.replace('\\', "\\\\");
+        out = out.replace(&escaped, "<home>");
+    }
     if let Some(name) = home.file_name().and_then(|n| n.to_str()) {
         // 只替换长度 >= 3 的用户名，避免把 "box" 这种词误伤。
         if name.len() >= 3 && name != "Users" && name != "home" {
@@ -77,7 +83,13 @@ fn redact_users(text: &str) -> String {
     for marker in USER_DIR_MARKERS {
         let mut from = 0;
         while let Some(found) = lower[from..].find(marker) {
-            let name_start = from + found + marker.len();
+            let mut name_start = from + found + marker.len();
+            // JSON 会把路径写成 `C:\\Users\\runneradmin\\...`（反斜杠被转义）。
+            // 标记 `\users\` 会匹配进那一对反斜杠里，正好把一个反斜杠留给
+            // "账号名"，取出来是空串于是整条漏掉 —— 先把多余的分隔符跳过去。
+            while name_start < lower.len() && matches!(lower.as_bytes()[name_start], b'\\' | b'/') {
+                name_start += 1;
+            }
             let tail = &lower[name_start..];
             // 账号名到下一个路径分隔符或空白为止。必须在空白处也停下：
             // `C:\Users\ 后面没有名字` 这种句子不能把后半句整段吃掉。
@@ -332,6 +344,26 @@ mod tests {
         assert!(!out.contains("alice"), "{out}");
         assert!(!out.contains("bob"), "{out}");
         assert!(out.contains("<user>"), "{out}");
+    }
+
+    #[test]
+    fn redact_hides_account_name_inside_json_escaped_paths() {
+        // 日志是 JSONL，路径里的反斜杠会被转义成 `\\`：
+        // `C:\\Users\\runneradmin\\AppData\\...`。这类行以前整条漏掉。
+        let home = PathBuf::from("C:\\Users\\runneradmin\\AppData\\Local\\NightDisplay");
+        let text = r#"{"command":"C:\\Users\\runneradmin\\AppData\\Local\\Programs\\NightDisplay\\NightDisplay.exe --tray"}"#;
+        let out = redact(text, &home);
+        assert!(!out.contains("runneradmin"), "{out}");
+        assert!(out.contains(r"\\<user>\\AppData"), "{out}");
+    }
+
+    #[test]
+    fn redact_hides_json_escaped_home_too() {
+        let home = PathBuf::from("D:\\a\\NightDisplay\\Home");
+        let text = r#"{"home":"D:\\a\\NightDisplay\\Home\\logs"}"#;
+        let out = redact(text, &home);
+        assert!(!out.contains("NightDisplay"), "{out}");
+        assert!(out.contains("<home>"), "{out}");
     }
 
     #[test]

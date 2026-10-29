@@ -490,8 +490,26 @@ def step_night_switch():
     check("首帧黑屏 < 1500 ms", total_ms < 1500, f"{total_ms} ms")
     note("first_frame_mode", timings.get("night_effective_mode", "virtual_screen"))
     check("切换有步骤记录", bool(steps), f"{len(steps)} 步")
-    check("步骤没有失败", all(s.get("ok") for s in steps),
-          "; ".join(f"{s['step']}:{s.get('detail','')}" for s in steps if not s.get("ok")))
+    # gamma 和背光是**可选增强层**：产品自己的语义是"失败只记日志，不影响入夜"
+    # （LayerStatus::Failed 注释就是这么写的）。把它们混进"步骤没有失败"里，
+    # 等于要求每台机器的驱动都接受 gamma/背光，和产品设计自相矛盾。
+    # 所以：入夜真正依赖的步骤继续卡着，增强层单独如实报告。
+    optional_steps = {"gamma", "brightness"}
+    required_steps = [s for s in steps if s.get("step") not in optional_steps]
+    loose_steps = [s for s in steps if s.get("step") in optional_steps]
+    check("关键步骤没有失败", all(s.get("ok") for s in required_steps),
+          "; ".join(f"{s['step']}:{s.get('detail','')}" for s in required_steps
+                    if not s.get("ok")))
+    loose_bad = [s for s in loose_steps if not s.get("ok")]
+    if not loose_steps:
+        skip("gamma/背光增强层生效", "设置里没有开启这两层")
+    elif loose_bad:
+        skip("gamma/背光增强层生效",
+             "这台机器的显示驱动不接受 gamma/背光设置（"
+             + "；".join(f"{s['step']}:{s.get('detail','')}" for s in loose_bad)
+             + "），产品把这两层定义为可选项、不影响入夜，实际观感需真机复核")
+    else:
+        check("gamma/背光增强层生效", True, f"{len(loose_steps)} 层")
 
     p = probe()
     if not check("probe 可读（夜间）", p is not None):
@@ -622,9 +640,16 @@ def step_remote_session():
           f"{before['stats']['apply_calls']} → {after['stats']['apply_calls']}")
     check("夜间状态没有被本地输入改变",
           read_config().get("state") == "night", f"state={read_config().get('state')}")
-    check("实体屏仍未接桌面",
-          not any(d["active"] and not d["virtual"] for d in after["displays"]),
-          "active physical targets")
+    if CAN_USE_VIRTUAL_SCREEN:
+        check("实体屏仍未接桌面",
+              not any(d["active"] and not d["virtual"] for d in after["displays"]),
+              "active physical targets")
+    else:
+        # overlay 模式**不碰**显示拓扑，实体屏必须一直接着桌面 ——
+        # 这正是"远程照常能看到画面"的前提，反过来断言才是对的。
+        check("实体屏仍接着桌面（overlay 靠窗口遮黑）",
+              any(d["active"] and not d["virtual"] for d in after["displays"]),
+              f"active={after['active_count']}")
     return True
 
 
@@ -817,11 +842,26 @@ def step_diag():
         check("诊断包含日志与配置",
               any("log" in n.lower() for n in names) and any("config" in n.lower() for n in names),
               ", ".join(names[:6]))
-        # 脱敏：包里不能出现真实用户名路径。
+        # 脱敏：包里任何**解压后**的内容都不能出现真实用户名。
+        # 只扫 zip 原始字节是不够的：deflate 之后同样的文本可能压不成字面量，
+        # 于是泄漏被"压缩"掩盖而检查却通过。这里逐条解压再找。
         user = os.environ.get("USERNAME", "")
-        blob = zips[0].read_bytes()
-        check("诊断包不含明文用户名", not user or user.encode() not in blob,
-              f"username={user}")
+        needle = user.encode()
+        leaks = []
+        if user:
+            with zipfile.ZipFile(zips[0]) as zf:
+                for entry in zf.namelist():
+                    if entry.endswith("/"):
+                        continue
+                    try:
+                        payload = zf.read(entry)
+                    except Exception:  # 加密/损坏的条目：报出来，不当作干净
+                        leaks.append(f"{entry}(无法读取)")
+                        continue
+                    if needle in payload:
+                        leaks.append(f"{entry}×{payload.count(needle)}")
+        check("诊断包不含明文用户名", not leaks,
+              f"username={user}；泄漏于 {', '.join(leaks)}" if leaks else f"username={user}")
     return True
 
 
