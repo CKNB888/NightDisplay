@@ -93,7 +93,13 @@ pub fn monitors() -> Vec<MonitorInfo> {
     };
     // DDC 支持与否只看面板描述能不能对上；对不上就当不支持（保守）。
     let ddc_names: Vec<String> = crate::brightness::Control::open()
-        .map(|control| control.snapshot().into_iter().map(|(name, _)| name).collect())
+        .map(|control| {
+            control
+                .snapshot()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect()
+        })
         .unwrap_or_default();
     entries
         .into_iter()

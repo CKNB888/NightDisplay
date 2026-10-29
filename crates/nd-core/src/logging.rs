@@ -166,7 +166,8 @@ pub fn init(component: Component) -> anyhow::Result<()> {
     prune(&dir);
 
     let level = std::env::var("NIGHTDISPLAY_LOG").unwrap_or_else(|_| "info".into());
-    let filter = EnvFilter::try_new(format!("{level},nd_core=info,nd_win=info")).unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_new(format!("{level},nd_core=info,nd_win=info"))
+        .unwrap_or_else(|_| EnvFilter::new("info"));
     let (filter, handle) = reload::Layer::new(filter);
     let _ = RELOAD.set(handle);
 
@@ -331,7 +332,9 @@ mod tests {
         let path = writer.today_path();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
         assert!(name.starts_with("daemon-"), "{name}");
-        assert!(path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl")));
+        assert!(path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl")));
         assert_eq!(name.len(), "daemon-2026-10-29.jsonl".len());
     }
 

@@ -12,7 +12,11 @@ use crate::config::{Config, Mode, RunState};
 use crate::error::{one_line, user, NdResult};
 use crate::mode::{attempt_chain, LayerStatus, NightReport, VirtualReport};
 use crate::schedule::Schedule;
+use crate::session::{steps_from_report, SessionRecord, StepRecord};
 use crate::status::Capabilities;
+
+/// 历史会话保留条数。一天最多两次（入夜/恢复），50 条能回溯二十多天。
+const SESSION_KEEP: usize = 50;
 
 /// 平台层必须提供的能力。Windows 实现见 `nd-win`；测试用假实现。
 pub trait Platform {
@@ -310,7 +314,9 @@ impl<'a, P: Platform> Engine<'a, P> {
         }
 
         let chain = attempt_chain(mode);
+        let trace_id = crate::session::new_trace_id();
         tracing::info!(
+            trace_id = %trace_id,
             requested = mode.as_str(),
             chain = ?chain.iter().map(|m| m.as_str()).collect::<Vec<_>>(),
             "进入夜间"
@@ -409,27 +415,66 @@ impl<'a, P: Platform> Engine<'a, P> {
         let summary = report.summary();
 
         // 夜间附加动作：保持唤醒、本地防触控、抑制锁屏。
+        // 每一步的耗时和结果顺带记进会话记录，界面的「诊断」页直接读这份。
         let mut warnings = Vec::new();
+        let mut steps: Vec<StepRecord> = steps_from_report(&report);
         let keep_secs = Self::keep_awake_seconds(&cfg, now);
         if cfg.keep_awake {
-            if let Err(e) = self.platform.keep_awake(true, keep_secs) {
-                warnings.push(format!("防睡眠没有生效：{}", one_line(&e)));
+            let started = std::time::Instant::now();
+            match self.platform.keep_awake(true, keep_secs) {
+                Ok(()) => steps.push(StepRecord::ok("keep_awake", elapsed_ms(started))),
+                Err(e) => {
+                    warnings.push(format!("防睡眠没有生效：{}", one_line(&e)));
+                    steps.push(StepRecord::failed(
+                        "keep_awake",
+                        elapsed_ms(started),
+                        one_line(&e),
+                    ));
+                }
             }
+        } else {
+            steps.push(StepRecord::skipped("keep_awake", "设置里关闭了防睡眠"));
         }
         // 本地防触控和抑制锁屏只在黑幕模式有意义：
         // 虚拟屏接管后本机根本没有输出，物理键鼠也碰不到那块屏。
-        if effective == Mode::Overlay && cfg.strict_local_input {
-            if let Err(e) =
-                self.platform
+        if effective == Mode::Overlay {
+            if cfg.strict_local_input {
+                let started = std::time::Instant::now();
+                match self
+                    .platform
                     .set_input_guard(true, &cfg.unlock_chord, cfg.unlock_hold_ms)
-            {
-                warnings.push(format!("严格本地防触控没有生效：{}", one_line(&e)));
+                {
+                    Ok(()) => steps.push(StepRecord::ok("input_hook", elapsed_ms(started))),
+                    Err(e) => {
+                        warnings.push(format!("严格本地防触控没有生效：{}", one_line(&e)));
+                        steps.push(StepRecord::failed(
+                            "input_hook",
+                            elapsed_ms(started),
+                            one_line(&e),
+                        ));
+                    }
+                }
+            } else {
+                steps.push(StepRecord::skipped("input_hook", "设置里关闭了严格防触控"));
             }
-        }
-        if effective == Mode::Overlay && cfg.suppress_lock {
-            if let Err(e) = self.platform.set_lock_suppression(true) {
-                warnings.push(format!("抑制锁屏没有生效：{}", one_line(&e)));
+            if cfg.suppress_lock {
+                let started = std::time::Instant::now();
+                if let Err(e) = self.platform.set_lock_suppression(true) {
+                    warnings.push(format!("抑制锁屏没有生效：{}", one_line(&e)));
+                    steps.push(StepRecord::failed(
+                        "lock_suppression",
+                        elapsed_ms(started),
+                        one_line(&e),
+                    ));
+                } else {
+                    steps.push(StepRecord::ok("lock_suppression", elapsed_ms(started)));
+                }
             }
+        } else {
+            steps.push(StepRecord::skipped(
+                "input_hook",
+                "虚拟屏接管后本机没有输出，不需要按键拦截",
+            ));
         }
 
         Config::update(|c| {
@@ -441,6 +486,18 @@ impl<'a, P: Platform> Engine<'a, P> {
         })?;
         // 白天手动进入夜间时记住保持到什么时候。
         self.note_manual_night(now)?;
+
+        // 会话记录：先存"正在进行中"，这样进程被杀也留得下这一夜的证据；
+        // 正常恢复时才追加进 sessions.jsonl 并清掉这份。
+        let mut session = SessionRecord::start(mode, effective, &trace_id);
+        session.steps = steps;
+        crate::session::save_current(&session);
+        tracing::info!(
+            trace_id = %trace_id,
+            steps = session.steps.len(),
+            failures = session.failures(),
+            "夜间会话已开始"
+        );
 
         let mut msg = summary;
         if !warnings.is_empty() {
@@ -522,6 +579,8 @@ impl<'a, P: Platform> Engine<'a, P> {
         if let Err(e) = self.platform.keep_awake(false, 0) {
             errors.push(format!("停止防睡眠失败：{}", one_line(&e)));
         }
+
+        archive_session(&errors);
 
         if errors.is_empty() {
             Config::update(|c| {
@@ -982,6 +1041,41 @@ impl<'a, P: Platform> Engine<'a, P> {
 /// 虚拟屏模式是否已经掉了：实体屏上又有桌面了。
 ///
 /// 只看"当前活动输出里还有没有实体屏"，不主动改任何东西。
+/// 把进行中的会话收尾。
+///
+/// 没有进行中的会话（例如白天只是重复点了一次恢复）就什么都不做。
+/// 会话记录永远不该阻止屏幕恢复，所以这里的失败只写日志。
+fn archive_session(errors: &[String]) {
+    let Some(mut session) = crate::session::load_current() else {
+        return;
+    };
+    session.ended_at = Some(Local::now());
+    session.ended_cleanly = errors.is_empty();
+    session.outcome = if errors.is_empty() {
+        "已恢复白天显示".to_string()
+    } else {
+        errors.join(" | ")
+    };
+    session.push(if errors.is_empty() {
+        StepRecord::ok("restore", 0)
+    } else {
+        StepRecord::failed("restore", 0, session.outcome.clone())
+    });
+    tracing::info!(
+        trace_id = %session.trace_id,
+        clean = session.ended_cleanly,
+        duration_ms = session.duration_ms(),
+        "夜间会话结束"
+    );
+    crate::session::finish(&session);
+    crate::session::trim(SESSION_KEEP);
+}
+
+/// 一段动作的耗时（毫秒）。取整到 u64，超长也不可能溢出。
+fn elapsed_ms(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 fn virtual_screen_lost(platform: &impl Platform) -> bool {
     if !platform.virtual_screen_ready() {
         return false;
@@ -1320,6 +1414,37 @@ mod tests {
             assert!(out.is_ok());
             assert!(p.called("restore_display"));
             assert_eq!(Config::load().unwrap().state, RunState::Day);
+        });
+    }
+
+    #[test]
+    fn night_writes_a_session_record_and_day_archives_it() {
+        with_home(|| {
+            seed(&Config::default());
+            let mut p = FakePlatform::new();
+            *p.vdd_present.borrow_mut() = true;
+            p.caps.virtual_display = true;
+            let e = Engine::new(&p);
+
+            e.night(Mode::Auto, at(21, 0, 0)).unwrap();
+            // 夜里进程随时可能被杀，所以"进行中"必须先落盘。
+            let current = crate::session::load_current().expect("夜间没有写进行中的会话");
+            assert_eq!(current.effective, Mode::VirtualScreen);
+            assert_eq!(current.trace_id.len(), 16);
+            assert!(current.ended_at.is_none());
+            assert!(current.steps.iter().any(|s| s.step == "topology"));
+
+            e.day().unwrap();
+            assert!(
+                crate::session::load_current().is_none(),
+                "正常恢复后不该留下进行中的会话"
+            );
+            let history = crate::session::recent(5);
+            assert_eq!(history.len(), 1);
+            let session = &history[0];
+            assert!(session.ended_cleanly);
+            assert_eq!(session.trace_id, current.trace_id);
+            assert!(session.steps.iter().any(|s| s.step == "restore" && s.ok));
         });
     }
 

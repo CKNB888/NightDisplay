@@ -84,9 +84,11 @@ pub mod mode;
 pub mod onboarding;
 pub mod paths;
 pub mod schedule;
+pub mod session;
 pub mod state_lock;
 pub mod status;
 pub mod updates;
+pub mod zip;
 
 pub use error::{NdError, NdResult};
 
