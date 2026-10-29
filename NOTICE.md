@@ -25,8 +25,17 @@ NightDisplay 与 UU 远程、ToDesk、RustDesk 没有隶属关系，不使用它
 
 ## Rust 依赖
 
-4.x 只在运行时链接 Windows 系统库，不使用第三方 C/C++ 运行时之外的原生库。主要 crate：
-`windows`（MIT/Apache-2.0）、`serde`/`serde_json`（MIT/Apache-2.0）、`chrono`（MIT/Apache-2.0）、
-`tracing`/`tracing-subscriber`（MIT）、`anyhow`/`thiserror`（MIT/Apache-2.0）、
-`fs4`（MIT/Apache-2.0）、`rand`（MIT/Apache-2.0）、`regex`（MIT/Apache-2.0）。
-完整版本与许可证可以跑 `cargo tree` 复核。
+4.x 只在运行时链接 Windows 系统库。主要 crate：
+
+`windows`（MIT/Apache-2.0）、`serde`/`serde_json`（MIT/Apache-2.0）、
+`chrono`（MIT/Apache-2.0）、`tracing`/`tracing-subscriber`（MIT）、
+`anyhow`/`thiserror`（MIT/Apache-2.0）、`fs4`（MIT/Apache-2.0）、
+`rand`（MIT/Apache-2.0）、`regex`（MIT/Apache-2.0）。
+
+界面使用 **Tauri 2**（MIT/Apache-2.0）与系统自带的 **Microsoft Edge WebView2**
+（随 Windows 10/11 分发，不打包进本程序的安装包）。Tauri 的相关 crate 包括
+`tauri`、`tauri-build`、`tauri-plugin-single-instance`、`tray-icon`、`muda`，
+均为 MIT/Apache-2.0。WebView2 Runtime 由微软提供，按微软的许可分发。
+
+完整版本与许可证可以跑 `cargo tree` 复核；`cargo deny` 之类的工具不在 CI 里，
+因为本项目不引入 C/C++ 运行时依赖，也没有 vendored 的第三方源码。

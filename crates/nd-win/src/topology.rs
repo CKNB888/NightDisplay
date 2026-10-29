@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use windows::Win32::Foundation::LUID;
 
 use anyhow::Result;
+use nd_core::display_paths::{self, PathView};
 use nd_core::mode::VirtualReport;
 use serde::{Deserialize, Serialize};
 use windows::Win32::Devices::Display::{
@@ -419,21 +420,23 @@ fn preferred_target_mode(adapter: &LUID, id: u32) -> Option<DISPLAYCONFIG_MODE_I
     })
 }
 
-/// 挑一块可用的虚拟 target 路径：自带 VDD 优先，其次优先已经活动的
-/// （已经活动的说明远程软件可能正抓着它，更不能换）。
-fn pick_virtual(paths: &[DISPLAYCONFIG_PATH_INFO], patterns: &[String]) -> Result<usize> {
-    paths
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| p.targetInfo.targetAvailable.as_bool() && path_is_virtual(p, patterns))
-        .max_by_key(|(i, p)| (path_is_bundled(p), is_active(p), !*i))
-        .map(|(i, _)| i)
-        .ok_or_else(|| {
-            nd_core::error::user(
-                "没有找到可用的虚拟屏（VDD）。请先执行「安装虚拟显示驱动」，\
-                 或用 --action install-vdd 安装后重试",
-            )
-        })
+/// 把一条 Win32 路径转成 `nd-core` 的抽象视图。
+///
+/// 选谁、改哪个标志位这些判断在 `nd_core::display_paths` 里，那里有纯逻辑测试；
+/// 这里只负责把平台事实填进去。
+fn path_view(p: &DISPLAYCONFIG_PATH_INFO, patterns: &[String]) -> PathView {
+    PathView {
+        target_available: p.targetInfo.targetAvailable.as_bool(),
+        virtual_output: path_is_virtual(p, patterns),
+        bundled_vdd: path_is_bundled(p),
+        active: is_active(p),
+        has_source_mode: source_mode_idx(p).is_some(),
+        has_target_mode: target_mode_idx(p).is_some(),
+    }
+}
+
+fn path_views(paths: &[DISPLAYCONFIG_PATH_INFO], patterns: &[String]) -> Vec<PathView> {
+    paths.iter().map(|p| path_view(p, patterns)).collect()
 }
 
 /// 计划「白天预热」：虚拟屏接进桌面，和实体屏**共用同一个桌面**（复制）。
@@ -443,12 +446,15 @@ fn pick_virtual(paths: &[DISPLAYCONFIG_PATH_INFO], patterns: &[String]) -> Resul
 /// * 复制时虚拟屏和实体屏同源，入夜只需要把实体屏那条路径的活动标志去掉，
 ///   虚拟屏后面的 source 一点没变，远程软件抓着的那块采集表面也就不会重建。
 ///
+/// 选哪块虚拟屏、哪块实体屏当桌面来源，由 `nd_core::display_paths::plan_arm`
+/// 决定（那边有纯逻辑测试）；这里只负责把选出来的结果翻译成 Win32 结构体。
 /// 如果虚拟屏已经活动，直接返回当前状态（幂等）。
 pub fn plan_arm(match_pat: &str) -> Result<SwitchPlan> {
     let (paths, mut modes) = query(QDC_ALL_PATHS)?;
     let patterns = needles(match_pat);
-    let vdd_idx = pick_virtual(&paths, &patterns)?;
-    let active_before = paths.iter().filter(|p| is_active(p)).count();
+    let views = path_views(&paths, &patterns);
+    let planned = display_paths::plan_arm(&views)?;
+    let vdd_idx = planned.virtual_index;
     let mut out = paths.clone();
     let virtual_name = path_display_name(&out[vdd_idx]);
     let identity = (
@@ -456,8 +462,9 @@ pub fn plan_arm(match_pat: &str) -> Result<SwitchPlan> {
         out[vdd_idx].targetInfo.adapterId.HighPart,
         out[vdd_idx].targetInfo.id,
     );
+    let active_before = planned.active_before;
 
-    if is_active(&out[vdd_idx]) {
+    let Some(phys_idx) = planned.desktop_source else {
         // 已经预热过。确认它确实接着桌面（有 source）就好。
         let shared = out.iter().any(|p| {
             is_active(p) && !path_is_virtual(p, &patterns) && {
@@ -478,25 +485,20 @@ pub fn plan_arm(match_pat: &str) -> Result<SwitchPlan> {
             active_before,
             vdd_identity: Some(identity),
         });
-    }
+    };
 
-    // 选一块活动的实体屏当"桌面来源"。
-    let phys_idx = out
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| is_active(p) && !path_is_virtual(p, &patterns))
-        .max_by_key(|(_, p)| target_mode_idx(p).is_some())
-        .map(|(i, _)| i)
-        .ok_or_else(|| nd_core::error::user("当前没有活动的实体屏，虚拟屏没有可复制的桌面来源"))?;
     let phys = out[phys_idx];
     let src_idx = source_mode_idx(&phys)
         .ok_or_else(|| nd_core::error::user("实体屏的桌面模式索引无效，无法预热虚拟屏"))?;
 
     // 目标模式：优先照抄实体屏的信号，让两边像素一致。
-    let mut mode_matched = false;
-    let tgt_mode = match target_mode_idx(&phys).and_then(|i| modes.get(i as usize).copied()) {
+    // 照抄不到（或计划说不能照抄）时退回虚拟屏驱动自己推荐的那种。
+    let copied = planned
+        .mode_matched
+        .then(|| target_mode_idx(&phys).and_then(|i| modes.get(i as usize).copied()))
+        .flatten();
+    let tgt_mode = match copied {
         Some(mut m) => {
-            mode_matched = true;
             m.id = out[vdd_idx].targetInfo.id;
             m.adapterId = out[vdd_idx].targetInfo.adapterId;
             m
@@ -517,16 +519,15 @@ pub fn plan_arm(match_pat: &str) -> Result<SwitchPlan> {
     vdd.sourceInfo.Anonymous.modeInfoIdx = src_idx;
     vdd.targetInfo.Anonymous.modeInfoIdx = tgt_idx;
 
-    let active_after = out.iter().filter(|p| is_active(p)).count();
     Ok(SwitchPlan {
         paths: out,
         modes,
         virtual_name,
         physical_count: 0,
-        mode_matched,
+        mode_matched: planned.mode_matched,
         shared_source: true,
         active_before,
-        active_after,
+        active_after: planned.active_after,
         vdd_identity: Some(identity),
     })
 }
@@ -540,52 +541,27 @@ pub fn plan_arm(match_pat: &str) -> Result<SwitchPlan> {
 /// * 实体屏的 target 仍然留在提交的路径集里（只是不再活动），
 ///   设备依旧枚举得到，显示数量不变；
 /// * 至少要有一条活动路径，否则直接判定失败、不提交。
+///
+/// 摘哪几条、留下谁，由 `nd_core::display_paths::plan_detach` 决定。
 pub fn plan_detach(match_pat: &str) -> Result<SwitchPlan> {
     let (paths, modes) = query(QDC_ALL_PATHS)?;
     let patterns = needles(match_pat);
-    let vdd_idx = pick_virtual(&paths, &patterns)?;
-    let active_before = paths.iter().filter(|p| is_active(p)).count();
-
-    if !is_active(&paths[vdd_idx]) {
-        return Err(nd_core::error::user(
-            "虚拟屏还没有接入桌面（未预热）。请先运行一次预热（--action plan-virtual 或重启程序）",
-        ));
-    }
-    let desktop_source = source_mode_idx(&paths[vdd_idx]);
+    let views = path_views(&paths, &patterns);
+    let planned = display_paths::plan_detach(&views)?;
     let mut out = paths.clone();
-    let mut physical_count = 0usize;
-    let mut kept_active = 0usize;
-    for (i, p) in out.iter_mut().enumerate() {
-        if i == vdd_idx || !is_active(p) || path_is_virtual(p, &patterns) {
-            if is_active(p) {
-                kept_active += 1;
-            }
-            continue;
-        }
-        p.flags &= !PATH_FLAGS_ACTIVE;
-        physical_count += 1;
+    for index in &planned.deactivated {
+        out[*index].flags &= !PATH_FLAGS_ACTIVE;
     }
-    let active_after = out.iter().filter(|p| is_active(p)).count();
-    if active_after == 0 || kept_active == 0 {
-        return Err(nd_core::error::user(
-            "切换后没有任何活动显示，已中止（不会让机器变成无显示状态）",
-        ));
-    }
-    if physical_count == 0 {
-        return Err(nd_core::error::user(
-            "虚拟屏已经接管，没有需要摘掉的实体屏（当前已经是夜间状态）",
-        ));
-    }
-    let _ = desktop_source;
+    let vdd_idx = planned.virtual_index;
     Ok(SwitchPlan {
         paths: out,
         modes,
         virtual_name: path_display_name(&paths[vdd_idx]),
-        physical_count,
+        physical_count: planned.deactivated.len(),
         mode_matched: true,
         shared_source: true,
-        active_before,
-        active_after,
+        active_before: planned.active_before,
+        active_after: planned.active_after,
         vdd_identity: Some((
             paths[vdd_idx].targetInfo.adapterId.LowPart,
             paths[vdd_idx].targetInfo.adapterId.HighPart,
@@ -981,6 +957,41 @@ mod tests {
     fn path_active_bit_is_one() {
         // 与 Windows SDK 的 DISPLAYCONFIG_PATH_ACTIVE 保持一致。
         assert_eq!(PATH_FLAGS_ACTIVE, 1);
+    }
+
+    /// 平台层的转换必须把 Win32 的三个事实如实搬进 `PathView`：
+    /// 活动标志、模式索引是否有效、虚拟屏判定。选路径的逻辑本身在
+    /// `nd_core::display_paths` 里测，这里只钉住"搬运没搬错"。
+    #[test]
+    fn path_view_carries_the_win32_facts() {
+        let mut p = DISPLAYCONFIG_PATH_INFO::default();
+        p.flags = PATH_FLAGS_ACTIVE;
+        let view = path_view(&p, &needles(""));
+        assert!(view.active);
+        assert!(!view.has_source_mode, "默认路径没有有效源模式索引");
+        assert!(!view.has_target_mode);
+        assert!(!view.virtual_output);
+
+        // 间接虚拟（17）= 虚拟屏，即使名字不像。
+        let mut v = DISPLAYCONFIG_PATH_INFO::default();
+        v.targetInfo.outputTechnology =
+            windows::Win32::Devices::Display::DISPLAYCONFIG_VIDEO_OUTPUT_TECHNOLOGY(17);
+        v.targetInfo.targetAvailable = windows::Win32::Foundation::TRUE;
+        v.sourceInfo.Anonymous.modeInfoIdx = 0;
+        v.targetInfo.Anonymous.modeInfoIdx = 1;
+        let view = path_view(&v, &needles(""));
+        assert!(view.virtual_output);
+        assert!(view.target_available);
+        assert!(view.has_source_mode);
+        assert!(view.has_target_mode);
+        assert!(!view.active);
+    }
+
+    /// 空路径集不能凭空选出虚拟屏：必须报错，而不是返回一个空计划。
+    #[test]
+    fn planning_on_an_empty_path_set_fails_cleanly() {
+        assert!(display_paths::plan_arm(&[]).is_err());
+        assert!(display_paths::plan_detach(&[]).is_err());
     }
 }
 

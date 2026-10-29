@@ -77,6 +77,7 @@
 pub mod chord;
 pub mod config;
 pub mod diag;
+pub mod display_paths;
 pub mod engine;
 pub mod error;
 pub mod ipc;

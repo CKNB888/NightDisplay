@@ -1,9 +1,12 @@
 name: rust
-# Rust 4.x 的 CI。Windows 是唯一目标平台，Linux 只跑纯逻辑的 nd-core 测试
-# （时间计划、组合键、配置迁移这些不需要 Windows）。
+# Rust 4.x 的 CI。Windows 是唯一目标平台：
+#   windows   —— 格式、clippy（pedantic）、全部单元测试、release 构建、命令行冒烟
+#   linux     —— 只跑 nd-core 的纯逻辑测试（时间计划、组合键、配置迁移、模式降级）
+#   package   —— 打包：Inno Setup 安装器 + 便携 zip（都含随包驱动），只在 windows 绿了之后跑
+#   release   —— 打 v* 标签时把上面两个产物发成一个 Release
 on:
   push:
-    branches: [rust-rewrite, main]
+    branches: [main, rust-rewrite]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -12,13 +15,14 @@ permissions:
 concurrency:
   group: rust-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
 jobs:
   windows:
     name: Windows（构建 + 测试 + clippy）
     runs-on: windows-latest
     timeout-minutes: 40
     env:
-      CARGO_TERM_COLOR: always
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +51,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "status 退出码 $LASTEXITCODE" }
           & $exe --action env | Out-String | Write-Host
           & $exe --action selfcheck | Out-String | Write-Host
+          & $exe --action displays | Out-String | Write-Host
+          # 诊断包必须能生成，且里面真的有几个文件（这条链路 GUI 按钮也走）。
+          & $exe --action export-diag --out "$PWD\ci-home\diag" | Out-String | Write-Host
+          if ($LASTEXITCODE -ne 0) { throw "export-diag 退出码 $LASTEXITCODE" }
+          $zip = Get-ChildItem ci-home\diag\*.zip | Select-Object -First 1
+          if (-not $zip) { throw "没有产出诊断包" }
           # 向导状态文件必须能写、能读回；这里只跑不触权的两步。
           & $exe --action setup --only input_guard --seconds 3
           if ($LASTEXITCODE -ne 0) { throw "setup 退出码 $LASTEXITCODE" }
@@ -67,12 +77,11 @@ jobs:
         with:
           name: ci-home
           path: ci-home/
+
   linux-logic:
     name: Linux（nd-core 纯逻辑测试）
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -85,3 +94,154 @@ jobs:
         run: cargo clippy -p nd-core --all-targets -- -D warnings -W clippy::pedantic
       - name: 单元测试（时间计划、组合键、配置、模式降级、向导状态）
         run: cargo test -p nd-core
+
+  # 打包：Inno Setup 安装器 + 便携 zip。两者都带随包驱动。
+  #
+  # 为什么单独一个作业：打包要装 Inno Setup、要下载 30MB 驱动，和"代码质量"
+  # 是两件事；前面挂了就不该浪费 runner 去打包。
+  package:
+    name: Windows 安装包
+    needs: windows
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: package
+      - name: 下载并校验随包驱动
+        shell: pwsh
+        run: |
+          python tools/download_vdd.py --dest vendor/vdd
+          if ($LASTEXITCODE -ne 0) { throw "驱动下载失败" }
+          $inf = Get-ChildItem vendor/vdd -Recurse -Filter MttVDD.inf | Select-Object -First 1
+          if (-not $inf) { throw "驱动包里没有 MttVDD.inf" }
+          Write-Host "驱动: $($inf.FullName)"
+          Get-ChildItem vendor/vdd -Recurse | Select-Object FullName, Length | Format-Table | Out-String | Write-Host
+      - name: 编译 release
+        run: cargo build --release -p nightdisplay
+      - name: 检查产物与版本号一致
+        shell: pwsh
+        run: |
+          $exe = "target\release\NightDisplay.exe"
+          if (-not (Test-Path $exe)) { throw "没有产物 $exe" }
+          $version = (Get-Item $exe).VersionInfo.FileVersion
+          Write-Host "exe 版本: $version"
+          $out = & $exe --version | Out-String
+          Write-Host $out
+          $ver = (Select-String -InputObject $out -Pattern '4\.0\.0').Matches.Count
+          if ($ver -eq 0) { throw "版本号不是 4.0.0：$out" }
+          # 标签必须和代码版本一致，避免发出一个"标签写 v4 但里面是 3.9"的包。
+          if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
+            $tag = "${{ github.ref_name }}".Substring(1)
+            if ($tag -ne "4.0.0") { throw "标签 $tag 与代码版本 4.0.0 不一致" }
+          }
+      - name: 便携版 zip
+        shell: pwsh
+        run: |
+          $root = "dist\portable"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          New-Item -ItemType Directory -Force -Path "$root\resources" | Out-Null
+          Copy-Item target\release\NightDisplay.exe $root
+          Copy-Item resources\install_vdd.ps1 "$root\resources"
+          Copy-Item resources\vdd_settings.xml "$root\resources"
+          Copy-Item resources\VDD-LICENSE.txt "$root\resources"
+          Copy-Item tools\Recover.cmd $root
+          Copy-Item README.md, LICENSE, NOTICE.md $root
+          # 驱动：整个目录搬进 resources\vdd，程序按 <exe>\resources\vdd 找。
+          Copy-Item vendor\vdd "$root\resources\vdd" -Recurse
+          if (-not (Get-ChildItem "$root\resources\vdd" -Recurse -Filter MttVDD.inf)) {
+            throw "便携版里没有 MttVDD.inf"
+          }
+          Compress-Archive -Path "$root\*" -DestinationPath "dist\NightDisplay-4.0.0-portable.zip" -Force
+          Get-Item dist\NightDisplay-4.0.0-portable.zip | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+      - name: 装 Inno Setup
+        shell: pwsh
+        run: choco install innosetup --version=6.7.1 -y --no-progress
+      - name: 编译安装器
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "找不到 ISCC.exe" }
+          # .iss 里的 OutputDir 是 ..\dist，相对 packaging\ 就是仓库根的 dist。
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          & $iscc "/DAppVersion=4.0.0" "packaging\windows.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup 退出码 $LASTEXITCODE" }
+          if (-not (Test-Path "dist\NightDisplay-4.0.0-Setup.exe")) { throw "没有生成安装器" }
+          Get-Item dist\*.exe | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+      - name: 安装器静默安装检查
+        shell: pwsh
+        run: |
+          # 真的装一遍（当前用户目录，不需要管理员），确认文件都在，
+          # 再静默卸载，确认收尾干净。安装器本身不写自启，所以不会污染 runner。
+          $setup = "dist\NightDisplay-4.0.0-Setup.exe"
+          $dir = "$env:LOCALAPPDATA\Programs\NightDisplay"
+          Start-Process -FilePath $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
+          if (-not (Test-Path "$dir\NightDisplay.exe")) { throw "安装后没有 NightDisplay.exe" }
+          foreach ($f in @("resources\install_vdd.ps1", "resources\vdd_settings.xml")) {
+            if (-not (Test-Path "$dir\$f")) { throw "安装后缺 $f" }
+          }
+          if (-not (Get-ChildItem "$dir\resources\vdd" -Recurse -Filter MttVDD.inf)) {
+            throw "安装后没有随包驱动"
+          }
+          # 版本号读得出来才算装对了。
+          $v = (Get-Item "$dir\NightDisplay.exe").VersionInfo.FileVersion
+          Write-Host "已安装版本: $v"
+          # 卸载：InitializeUninstall 会跑 --action uninstall（只恢复屏幕、删自启），
+          # 在无桌面的 runner 上应该直接成功。
+          $uninst = Get-ChildItem "$dir" -Filter "unins*.exe" | Select-Object -First 1
+          if (-not $uninst) { throw "找不到卸载器" }
+          Start-Process -FilePath $uninst.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
+          Start-Sleep 2
+          if (Test-Path "$dir\NightDisplay.exe") { throw "卸载后 exe 还在" }
+          Write-Host "安装 → 卸载 检查通过"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NightDisplay-windows-x64
+          path: |
+            dist/NightDisplay-4.0.0-Setup.exe
+            dist/NightDisplay-4.0.0-portable.zip
+          if-no-files-found: error
+      - name: 产物摘要
+        shell: pwsh
+        run: |
+          $lines = @("## NightDisplay 4.0.0 安装包", "")
+          Get-ChildItem dist -File | ForEach-Object {
+            $mb = [math]::Round($_.Length / 1MB, 2)
+            $sha = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            $lines += "- ``$($_.Name)`` — $mb MB — SHA256 ``$sha``"
+          }
+          $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+  # 正式 Release：只在打出 v* 标签时跑，直接用已经验证过的产物。
+  release:
+    name: 发布 Release
+    needs: [windows, package]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: NightDisplay-windows-x64
+          path: dist
+      - name: 生成校验和
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: NightDisplay 4.0.0
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          body_path: docs/release-4.0.0.md
+          files: |
+            dist/NightDisplay-4.0.0-Setup.exe
+            dist/NightDisplay-4.0.0-portable.zip
+            dist/SHA256SUMS.txt
