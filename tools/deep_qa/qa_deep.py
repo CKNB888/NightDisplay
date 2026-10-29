@@ -28,6 +28,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -91,6 +92,53 @@ def probe():
 
 def probe_reset():
     run(["--action", "probe-reset"], check_code=False)
+
+
+class Continuity(threading.Thread):
+    """Background sampler: does the physical target stay enumerated the whole time?
+
+    'The physical screen never disappeared' is the proxy for 'the remote tool's
+    capture surface never died'. A single probe after the switch cannot prove
+    'never' -- so sample the full path set on a short interval while the switch
+    happens and assert on the worst sample, not on the last one.
+    """
+
+    # 150 ms：切换本身 ~1.5 s，能采到约 10 个点；再密就是自己跟被测进程抢 CPU，
+    # 反而会把首帧延迟推高。切换耗时另取会话里的进程内步骤耗时，不受这里影响。
+    def __init__(self, interval=0.15):
+        super().__init__(daemon=True)
+        self.interval = interval
+        self._stop = threading.Event()
+        self.samples = 0
+        self.physical_min = None
+        self.active_min = None
+        self.errors = 0
+
+    def run(self):
+        while not self._stop.is_set():
+            try:
+                env = dict(os.environ)
+                env["NIGHTDISPLAY_HOME"] = str(HOME)
+                proc = subprocess.run(
+                    [str(EXE_INSTALLED), "--action", "probe"],
+                    capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=30, env=env,
+                )
+                body = proc.stdout[proc.stdout.find("{"):]
+                snap = json.loads(body)
+                phys = snap["physical_count"]
+                active = snap["active_count"]
+                self.samples += 1
+                self.physical_min = phys if self.physical_min is None else min(self.physical_min, phys)
+                self.active_min = active if self.active_min is None else min(self.active_min, active)
+            except Exception:  # noqa: BLE001 - a poll may race the switch; count it, don't crash
+                self.errors += 1
+            self._stop.wait(self.interval)
+
+    def stop(self):
+        self._stop.set()
+        self.join(timeout=10)
+        return self
 
 
 def session_current():
@@ -194,10 +242,18 @@ def _first_line(text):
 
 def step_night_switch():
     probe_reset()
+    sampler = Continuity()
+    sampler.start()
     started = time.monotonic()
     code, out = run(["--action", "night", "--mode", "virtual_screen"], timeout=180)
     wall_ms = (time.monotonic() - started) * 1000
+    sampler.stop()
     note("night_wall_ms", round(wall_ms))
+    note("continuity_samples", sampler.samples)
+    note("continuity_physical_min", sampler.physical_min)
+    note("continuity_active_min", sampler.active_min)
+    if sampler.errors:
+        note("continuity_poll_errors", sampler.errors)
     if not check("进入夜间成功", code == 0, _first_line(out)):
         say(out)
         return False
@@ -233,9 +289,17 @@ def step_night_switch():
           f"min_active_submitted={st['min_active_submitted']}")
     check("切换后仍有活动显示", p["active_count"] >= 1, f"active_count={p['active_count']}")
 
-    # 实体屏必须还在完整路径集里 —— 这是"远程采集表面没死"的代理指标。
-    check("实体屏仍被枚举（采集表面未消失）", p["physical_never_disappeared"],
-          f"physical_count={p['physical_count']}")
+    # 实体屏必须**始终**留在完整路径集里 —— 这是"远程采集表面没死"的代理指标。
+    # 用切换期间的后台采样来断言"始终"，而不是只看切换后的一个快照。
+    saw_any = sampler.samples > 0
+    check("切换期间持续采样到显示状态", saw_any,
+          f"{sampler.samples} 个采样，{sampler.errors} 次失败")
+    check("实体屏全程都留在路径集里（采集表面未消失）",
+          saw_any and sampler.physical_min is not None and sampler.physical_min >= 1,
+          f"最少 {sampler.physical_min} 块实体屏 / {sampler.samples} 次采样")
+    check("活动显示从未归零（全程）",
+          saw_any and sampler.active_min is not None and sampler.active_min >= 1,
+          f"最少 {sampler.active_min} 块活动屏 / {sampler.samples} 次采样")
 
     # 活动显示里必须只剩虚拟屏。
     active_virtual = [d for d in p["displays"] if d["active"] and d["virtual"]]

@@ -303,8 +303,9 @@ pub fn export_diag(dir: Option<&str>) -> Result<ExitCode> {
 /// 这是 Windows QA 用的探针，也是排障时最有说服力的一段证据：
 /// * `apply_calls` —— 这次进程里到底改了几次显示配置；
 /// * `min_active_submitted` —— 每次提交时活动 target 的最小值，`0` 是不允许出现的；
-/// * `physical_never_disappeared` —— 实体屏是否一直留在 `QueryDisplayConfig` 的
-///   完整路径集里（这是"远程采集表面没死"的代理指标）。
+/// * `physical_count` —— 实体屏此刻是否还在 `QueryDisplayConfig` 的完整路径集里
+///   （这是"远程采集表面没死"的代理指标）。注意这只是**一个快照**；要断言
+///   "始终没消失"，得由 QA 在切换期间连续采样，本探针不替你下这个结论。
 pub fn probe() -> Result<ExitCode> {
     let stats = nd_win::topology::apply_stats();
     // 完整路径集（QDC_ALL_PATHS）：没被接进桌面的屏也必须还在。
@@ -315,7 +316,6 @@ pub fn probe() -> Result<ExitCode> {
         .filter(|d| !nd_win::topology::is_virtual(d))
         .count();
     let virtual_total = all.len() - physical_total;
-    let physical_never_disappeared = physical_total > 0;
     let report = serde_json::json!({
         "stats": stats,
         "displays": all.iter().map(|d| serde_json::json!({
@@ -340,7 +340,6 @@ pub fn probe() -> Result<ExitCode> {
         "active_count": active.len(),
         "physical_count": physical_total,
         "virtual_count": virtual_total,
-        "physical_never_disappeared": physical_never_disappeared,
         "virtual_holding": nd_win::topology::virtual_screen_holding(),
     });
     println!(
