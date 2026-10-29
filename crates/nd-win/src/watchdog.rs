@@ -174,6 +174,11 @@ pub fn restore_everything() {
                 tracing::warn!(error = %e, "看门狗恢复显示拓扑失败");
             }
         }
+        if state.power_plan.is_some() {
+            if let Err(e) = crate::power_plan::restore_saved() {
+                tracing::warn!(error = %e, "看门狗恢复电源计划失败");
+            }
+        }
     }
     // 配置写成白天，避免下次启动又以为自己在夜间。
     let _ = nd_core::config::Config::update(|c| {

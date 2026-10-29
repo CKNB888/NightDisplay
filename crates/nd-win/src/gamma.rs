@@ -64,8 +64,11 @@ fn device_dc(device: &str) -> Option<HDC> {
     }
 }
 
-/// 对当前所有显示器把 gamma 压到 0，并保存原始值。
-pub fn apply() -> LayerStatus {
+/// 读取并保存所有显示输出的原始 gamma ramp。**不改任何显示设置**。
+///
+/// 单独拆出来是因为"先把恢复数据落盘、再动屏幕"这条硬要求：
+/// 原始 ramp 必须在压黑之前就拿到手里。
+pub fn capture() -> LayerStatus {
     let displays = match overlay::display_devices() {
         Ok(list) if !list.is_empty() => list,
         Ok(_) => {
@@ -95,29 +98,18 @@ pub fn apply() -> LayerStatus {
         let mut original = vec![0u16; 768];
         // SAFETY: original 长度固定为 768 个 u16，符合 API 要求。
         let got = unsafe { GetDeviceGammaRamp(hdc, original.as_mut_ptr().cast()) };
-        if !got.as_bool() {
-            // SAFETY: hdc 由本函数创建。
-            unsafe {
-                let _ = DeleteDC(hdc);
-            }
-            failures.push(format!("{device}: 读取原始 gamma 失败，跳过而不冒险"));
-            continue;
-        }
-        let black = black_ramp();
-        // SAFETY: black 同样是 768 个 u16。
-        let set = unsafe { SetDeviceGammaRamp(hdc, black.as_ptr().cast()) };
-        // SAFETY: hdc 由本函数创建，使用完毕立即释放。
+        // SAFETY: hdc 由本函数创建。
         unsafe {
             let _ = DeleteDC(hdc);
         }
-        if set.as_bool() {
+        if got.as_bool() {
             applied += 1;
             saved.push(SavedGamma {
                 device,
                 ramp: original,
             });
         } else {
-            failures.push(format!("{device}: 驱动拒绝把 gamma 设为 0"));
+            failures.push(format!("{device}: 读取原始 gamma 失败，跳过而不冒险"));
         }
     }
 
@@ -131,10 +123,61 @@ pub fn apply() -> LayerStatus {
         };
     }
     if !failures.is_empty() {
+        tracing::warn!(detail = %failures.join("；"), "部分显示器 gamma 读取失败");
+    }
+    tracing::info!(applied, "已读取原始 gamma");
+    LayerStatus::Applied
+}
+
+/// 把保存的原始 ramp 对应的输出全部压成黑。必须先 [`capture`]。
+pub fn blacken() -> LayerStatus {
+    let saved = SAVED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if saved.is_empty() {
+        return LayerStatus::Unsupported {
+            reason: "没有可用的 gamma 备份（读取失败）".into(),
+        };
+    }
+    let black = black_ramp();
+    let mut applied = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+    for entry in saved.iter() {
+        let Some(hdc) = device_dc(&entry.device) else {
+            failures.push(format!("{}: 无法打开显示设备", entry.device));
+            continue;
+        };
+        // SAFETY: black 是 768 个 u16，符合 API 要求。
+        let ok = unsafe { SetDeviceGammaRamp(hdc, black.as_ptr().cast()) }.as_bool();
+        // SAFETY: hdc 由本函数创建。
+        unsafe {
+            let _ = DeleteDC(hdc);
+        }
+        if ok {
+            applied += 1;
+        } else {
+            failures.push(format!("{}: 驱动拒绝把 gamma 设为 0", entry.device));
+        }
+    }
+    if applied == 0 {
+        return LayerStatus::Failed {
+            reason: failures.join("；"),
+        };
+    }
+    if !failures.is_empty() {
         tracing::warn!(detail = %failures.join("；"), "部分显示器 gamma 未能设为 0");
     }
     tracing::info!(applied, "gamma 已拉到全黑");
     LayerStatus::Applied
+}
+
+/// 读取原始值并立刻压黑。等价于 [`capture`] + [`blacken`]。
+pub fn apply() -> LayerStatus {
+    let status = capture();
+    if !matches!(status, LayerStatus::Applied) {
+        return status;
+    }
+    blacken()
 }
 
 /// 还原所有保存过的 gamma ramp。进程崩溃后由看门狗调用同一函数。

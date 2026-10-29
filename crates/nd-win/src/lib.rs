@@ -53,6 +53,7 @@ pub mod pipe;
 pub mod platform;
 #[cfg(windows)]
 pub mod power;
+pub mod power_plan;
 #[cfg(windows)]
 pub mod runtime;
 pub mod screen_state;

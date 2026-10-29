@@ -34,8 +34,16 @@ pub struct ScreenState {
     pub displays: Vec<DisplayState>,
     /// 进入夜间的时刻，用于判断快照是否过期。
     pub entered_at: Option<chrono::DateTime<chrono::Local>>,
-    /// 是否曾切到 `virtual_only（需要还原拓扑`）。
+    /// 是否曾切到虚拟屏（需要还原显示拓扑）。
+    ///
+    /// 这个标志在**提交拓扑切换之前**就写成 `true`：如果进程在
+    /// `SetDisplayConfig` 之后、写文件之前被杀掉，下次启动看到的是
+    /// "可能改过拓扑"，会走一遍还原（幂等，白天还原是无操作）。
     pub topology_changed: bool,
+    /// 夜间开始前的电源计划 GUID（`{8c5e7fda-...}` 这种格式）。
+    ///
+    /// 只在用户开了"夜间高性能"时才有值；白天必须切回这一个。
+    pub power_plan: Option<String>,
 }
 
 #[must_use]
@@ -104,6 +112,7 @@ mod tests {
                 }],
                 entered_at: None,
                 topology_changed: false,
+                power_plan: None,
             };
             save(&state).unwrap();
             let back = load().unwrap();

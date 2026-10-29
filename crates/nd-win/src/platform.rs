@@ -28,6 +28,9 @@ use crate::sysutil;
 use crate::tasks;
 use crate::topology;
 
+/// 夜间用的高性能电源计划 GUID（Windows 内置的「高性能」）。
+const HIGH_PERFORMANCE_PLAN: &str = "{8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c}";
+
 /// Windows 平台实现。
 pub struct WinPlatform {
     /// 界面线程句柄。第一次需要时创建（CLI 的 `status` 不该为此起线程）。
@@ -90,6 +93,66 @@ impl WinPlatform {
             .is_some()
     }
 
+    /// 写入（并返回）夜间前的恢复点：原始 gamma、背光、电源计划、拓扑标志。
+    ///
+    /// **必须在改动任何显示设置之前调用。** 断电、蓝屏、任务管理器结束进程
+    /// 都只会发生在两次写盘之间，只要恢复点先落地，下一次启动（或看门狗）
+    /// 就有东西可还原。
+    ///
+    /// `topology_will_change` 传 `true` 表示马上要切拓扑：那就把标志也一起写进去，
+    /// 这样"已经切了但还没来得及回写"这种窗口期同样被覆盖。
+    fn write_restore_point(topology_will_change: bool) -> NdResult<ScreenState> {
+        // gamma 只读不写：先把原始 ramp 拿到手，压黑在真正需要时再做。
+        if matches!(gamma::capture(), LayerStatus::Failed { .. }) {
+            tracing::warn!("部分显示器读不到原始 gamma，恢复时只能用线性 ramp 兜底");
+        }
+        let mut state = ScreenState {
+            displays: Vec::new(),
+            entered_at: Some(chrono::Local::now()),
+            topology_changed: topology_will_change,
+            power_plan: None,
+        };
+        for (device, ramp) in gamma::snapshot() {
+            state.displays.push(DisplayState {
+                device,
+                gamma: ramp,
+                brightness: None,
+                description: String::new(),
+            });
+        }
+        // 背光：现在读一次原始值（不改成 0，那一步由 enter_guard 负责）。
+        if let Ok(control) = brightness::Control::open() {
+            for (description, value) in control.snapshot() {
+                match state
+                    .displays
+                    .iter_mut()
+                    .find(|display| display.description == description)
+                {
+                    Some(entry) => entry.brightness = Some(value),
+                    None => state.displays.push(DisplayState {
+                        device: String::new(),
+                        gamma: Vec::new(),
+                        brightness: Some(value),
+                        description,
+                    }),
+                }
+            }
+        }
+        // 电源计划：只有用户真的要求夜间高性能时才记，白天不该乱切。
+        if Config::load().is_ok_and(|config| config.high_performance_at_night) {
+            state.power_plan = crate::power_plan::active();
+        }
+        crate::screen_state::save(&state)
+            .map_err(|e| nd_core::error::user(format!("无法写入屏幕恢复点：{e}")))?;
+        tracing::info!(
+            displays = state.displays.len(),
+            topology = topology_will_change,
+            plan = state.power_plan.as_deref().unwrap_or("（不切换）"),
+            "已写入屏幕恢复点"
+        );
+        Ok(state)
+    }
+
     /// 提前把界面线程和黑幕窗口建好（常驻进程启动时调用）。
     ///
     /// 这样夜间开始时只剩一次 `ShowWindow`，第一帧黑屏的延迟能压到毫秒级，
@@ -138,6 +201,15 @@ impl Platform for WinPlatform {
         let effective = nd_core::mode::resolve(requested);
         let guard_cfg = cfg.guard.clone();
         let started = std::time::Instant::now();
+
+        // 0) 恢复点先落盘，再动任何显示设置（断电/被杀都只会落在两次写盘之间）。
+        if let Err(e) = Self::write_restore_point(false) {
+            // 写不了恢复点就别开始：宁可这一夜没黑屏，也不能留下改不回来的屏幕。
+            return Err(nd_core::error::user(format!(
+                "无法写入屏幕恢复点，已放弃本次黑屏：{}",
+                nd_core::error::one_line(&e)
+            )));
+        }
 
         // 1) 黑幕：必须在界面线程上显示并校验采集排除。
         let outcomes: Vec<OverlayOutcome> = ui.call(|state| state.overlays.show())?;
@@ -205,11 +277,20 @@ impl Platform for WinPlatform {
         };
 
         // 4) 落盘原始状态：主进程被杀时看门狗要靠它恢复。
-        let mut state = ScreenState {
-            displays: displays_state,
-            entered_at: Some(chrono::Local::now()),
-            topology_changed: false,
-        };
+        //    注意这一步已经晚了（gamma 和背光在 2/3 步就改了），所以真正的
+        //    恢复点是在 enter_guard 一开始写的那一份；这里只是把它补全。
+        let mut state = crate::screen_state::load().unwrap_or_default();
+        state.entered_at = Some(chrono::Local::now());
+        for entry in displays_state {
+            match state
+                .displays
+                .iter_mut()
+                .find(|display| display.description == entry.description)
+            {
+                Some(existing) => existing.brightness = entry.brightness,
+                None => state.displays.push(entry),
+            }
+        }
         for (device, ramp) in gamma::snapshot() {
             match state.displays.iter_mut().find(|d| d.device == device) {
                 Some(entry) => entry.gamma = ramp,
@@ -274,6 +355,13 @@ impl Platform for WinPlatform {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = None;
+        // 电源计划必须在清掉恢复点之前切回去。
+        if let Err(e) = crate::power_plan::restore_saved() {
+            errors.push(format!(
+                "恢复电源计划失败：{}",
+                crate::error::user_text(&e, "未知原因")
+            ));
+        }
         crate::screen_state::clear();
         if errors.is_empty() {
             Ok(())
@@ -345,25 +433,37 @@ impl Platform for WinPlatform {
         }
         tracing::info!(summary = %armed.summary(), "虚拟屏已预热");
 
-        // 2) 入夜：一次 SetDisplayConfig 摘掉实体屏的桌面。
+        // 2) 先写恢复数据，再动拓扑。
+        //    顺序不能反：断电/被杀只会发生在两次写盘之间，那时恢复数据已经在了。
+        let restore_point = Self::write_restore_point(true)?;
+
+        // 3) 入夜：一次 SetDisplayConfig 摘掉实体屏的桌面。
         let report = topology::detach(match_pat, false)?;
         if report.applied {
-            // 先落盘"拓扑被改过"，看门狗/下次启动据此还原。
-            let mut state = crate::screen_state::load().unwrap_or_default();
-            state.topology_changed = true;
-            state.entered_at = Some(chrono::Local::now());
-            if let Err(e) = crate::screen_state::save(&state) {
-                tracing::warn!(error = %e, "无法保存拓扑状态，异常退出后可能不会自动还原");
-            }
-            tracing::warn!(
+            tracing::info!(
                 active = report.active_after,
                 summary = %report.summary(),
                 "已把桌面交给虚拟屏"
             );
+            if let Some(plan) = restore_point.power_plan.as_deref() {
+                // 拓扑已经切过去了，再切电源计划；失败只警告，不影响夜间成立。
+                if let Err(e) = crate::power_plan::set(HIGH_PERFORMANCE_PLAN) {
+                    tracing::warn!(error = %e, plan, "夜间切换电源计划失败");
+                } else {
+                    tracing::info!(plan, "夜间已切到高性能电源计划");
+                }
+            }
         } else if report.error.is_some() {
             // 入夜这一步失败：把预热撤掉，回到原样，不留半成品。
             if let Err(e) = topology::reattach() {
                 tracing::warn!(error = %nd_core::error::one_line(&e), "回滚预热时出错");
+            }
+            // 拓扑没变，恢复点也该撤掉，免得白天误跑一次还原。
+            let mut state = restore_point;
+            state.topology_changed = false;
+            state.power_plan = None;
+            if let Err(e) = crate::screen_state::save(&state) {
+                tracing::warn!(error = %e, "回滚后重写恢复点失败");
             }
         }
         Ok(report)
@@ -376,10 +476,11 @@ impl Platform for WinPlatform {
             let level = topology::restore()?;
             tracing::warn!(level, "路径集还原失败，已用兜底方式还原");
         }
-        if let Some(mut state) = crate::screen_state::load() {
-            state.topology_changed = false;
-            let _ = crate::screen_state::save(&state);
+        // 拓扑还原之后再切电源计划：顺序反了会让显卡重新协商一次模式。
+        if let Err(e) = crate::power_plan::restore_saved() {
+            tracing::warn!(error = %e, "恢复电源计划失败");
         }
+        crate::screen_state::clear();
         Ok(())
     }
 

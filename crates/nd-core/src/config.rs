@@ -108,6 +108,11 @@ pub struct Config {
     pub strict_local_input: bool,
     /// 夜间抑制系统锁屏，避免登录界面盖住黑幕。
     pub suppress_lock: bool,
+    /// 夜间是否把电源计划切到「高性能」（白天原样切回）。
+    ///
+    /// 默认关闭：多数人不需要，切计划会改变风扇/降频行为。
+    /// 打开后原始计划 GUID 会写进 `screen-state.json`，异常退出也能切回来。
+    pub high_performance_at_night: bool,
     pub guard: GuardSettings,
     /// 虚拟屏名称匹配（正则），仅 `virtual_only` 用。
     pub virtual_match: String,
@@ -153,6 +158,7 @@ impl Default for Config {
             keep_awake: true,
             strict_local_input: true,
             suppress_lock: true,
+            high_performance_at_night: false,
             guard: GuardSettings::default(),
             virtual_match: String::new(),
             theme: Theme::Dark,
