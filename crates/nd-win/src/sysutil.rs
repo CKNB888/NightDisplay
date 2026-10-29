@@ -6,7 +6,7 @@
 
 use std::ffi::OsStr;
 use std::os::windows::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
 use windows::Win32::System::Threading::{
@@ -71,6 +71,42 @@ pub fn command_line(exe: &std::path::Path, args: &[String]) -> String {
     parts.push(quote(&exe.display().to_string()));
     parts.extend(args.iter().map(|a| quote(a)));
     parts.join(" ")
+}
+
+/// 在资源管理器里定位一个文件（选中它）或打开一个文件夹。
+///
+/// `explorer.exe` 即使成功也会返回 1，所以不看它的退出码，只看能不能起得来。
+pub fn open_in_explorer(path: &Path) -> std::io::Result<()> {
+    if !path.exists() {
+        tracing::warn!(path = %path.display(), "要打开的位置不存在");
+        return Ok(());
+    }
+    let arg = if path.is_dir() {
+        path.display().to_string()
+    } else {
+        format!("/select,{}", path.display())
+    };
+    run_hidden(OsStr::new("explorer"), &[arg.as_str()], "资源管理器").map(|_| ())
+}
+
+/// 用系统默认浏览器打开一个 http(s) 链接。
+///
+/// 只接受 `http://` / `https://`：这里的 URL 会原样交给 shell，
+/// 别的协议（`file:`、`javascript:`、自定义协议）一律拒绝。
+pub fn open_url(url: &str) -> std::io::Result<()> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "只支持 http/https 链接",
+        ));
+    }
+    run_hidden(
+        OsStr::new("rundll32"),
+        &["url.dll,FileProtocolHandler", trimmed],
+        "浏览器",
+    )
+    .map(|_| ())
 }
 
 /// 跑一个命令并等它结束，不弹控制台窗口。stdout/stderr 一并收回来。

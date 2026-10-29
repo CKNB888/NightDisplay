@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NightDisplay</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app" class="app" data-page="home">
+  <!-- 自定义标题栏：可拖动，右侧是窗口按钮 -->
+  <header class="titlebar" data-tauri-drag-region>
+    <div class="brand" data-tauri-drag-region>
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <defs>
+          <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#38bdf8"/><stop offset="1" stop-color="#22d3ee"/>
+          </linearGradient>
+        </defs>
+        <rect x="1" y="1" width="30" height="30" rx="9" fill="#111821" stroke="rgba(56,189,248,.35)"/>
+        <path d="M20.5 9.5a7.2 7.2 0 1 0 3.6 10.9 6 6 0 0 1-3.6-10.9z" fill="url(#bg)"/>
+        <circle cx="23.5" cy="9" r="1.6" fill="#22d3ee"/>
+      </svg>
+      <span class="brand-name">NightDisplay</span>
+      <span class="brand-tag" id="brand-state">加载中</span>
+    </div>
+    <div class="win-buttons">
+      <button class="win-btn" id="win-min" title="最小化" aria-label="最小化">
+        <svg viewBox="0 0 10 10"><path d="M2 5h6"/></svg>
+      </button>
+      <button class="win-btn" id="win-max" title="最大化/还原" aria-label="最大化">
+        <svg viewBox="0 0 10 10"><rect x="2.2" y="2.2" width="5.6" height="5.6" rx="1"/></svg>
+      </button>
+      <button class="win-btn win-close" id="win-close" title="关闭到托盘" aria-label="关闭">
+        <svg viewBox="0 0 10 10"><path d="M2.5 2.5l5 5M7.5 2.5l-5 5"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="shell">
+    <!-- 左侧导航 -->
+    <nav class="sidebar">
+      <button class="nav-item" data-target="home">
+        <svg viewBox="0 0 20 20"><path d="M3 9.5 10 3l7 6.5V17a1 1 0 0 1-1 1h-4v-5H8v5H4a1 1 0 0 1-1-1z"/></svg>
+        <span>首页</span>
+      </button>
+      <button class="nav-item" data-target="schedule">
+        <svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="13" rx="2.5"/><path d="M3 8h14M7 2.5v3M13 2.5v3"/></svg>
+        <span>定时计划</span>
+      </button>
+      <button class="nav-item" data-target="mode">
+        <svg viewBox="0 0 20 20"><rect x="2.5" y="3.5" width="15" height="10" rx="2"/><path d="M7 17h6M10 13.5V17"/></svg>
+        <span>显示模式</span>
+      </button>
+      <button class="nav-item" data-target="logs">
+        <svg viewBox="0 0 20 20"><path d="M5 3h7l3 3v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M7.5 9h5M7.5 12h5M7.5 15h3"/></svg>
+        <span>运行日志</span>
+        <i class="nav-dot" id="nav-log-dot" hidden></i>
+      </button>
+      <button class="nav-item" data-target="settings">
+        <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.6"/><path d="M10 2.6v2M10 15.4v2M3.4 10h2M14.6 10h2M5.3 5.3l1.4 1.4M13.3 13.3l1.4 1.4M14.7 5.3l-1.4 1.4M6.7 13.3l-1.4 1.4"/></svg>
+        <span>设置</span>
+      </button>
+      <button class="nav-item" data-target="about">
+        <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7"/><path d="M10 9v5M10 6.4v.2"/></svg>
+        <span>关于</span>
+      </button>
+      <div class="sidebar-foot">
+        <div class="mini" id="side-summary">正在读取状态…</div>
+        <div class="mini dim" id="side-daemon"></div>
+      </div>
+    </nav>
+
+    <!-- 内容区 -->
+    <main class="main">
+      <!-- ============ 首页 ============ -->
+      <section class="page" data-page="home">
+        <div class="page-head">
+          <div>
+            <h1>今晚的屏幕</h1>
+            <p class="sub" id="home-sub">正在读取…</p>
+          </div>
+          <div class="head-actions">
+            <button class="btn ghost" id="btn-test">测试 15 秒</button>
+            <button class="btn primary" id="btn-night">立即黑屏</button>
+          </div>
+        </div>
+
+        <div class="grid home-grid">
+          <article class="card ring-card">
+            <div class="ring-wrap">
+              <svg class="ring" viewBox="0 0 220 220">
+                <defs>
+                  <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0" stop-color="#38bdf8"/><stop offset="1" stop-color="#22d3ee"/>
+                  </linearGradient>
+                </defs>
+                <circle class="ring-track" cx="110" cy="110" r="94"/>
+                <circle class="ring-value" id="ring-value" cx="110" cy="110" r="94"/>
+              </svg>
+              <div class="ring-info">
+                <div class="ring-state" id="ring-state">白天</div>
+                <div class="ring-time" id="ring-time">--:--:--</div>
+                <div class="ring-hint" id="ring-hint">正在计算下一次切换…</div>
+              </div>
+            </div>
+            <div class="ring-legend">
+              <div><span class="dot ok"></span><b id="legend-mode">—</b><i>当前生效</i></div>
+              <div><span class="dot" id="legend-daemon-dot"></span><b id="legend-daemon">—</b><i>后台服务</i></div>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="card-head">
+              <h2>状态</h2>
+              <button class="link" id="btn-refresh">刷新</button>
+            </div>
+            <div class="kv" id="home-kv"></div>
+            <div class="row gap">
+              <button class="btn" id="btn-day">恢复显示</button>
+              <button class="btn" id="btn-pause">暂停今天</button>
+            </div>
+          </article>
+
+          <article class="card wide">
+            <div class="card-head">
+              <h2>这台机器</h2>
+              <span class="tag" id="tag-build">—</span>
+            </div>
+            <div class="chips" id="home-chips"></div>
+            <ul class="mono-list" id="home-monitors"></ul>
+          </article>
+        </div>
+
+        <article class="card" id="home-warning" hidden>
+          <div class="card-head"><h2>需要处理</h2></div>
+          <p class="warn-text" id="home-warning-text"></p>
+          <button class="btn primary" id="btn-go-onboarding">打开安装向导</button>
+        </article>
+      </section>
+
+      <!-- ============ 定时计划 ============ -->
+      <section class="page" data-page="schedule" hidden>
+        <div class="page-head">
+          <div>
+            <h1>定时计划</h1>
+            <p class="sub">每天到这个时间段就自动进入夜间；跨过午夜也没问题。</p>
+          </div>
+          <div class="head-actions">
+            <button class="btn primary" id="btn-save-schedule">保存并启用</button>
+          </div>
+        </div>
+        <div class="grid">
+          <article class="card">
+            <div class="card-head"><h2>夜间时段</h2><span class="tag" id="tag-range-len">—</span></div>
+            <div class="row gap align-end">
+              <label class="field">
+                <span>开始（黑屏）</span>
+                <input type="time" id="in-start" step="60" />
+              </label>
+              <label class="field">
+                <span>结束（恢复）</span>
+                <input type="time" id="in-end" step="60" />
+              </label>
+            </div>
+            <p class="hint" id="range-hint">例：20:00 → 10:30 表示晚上八点黑屏，第二天上午十点半恢复。</p>
+            <div class="row gap">
+              <button class="btn" data-preset="20:00,10:30">20:00–10:30</button>
+              <button class="btn" data-preset="22:00,08:00">22:00–08:00</button>
+              <button class="btn" data-preset="23:30,07:00">23:30–07:00</button>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="card-head"><h2>每日计划</h2></div>
+            <div class="switch-row">
+              <div>
+                <b>启用每天自动黑屏</b>
+                <p class="hint">启用前必须先用「测试 15 秒」确认一次远程能看到画面。</p>
+              </div>
+              <button class="switch" id="sw-enabled" role="switch" aria-checked="false"><i></i></button>
+            </div>
+            <div class="notice" id="enable-notice" hidden></div>
+            <div class="kv compact" id="schedule-kv"></div>
+          </article>
+        </div>
+      </section>
+
+      <!-- ============ 显示模式 ============ -->
+      <section class="page" data-page="mode" hidden>
+        <div class="page-head">
+          <div>
+            <h1>显示模式</h1>
+            <p class="sub">决定「黑屏」具体怎么做。默认用虚拟屏，切不过去会自动降级并如实告诉你。</p>
+          </div>
+        </div>
+        <div class="grid mode-grid" id="mode-grid"></div>
+        <article class="card">
+          <div class="card-head"><h2>这台机器的能力</h2></div>
+          <div class="kv compact" id="mode-kv"></div>
+          <p class="hint">
+            虚拟屏模式需要内置驱动（安装向导里装）。它把桌面交给一块虚拟显示器，
+            实体屏保持点亮但不带桌面 —— 远程软件看到的是虚拟屏上的桌面，不会黑。
+          </p>
+        </article>
+      </section>
+
+      <!-- ============ 运行日志 ============ -->
+      <section class="page" data-page="logs" hidden>
+        <div class="page-head">
+          <div>
+            <h1>运行日志</h1>
+            <p class="sub">昨晚到底哪一步没成，看这里就够了。</p>
+          </div>
+          <div class="head-actions">
+            <button class="btn ghost" id="btn-open-logs">打开日志目录</button>
+            <button class="btn primary" id="btn-diag">导出诊断包</button>
+          </div>
+        </div>
+
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="session">夜间会话</button>
+          <button class="tab" data-tab="files">日志文件</button>
+        </div>
+
+        <div class="tab-panel" data-panel="session">
+          <article class="card" id="current-session-card" hidden>
+            <div class="card-head">
+              <h2>正在进行的会话</h2>
+              <span class="tag accent" id="current-session-trace">—</span>
+            </div>
+            <div class="steps" id="current-session-steps"></div>
+          </article>
+          <div id="session-list" class="session-list"></div>
+          <article class="card empty" id="session-empty" hidden>
+            <p>还没有夜间记录。第一次自动黑屏之后，这里会列出每一步的结果和耗时。</p>
+          </article>
+        </div>
+
+        <div class="tab-panel" data-panel="files" hidden>
+          <div class="log-layout">
+            <aside class="log-list">
+              <div class="log-files" id="log-files"></div>
+            </aside>
+            <article class="card log-view">
+              <div class="card-head">
+                <h2 id="log-title">选择一个日志文件</h2>
+                <div class="row gap">
+                  <button class="link" id="btn-log-refresh">重新读取</button>
+                  <button class="link" id="btn-log-reveal">定位文件</button>
+                </div>
+              </div>
+              <p class="hint" id="log-meta"></p>
+              <pre class="log-body" id="log-body">左侧选择一个日志文件。</pre>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ 设置 ============ -->
+      <section class="page" data-page="settings" hidden>
+        <div class="page-head">
+          <div>
+            <h1>设置</h1>
+            <p class="sub">所有改动都会立刻落到配置里；需要写系统计划的任务会先写系统、成功了才保存。</p>
+          </div>
+        </div>
+
+        <div class="grid">
+          <article class="card">
+            <div class="card-head"><h2>启动与后台</h2></div>
+            <div class="switch-row">
+              <div>
+                <b>开机自启</b>
+                <p class="hint">同时登记 Run 键、登录计划和开机计划三条路径，断电重启后也能起来。</p>
+              </div>
+              <button class="switch" id="sw-autostart" role="switch" aria-checked="false"><i></i></button>
+            </div>
+            <div class="kv compact" id="autostart-kv"></div>
+          </article>
+
+          <article class="card">
+            <div class="card-head"><h2>本地防触控</h2></div>
+            <div class="switch-row">
+              <div>
+                <b>夜间吞掉本机键鼠</b>
+                <p class="hint">远程软件注入的操作照常放行；本机实体键盘鼠标被忽略，避免把黑幕点掉。</p>
+              </div>
+              <button class="switch" id="sw-strict" role="switch" aria-checked="false"><i></i></button>
+            </div>
+            <div class="switch-row">
+              <div>
+                <b>夜间抑制系统锁屏</b>
+                <p class="hint">不抑制的话，锁屏界面会盖在黑幕上，远程可能看到登录画面。</p>
+              </div>
+              <button class="switch" id="sw-lock" role="switch" aria-checked="false"><i></i></button>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="card-head"><h2>解锁组合键</h2></div>
+            <div class="row gap align-end">
+              <label class="field grow">
+                <span>组合键</span>
+                <input type="text" id="in-chord" placeholder="Ctrl+Alt+N" spellcheck="false" />
+              </label>
+              <label class="field">
+                <span>按住（毫秒）</span>
+                <input type="number" id="in-hold" min="100" max="5000" step="50" />
+              </label>
+            </div>
+            <p class="hint">夜间按住这个组合键可以立刻恢复显示，并且本段剩余时间不再黑屏。</p>
+            <button class="btn" id="btn-save-chord">保存组合键</button>
+          </article>
+
+          <article class="card">
+            <div class="card-head"><h2>夜间行为</h2></div>
+            <div class="switch-row">
+              <div><b>夜间阻止睡眠</b><p class="hint">远程长时间不操作时，机器不会睡过去。</p></div>
+              <button class="switch" id="sw-awake" role="switch" aria-checked="false"><i></i></button>
+            </div>
+            <div class="switch-row">
+              <div><b>夜间使用高性能电源计划</b><p class="hint">白天恢复成原来的电源计划。</p></div>
+              <button class="switch" id="sw-perf" role="switch" aria-checked="false"><i></i></button>
+            </div>
+          </article>
+
+          <article class="card wide">
+            <div class="card-head"><h2>排障</h2></div>
+            <div class="row gap wrap">
+              <button class="btn" id="btn-repair">重新授权 / 修复</button>
+              <button class="btn" id="btn-selfcheck">查看自检</button>
+              <button class="btn" id="btn-diag2">导出诊断包</button>
+              <button class="btn" id="btn-open-home">打开数据目录</button>
+            </div>
+            <div class="kv compact" id="paths-kv"></div>
+          </article>
+        </div>
+      </section>
+
+      <!-- ============ 关于 ============ -->
+      <section class="page" data-page="about" hidden>
+        <div class="page-head">
+          <div><h1>关于</h1><p class="sub">夜间本地黑屏，远程照常。</p></div>
+        </div>
+        <div class="grid">
+          <article class="card">
+            <div class="card-head"><h2>NightDisplay <span id="about-version" class="tag accent">—</span></h2></div>
+            <p class="body-text" id="about-text"></p>
+            <pre class="log-body short" id="about-status">—</pre>
+          </article>
+          <article class="card">
+            <div class="card-head"><h2>设计取舍</h2></div>
+            <ul class="bullets">
+              <li><b>界面不提权。</b>装驱动、写计划任务都交给一个常驻的提升助手，界面本身永远是普通权限。</li>
+              <li><b>引擎不在界面里。</b>关掉窗口不会影响今晚的黑屏；界面只是它的遥控器。</li>
+              <li><b>三条自启路径。</b>断电重启、强杀进程之后也能自己恢复，看门狗兜底。</li>
+              <li><b>失败要说清楚。</b>每一步都给出真实结果：成功 / 跳过 / 需要手动处理（带命令）。</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 安装向导（覆盖整窗） -->
+  <div class="wizard" id="wizard" hidden>
+    <div class="wizard-card">
+      <header class="wizard-head">
+        <div>
+          <h2 id="wizard-title">安装向导</h2>
+          <p class="hint" id="wizard-sub">只弹一次管理员确认，之后夜间切换不再打扰。</p>
+        </div>
+        <button class="link" id="wizard-close">稍后再说</button>
+      </header>
+      <div class="wizard-steps" id="wizard-steps"></div>
+      <footer class="wizard-foot">
+        <div class="wizard-left">
+          <label class="check" id="confirm-wrap">
+            <input type="checkbox" id="wizard-confirm" />
+            <span>已确认远程能连（自检黑屏时远程能看到并操作画面）</span>
+          </label>
+          <div class="wizard-note" id="wizard-note"></div>
+        </div>
+        <div class="row gap">
+          <button class="btn" id="wizard-retry" hidden>重试失败的步骤</button>
+          <button class="btn primary" id="wizard-start">开始</button>
+          <button class="btn primary" id="wizard-finish" hidden>完成</button>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

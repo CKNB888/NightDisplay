@@ -20,6 +20,11 @@ tracing-subscriber.workspace = true
 rand.workspace = true
 regex.workspace = true
 
+[features]
+# 暴露 `engine::testing::FakePlatform`，给别的 crate 的单元测试当假平台层用。
+# 生产构建不会启用（只在 dev-dependencies 里打开）。
+testing = []
+
 [dev-dependencies]
 tempfile = "3"
 

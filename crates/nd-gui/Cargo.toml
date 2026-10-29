@@ -23,5 +23,9 @@ tracing.workspace = true
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-single-instance = "2"
 
+[dev-dependencies]
+nd-core = { workspace = true, features = ["testing"] }
+tempfile = "3"
+
 [lints]
 workspace = true

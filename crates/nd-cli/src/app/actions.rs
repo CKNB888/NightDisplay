@@ -47,35 +47,22 @@ fn ask_daemon(
 }
 
 // ----------------------------------------------------------------------
-// 图形界面占位
+// 图形界面
 // ----------------------------------------------------------------------
 
-/// 第二阶段（Tauri）才有的图形界面。现在如实引导用户走向导。
+/// 图形界面（Tauri 2 + WebView2）。
+///
+/// 界面和命令行是**同一个可执行文件**：双击、或者不带参数运行就进界面，
+/// 带 `--action xxx` 就是一次性命令。这样计划任务、自启注册指向的路径永远只有一个，
+/// 不会出现"任务拉起的 exe 没有界面"这种事。
+///
+/// `--tray`（旧版启动项）只是登录时对齐一次，不打开窗口打扰用户。
 pub fn gui(args: &Args) -> Result<ExitCode> {
-    // 已有常驻进程时，`--tray` 只是登录时对齐一次，不打扰用户。
-    if (args.tray || args.action == "tray") && ask_daemon("reconcile", None)?.is_some() {
+    let tray_boot = args.tray || args.action == "tray";
+    if tray_boot && ask_daemon("reconcile", None)?.is_some() {
         return Ok(ExitCode::SUCCESS);
     }
-    let state = onboarding::load_state();
-    println!(
-        "NightDisplay {} —— 夜间本地黑屏，远程照常",
-        nd_core::VERSION
-    );
-    println!("作者 {} ｜ 反馈联系 {}", nd_core::AUTHOR, nd_core::CONTACT);
-    println!();
-    if state.should_show() {
-        println!("图形界面会在 4.1 版本提供。现在请先运行一次安装向导：");
-        println!("    NightDisplay --action setup");
-        println!();
-        println!("它会替你申请一次管理员权限，做完之后夜间切换就不再弹窗。");
-    } else {
-        println!("图形界面会在 4.1 版本提供。现在可以用这些命令：");
-        println!("    NightDisplay --action status     查看状态");
-        println!("    NightDisplay --action test       测试 15 秒");
-        println!("    NightDisplay --action activate   启用每日计划");
-        println!("    NightDisplay --action serve      让托盘/常驻进程在后台运行");
-    }
-    Ok(ExitCode::from(2))
+    nd_gui::run()
 }
 
 // ----------------------------------------------------------------------

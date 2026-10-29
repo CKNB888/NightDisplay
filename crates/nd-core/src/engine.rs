@@ -1115,9 +1115,14 @@ pub fn manual_night_until(
     Some(entered + TimeDelta::seconds(secs2))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub mod testing {
     //! 假平台层，供引擎测试使用。
+    //!
+    //! 开启 `testing` 特性时这个模块会被**当作正式代码**编译（别的 crate 的
+    //! 测试要用它），所以这里的 lint 待遇和测试代码不同：测试替身本来就要
+    //! 把父模块的整套类型一次性拿进来，逐项列出来只会更难读。
+    #![allow(clippy::wildcard_imports)]
 
     use super::*;
     use crate::mode::{LayerStatus, OverlayOutcome};
