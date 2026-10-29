@@ -19,6 +19,7 @@
 #![cfg(windows)]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use windows::Win32::Foundation::LUID;
 
@@ -308,6 +309,63 @@ pub fn backup() -> Result<DisplayBackup> {
     })
 }
 
+/// 自本次进程启动以来 `SetDisplayConfig` 的真实调用次数（按标志分开统计）。
+///
+/// 这是给自检、诊断包和 Windows QA 用的**事实**，不是估算：
+/// 用户抱怨的"闪一下""远程冻住"都跟"到底改了几次显示配置"直接相关，
+/// 所以宁可在这里记一笔，也不要在报告里写"应该只有一次"。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ApplyStats {
+    /// 带 `SDC_VALIDATE` 的调用次数（只校验，不改配置）。
+    pub validate_calls: u64,
+    /// 带 `SDC_APPLY` 且传入了完整路径集的调用次数（真正改拓扑）。
+    pub apply_calls: u64,
+    /// 带 `SDC_APPLY` 但没传路径集的调用次数（`SDC_TOPOLOGY_*` 之类的快捷调用）。
+    pub apply_shortcut_calls: u64,
+    /// 提交时路径集里活动 target 的最小值。`0` 表示**出现过零 target** —— 这正是要避免的。
+    pub min_active_submitted: u32,
+    /// 是否有任何一次提交换走了最后一块活动屏。
+    pub ever_zero_target: bool,
+    /// 最近一次提交的耗时（毫秒）。
+    pub last_apply_ms: u64,
+}
+
+static STATS_VALIDATE: AtomicU64 = AtomicU64::new(0);
+static STATS_APPLY: AtomicU64 = AtomicU64::new(0);
+static STATS_APPLY_SHORTCUT: AtomicU64 = AtomicU64::new(0);
+static STATS_MIN_ACTIVE: AtomicU64 = AtomicU64::new(u64::MAX);
+static STATS_ZERO: AtomicBool = AtomicBool::new(false);
+static STATS_LAST_MS: AtomicU64 = AtomicU64::new(0);
+
+/// 读取累计统计（不会清零）。
+#[must_use]
+pub fn apply_stats() -> ApplyStats {
+    let min = STATS_MIN_ACTIVE.load(Ordering::SeqCst);
+    ApplyStats {
+        validate_calls: STATS_VALIDATE.load(Ordering::SeqCst),
+        apply_calls: STATS_APPLY.load(Ordering::SeqCst),
+        apply_shortcut_calls: STATS_APPLY_SHORTCUT.load(Ordering::SeqCst),
+        // 从没提交过时报告 0 而不是 u64::MAX。
+        min_active_submitted: if min == u64::MAX {
+            0
+        } else {
+            u32::try_from(min).unwrap_or(u32::MAX)
+        },
+        ever_zero_target: STATS_ZERO.load(Ordering::SeqCst),
+        last_apply_ms: STATS_LAST_MS.load(Ordering::SeqCst),
+    }
+}
+
+/// 把统计清零，QA 每轮开始时调用，好让每次断言只看自己那一段。
+pub fn reset_apply_stats() {
+    STATS_VALIDATE.store(0, Ordering::SeqCst);
+    STATS_APPLY.store(0, Ordering::SeqCst);
+    STATS_APPLY_SHORTCUT.store(0, Ordering::SeqCst);
+    STATS_MIN_ACTIVE.store(u64::MAX, Ordering::SeqCst);
+    STATS_ZERO.store(false, Ordering::SeqCst);
+    STATS_LAST_MS.store(0, Ordering::SeqCst);
+}
+
 /// 一次切换的完整计划：提交给 `SetDisplayConfig` 的**全部**路径和模式。
 ///
 /// 关键在于"完整"：`SDC_USE_SUPPLIED_DISPLAY_CONFIG` 只认传进来的这一份，
@@ -570,13 +628,33 @@ pub fn plan_detach(match_pat: &str) -> Result<SwitchPlan> {
     })
 }
 
+/// 提交前的硬不变量：这一份路径集里**必须**还有活动 target。
+///
+/// 这是整套方案的核心承诺 —— "任何一次提交都不会让活动显示数变成 0"。
+/// 一旦计划有问题，宁可在这里直接失败（屏幕保持原样），也绝不提交一个
+/// 会把桌面摘空的配置：那种提交正是用户看到的"闪一下、远程黑屏"。
+fn guard_active_targets(plan: &SwitchPlan) -> Result<()> {
+    let active = plan.paths.iter().filter(|p| is_active(p)).count();
+    STATS_MIN_ACTIVE.fetch_min(u64::try_from(active).unwrap_or(0), Ordering::SeqCst);
+    if active == 0 {
+        STATS_ZERO.store(true, Ordering::SeqCst);
+        tracing::error!("计划里没有任何活动显示，拒绝提交（屏幕保持原样）");
+        return Err(nd_core::error::user(
+            "计划里没有任何活动显示，已拒绝提交（屏幕保持原样）",
+        ));
+    }
+    Ok(())
+}
+
 /// 校验 + 应用，**各一次** `SetDisplayConfig`。
 ///
 /// 校验不过就返回错误，什么都不改；应用失败也只是返回错误，不留半成品。
 fn commit(plan: &SwitchPlan, dry_run: bool) -> Result<(u64, u64, u64)> {
+    guard_active_targets(plan)?;
     let flags = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES;
 
     let t0 = std::time::Instant::now();
+    STATS_VALIDATE.fetch_add(1, Ordering::SeqCst);
     // SAFETY: 路径数组和模式数组都按完整长度传入，索引都在范围内。
     let status =
         unsafe { SetDisplayConfig(Some(&plan.paths), Some(&plan.modes), SDC_VALIDATE | flags) };
@@ -592,10 +670,12 @@ fn commit(plan: &SwitchPlan, dry_run: bool) -> Result<(u64, u64, u64)> {
     }
 
     let t1 = std::time::Instant::now();
+    STATS_APPLY.fetch_add(1, Ordering::SeqCst);
     // SAFETY: 与校验时完全相同的参数，只多了 SDC_APPLY。
     let status =
         unsafe { SetDisplayConfig(Some(&plan.paths), Some(&plan.modes), SDC_APPLY | flags) };
     let apply_ms = t1.elapsed().as_millis() as u64;
+    STATS_LAST_MS.store(apply_ms, Ordering::SeqCst);
     if status != 0 {
         return Err(nd_core::error::user(format!(
             "提交显示配置失败（{}）",
@@ -870,6 +950,7 @@ pub fn restore() -> Result<&'static str> {
     ];
     let mut tried = Vec::new();
     for (label, flag) in attempts {
+        STATS_APPLY_SHORTCUT.fetch_add(1, Ordering::SeqCst);
         // SAFETY: 只用拓扑标志，标准兜底恢复方式。
         let status = unsafe { SetDisplayConfig(None, None, SDC_APPLY | flag) };
         if status != 0 {

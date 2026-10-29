@@ -215,10 +215,66 @@ jobs:
           }
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
+  # 深度 Windows QA：在真实的 Windows 桌面会话里装一遍、跑一遍，
+  # 专门验用户抱怨的那几件事（零目标提交、闪屏、远程冻住、误恢复）。
+  #
+  # 为什么单独一个 job、为什么跑两轮：
+  # * 单元测试证明不了"驱动的真实行为"，只有装上跑一遍才算数；
+  # * 两个 Windows 版本 + 每版两轮，因为这类 bug 常常是偶发的。
+  deep-qa:
+    name: 深度 QA（${{ matrix.os }} · 第 ${{ matrix.round }} 轮）
+    needs: [windows, package]
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2022]
+        round: [1, 2]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: qa
+      - uses: actions/download-artifact@v4
+        with:
+          name: NightDisplay-windows-x64
+          path: dist
+      - name: 确认拿到安装包
+        shell: pwsh
+        run: |
+          Get-ChildItem dist | Format-Table Name, Length | Out-String | Write-Host
+          if (-not (Test-Path "dist\NightDisplay-4.0.0-Setup.exe")) { throw "没有 Setup.exe" }
+      - name: 允许安装未签名的测试驱动
+        shell: pwsh
+        run: |
+          # CI 里的 runner 没有交互桌面，pnputil 安装内核驱动需要一个签名策略放行；
+          # 这里只放宽测试期，不改变产品行为。
+          bcdedit /set testsigning on 2>$null | Out-Null
+          Write-Host "testsigning 已尝试设置（需要重启才生效，装不上时会走人工复核路径）"
+      - name: 深度 QA（第 ${{ matrix.round }} 轮）
+        shell: pwsh
+        run: |
+          python tools/deep_qa/qa_deep.py
+          if ($LASTEXITCODE -ne 0) { throw "深度 QA 第 ${{ matrix.round }} 轮失败（退出码 $LASTEXITCODE）" }
+      - name: 上传 QA 结果与诊断包
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-qa-${{ matrix.os }}-r${{ matrix.round }}
+          path: |
+            qa-out/qa-report.md
+            qa-out/qa-results.json
+            qa-out/diag-final
+            qa-out/home/logs
+          if-no-files-found: warn
+
   # 正式 Release：只在打出 v* 标签时跑，直接用已经验证过的产物。
   release:
     name: 发布 Release
-    needs: [windows, package]
+    needs: [windows, package, deep-qa]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

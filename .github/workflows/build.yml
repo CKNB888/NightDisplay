@@ -2,12 +2,11 @@ name: legacy-python
 # 3.x（Python 版）的构建与发布。代码已经整体挪到 legacy-python/，
 # 4.x 的 Rust 重写在 .github/workflows/rust.yml 里跑。
 #
-# **只在 main 和 tag 上跑**：重写分支上不占用 runner，也不产出旧版安装包。
-# 平台只保留 Windows —— 3.x 的 macOS / Linux 支持在 4.x 里已经取消。
+# **只在改写分支上手动触发**：3.x 的代码保留在 legacy-python/ 供对照，
+# 但它已经不再是发布物。4.x 的发布走 rust.yml，所以这里**不能**再监听 tag ——
+# 否则打 v4.0.0 时会同时拉起这个 job，它的版本校验（3.0.12 != 4.0.0）必然失败，
+# 还会和 rust.yml 的 Release job 抢同一个 tag。
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
   workflow_dispatch:
 permissions:
   contents: write

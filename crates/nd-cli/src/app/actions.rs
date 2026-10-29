@@ -298,6 +298,65 @@ pub fn export_diag(dir: Option<&str>) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// 显示切换的实测统计（JSON）+ 当前所有显示路径。
+///
+/// 这是 Windows QA 用的探针，也是排障时最有说服力的一段证据：
+/// * `apply_calls` —— 这次进程里到底改了几次显示配置；
+/// * `min_active_submitted` —— 每次提交时活动 target 的最小值，`0` 是不允许出现的；
+/// * `physical_never_disappeared` —— 实体屏是否一直留在 `QueryDisplayConfig` 的
+///   完整路径集里（这是"远程采集表面没死"的代理指标）。
+pub fn probe() -> Result<ExitCode> {
+    let stats = nd_win::topology::apply_stats();
+    // 完整路径集（QDC_ALL_PATHS）：没被接进桌面的屏也必须还在。
+    let all = nd_win::topology::describe(false)?;
+    let active: Vec<_> = all.iter().filter(|d| d.active).collect();
+    let physical_total = all
+        .iter()
+        .filter(|d| !nd_win::topology::is_virtual(d))
+        .count();
+    let virtual_total = all.len() - physical_total;
+    let physical_never_disappeared = physical_total > 0;
+    let report = serde_json::json!({
+        "stats": stats,
+        "displays": all.iter().map(|d| serde_json::json!({
+            "target_id": d.target_id,
+            "active": d.active,
+            "virtual": nd_win::topology::is_virtual(d),
+            "tech": d.tech,
+            "name": d.name,
+            "device_path": d.device_path,
+        })).collect::<Vec<_>>(),
+        // 活动屏的真实信号时序：虚拟屏和实体屏的模式是否一致，
+        // QA 就是拿这两个数字比出来的。
+        "active_modes": nd_win::topology::monitor_modes().unwrap_or_default()
+            .iter()
+            .map(|m| serde_json::json!({
+                "name": m.name,
+                "width": m.width,
+                "height": m.height,
+                "refresh_hz": m.refresh_hz,
+                "virtual": m.virtual_output,
+            })).collect::<Vec<_>>(),
+        "active_count": active.len(),
+        "physical_count": physical_total,
+        "virtual_count": virtual_total,
+        "physical_never_disappeared": physical_never_disappeared,
+        "virtual_holding": nd_win::topology::virtual_screen_holding(),
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".into())
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+/// 把显示切换统计清零（QA 每轮开始时用，让断言只看自己这一段）。
+pub fn probe_reset() -> ExitCode {
+    nd_win::topology::reset_apply_stats();
+    println!("已清零显示切换统计。");
+    ExitCode::SUCCESS
+}
+
 /// 本机能力，和旧版 `--action env` 对应。
 pub fn env() -> Result<ExitCode> {
     let caps = nd_win::current_capabilities();
