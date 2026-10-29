@@ -256,6 +256,9 @@ jobs:
           Write-Host "testsigning 已尝试设置（需要重启才生效，装不上时会走人工复核路径）"
       - name: 深度 QA（第 ${{ matrix.round }} 轮）
         shell: pwsh
+        # 单步上限，避免一个卡住的调用把整轮 40 分钟的预算吃光：
+        # 卡住时要尽快失败并留下日志，而不是等到作业超时被 cancel（那样连报告都没有）。
+        timeout-minutes: 20
         run: |
           python tools/deep_qa/qa_deep.py
           if ($LASTEXITCODE -ne 0) { throw "深度 QA 第 ${{ matrix.round }} 轮失败（退出码 $LASTEXITCODE）" }

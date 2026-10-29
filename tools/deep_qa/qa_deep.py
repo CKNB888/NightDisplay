@@ -28,6 +28,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -44,6 +45,12 @@ EXE_INSTALLED = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "NightDi
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
+
+# Windows：不弹黑窗口；新进程组便于整组结束。
+# 只在 Windows 上有意义；在别的系统上留 0，脚本仍能被静态检查和非 Windows 环境读一遍。
+_ON_WINDOWS = os.name == "nt"
+CREATE_NO_WINDOW = 0x0800_0000 if _ON_WINDOWS else 0
+CREATE_NEW_PROCESS_GROUP = 0x0000_0200 if _ON_WINDOWS else 0
 
 results = []
 timings = {}
@@ -65,25 +72,83 @@ def note(name, value):
 
 
 def run(args, timeout=180, exe=EXE_INSTALLED, check_code=True):
-    """Run the app with an isolated data directory and return (code, output)."""
+    """Run the app once and return (code, output).
+
+    Everything is captured through temp files and the whole process tree is
+    killed on the deadline. The naive `subprocess.run(capture_output=True)`
+    hangs forever here: the app hands privileged work to a detached helper
+    that inherits our stdout handle, so the pipe never reaches EOF even after
+    the app we started has exited. Reading files cannot block on that, and the
+    deadline is enforced by us rather than by a pipe that may never close.
+    """
     env = dict(os.environ)
     env["NIGHTDISPLAY_HOME"] = str(HOME)
     started = time.monotonic()
-    proc = subprocess.run(
-        [str(exe), *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        env=env,
-    )
+
+    with tempfile.NamedTemporaryFile(
+        "wb", suffix=".out", delete=False, dir=str(OUT)
+    ) as fh_out, tempfile.NamedTemporaryFile(
+        "wb", suffix=".err", delete=False, dir=str(OUT)
+    ) as fh_err:
+        out_path, err_path = Path(fh_out.name), Path(fh_err.name)
+        try:
+            proc = subprocess.Popen(
+                [str(exe), *args],
+                stdout=fh_out,
+                stderr=fh_err,
+                stdin=subprocess.DEVNULL,
+                env=env,
+                creationflags=CREATE_NEW_PROCESS_GROUP,
+            )
+        except OSError as exc:
+            return 1, f"无法启动 {exe}：{exc}"
+
+        timed_out = False
+        try:
+            code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            code = -1
+            kill_tree(proc.pid)
+
     elapsed = (time.monotonic() - started) * 1000
-    out = (proc.stdout or "") + (proc.stderr or "")
-    if check_code and proc.returncode != 0:
-        say(f"--- {args} exited {proc.returncode} after {elapsed:.0f} ms")
+    out = _read_text(out_path) + _read_text(err_path)
+    # Windows 不允许删除仍被别的进程打开的文件；常驻进程可能还攥着这个句柄。
+    # 删不掉就留在 qa-out 里，绝不能让清理动作把整轮 QA 弄崩。
+    for path in (out_path, err_path):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    if timed_out:
+        say(f"--- {args} 超过 {timeout}s 仍未退出，已强制结束整个进程树")
+        check(f"{' '.join(args)} 在 {timeout}s 内返回", False, f"超时 {elapsed:.0f} ms")
+        return code, out
+    if check_code and code != 0:
+        say(f"--- {args} exited {code} after {elapsed:.0f} ms")
         say(out.rstrip())
-    return proc.returncode, out
+    return code, out
+
+
+def _read_text(path):
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def kill_tree(pid):
+    """Kill a process and everything it spawned. Best effort, never raises."""
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True,
+            timeout=30,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except Exception:  # noqa: BLE001 - cleanup must not mask the real failure
+        pass
 
 
 def probe():
@@ -124,14 +189,15 @@ class Continuity(threading.Thread):
     def run(self):
         while not self._stop.is_set():
             try:
-                env = dict(os.environ)
-                env["NIGHTDISPLAY_HOME"] = str(HOME)
-                proc = subprocess.run(
-                    [str(EXE_INSTALLED), "--action", "probe"],
-                    capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=30, env=env,
-                )
-                body = proc.stdout[proc.stdout.find("{"):]
+                # 走 run()：它用文件收输出、到点杀整棵进程树。
+                # 这里绝不能再直接用 capture_output，否则一旦有子进程攥着句柄
+                # 就会把采样线程卡死，进而把整轮 QA 拖到作业超时。
+                code, out = run(["--action", "probe"], timeout=30, check_code=False)
+                if code != 0:
+                    self.errors += 1
+                    self._stop.wait(self.interval)
+                    continue
+                body = out[out.find("{"):]
                 snap = json.loads(body)
                 phys = snap["physical_count"]
                 active = snap["active_count"]
