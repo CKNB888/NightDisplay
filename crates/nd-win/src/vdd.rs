@@ -112,10 +112,15 @@ pub fn install() -> Result<String> {
     if installed() {
         // 驱动在，但设备可能被禁用/移除：仍然验证一遍虚拟屏能不能枚举到。
         return match verify_ready() {
-            Ok(report) => Ok(format!(
-                "虚拟显示驱动已安装，虚拟屏 {} 已在待命（不改动桌面布局）",
-                report.label()
-            )),
+            Ok(report) => {
+                // 驱动本来就在：顺手把预热补上，之后入夜仍然只需要一次提交。
+                let prewarm = crate::topology::prewarm("").ok();
+                Ok(format!(
+                    "虚拟显示驱动已安装，虚拟屏 {} 已在待命（不改动桌面布局）{}",
+                    report.label(),
+                    describe_prewarm(prewarm.as_ref())
+                ))
+            }
             Err(e) => Err(nd_core::error::user(format!(
                 "驱动已安装，但虚拟屏没有出现在显示配置里：{}\n{}",
                 crate::error::user_text(&e, "查询显示配置失败"),
@@ -149,9 +154,11 @@ pub fn install() -> Result<String> {
         match verify_ready() {
             Ok(report) => {
                 tracing::info!(display = %report.label(), "虚拟显示驱动安装成功");
+                let prewarm = crate::topology::prewarm("").ok();
                 return Ok(format!(
-                    "虚拟显示驱动已安装，虚拟屏 {} 已在待命（不改动桌面布局）",
-                    report.label()
+                    "虚拟显示驱动已安装，虚拟屏 {} 已在待命（不改动桌面布局）{}",
+                    report.label(),
+                    describe_prewarm(prewarm.as_ref())
                 ));
             }
             Err(e) => {
@@ -209,6 +216,18 @@ pub fn uninstall() -> Result<String> {
 /// 这一步是向导的验收标准：只有它通过，第 2 步才算 ok。
 pub fn verify_ready() -> Result<crate::topology::StandbyReport> {
     crate::topology::verify_standby()
+}
+
+/// 预热结果拼成一句人话（装完驱动顺手接好虚拟屏）。
+fn describe_prewarm(report: Option<&nd_core::mode::VirtualReport>) -> String {
+    match report {
+        Some(r) if r.applied => "，并已接进桌面待命（入夜只需一次切换）".into(),
+        Some(r) => format!(
+            "；但没能预热（{}），入夜时会再试一次",
+            r.error.clone().unwrap_or_else(|| "未知原因".into())
+        ),
+        None => String::new(),
+    }
 }
 
 /// 给状态文本用的一句话。

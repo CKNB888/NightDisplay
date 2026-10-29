@@ -225,11 +225,15 @@ fn revive_daemon(attempts: u32) -> bool {
     false
 }
 
-/// 重新拉起常驻进程（夜间状态还在的话它会自己把黑幕搭回去）。
+/// 重新拉起常驻进程。
+///
+/// 注意这里**不**看配置里的白天/夜间状态：`restore_everything()` 已经把状态
+/// 写回白天了，若再拿"是不是夜间"当条件，这段代码永远不会执行 ——
+/// 常驻进程被杀掉之后，计划、托盘、看门狗链条就全断了，用户下次也不会被自动黑屏。
+/// 常驻进程本身就是"守着计划"的那一环，白天它在也只是空转，代价可以忽略。
 fn restart_daemon() -> Result<()> {
-    let cfg = nd_core::config::Config::load().unwrap_or_default();
-    if cfg.state != nd_core::config::RunState::Night {
-        tracing::info!("当前不是夜间，不重启常驻进程");
+    if daemon_running() {
+        tracing::info!("常驻进程已经在跑，不需要重启");
         return Ok(());
     }
     let args = crate::sysutil::self_args(&nd_core::paths::home_dir(), &["--action", "serve"]);
