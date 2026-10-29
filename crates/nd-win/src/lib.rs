@@ -59,6 +59,7 @@ pub mod runtime;
 pub mod screen_state;
 #[cfg(windows)]
 pub mod setup;
+pub mod shutdown;
 #[cfg(windows)]
 pub mod sysutil;
 #[cfg(windows)]

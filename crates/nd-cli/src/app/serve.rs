@@ -41,6 +41,10 @@ pub fn serve() -> Result<ExitCode> {
         .map_err(|e| nd_core::error::user(format!("无法创建数据目录：{e}")))?;
 
     let platform = WinPlatform::new();
+    // 关机/注销时先还原屏幕：用户下次开机不该看到黑着的桌面。
+    if let Err(e) = nd_win::shutdown::install() {
+        tracing::warn!(error = %e, "注册关机收尾失败，仍有看门狗兜底");
+    }
     // 预热：把黑幕窗口先建好藏起来，晚上直接显示。
     if let Err(e) = platform.warm() {
         // 预热失败不算致命：真到夜间会再试一次，失败会如实报告。
@@ -49,6 +53,8 @@ pub fn serve() -> Result<ExitCode> {
     // 起看门狗：本进程被结束时它负责把 gamma / 背光 / 拓扑还原。
     watchdog::clear_clean_exit_marker();
     let engine = Engine::new(&platform);
+    // 上次是不是没走完就没了？是的话先把屏幕救回来。
+    recover_after_crash(&engine);
     if let Err(e) = engine.platform.spawn_watchdog() {
         tracing::warn!(error = %e, "看门狗启动失败，主功能仍然可用");
     }
@@ -130,6 +136,38 @@ fn run_loop(platform: &std::sync::Arc<WinPlatform>) {
         std::thread::sleep(if night { TICK_NIGHT } else { TICK_DAY });
     }
     tracing::info!("常驻进程循环结束");
+}
+
+/// 启动时的对账：上次异常退出留下的残局要先收拾干净。
+///
+/// 三种情况：
+/// * 有残留的恢复点（`screen-state.json` 还在）—— 说明上次没走到 `day()`，
+///   日志里明确写一行「上次异常退出」，然后按恢复点还原屏幕；
+/// * 配置里还写着"夜间"—— 说明进程被杀在写状态之后，按当前时间决定
+///   继续夜间（时段内）还是恢复白天（时段外）；
+/// * 什么都没有 —— 正常启动，什么都不做。
+fn recover_after_crash(engine: &Engine<WinPlatform>) {
+    let leftover = nd_core::paths::screen_state_file().is_file();
+    let cfg = Config::load();
+    let was_night = cfg
+        .as_ref()
+        .is_ok_and(|c| c.state == nd_core::config::RunState::Night);
+    if !leftover && !was_night {
+        return;
+    }
+    tracing::warn!(
+        leftover_restore_point = leftover,
+        config_says_night = was_night,
+        "上次异常退出（没有走完正常恢复），开始对账"
+    );
+    println!("检测到上次没有正常退出，正在恢复屏幕……");
+    if leftover {
+        watchdog::restore_everything();
+    }
+    match engine.reconcile(chrono::Local::now()) {
+        Ok(outcome) => tracing::info!(message = %outcome.message, "启动对账完成"),
+        Err(e) => tracing::error!(error = %e, "启动对账失败"),
+    }
 }
 
 /// 处理一条本地请求。返回 `(回复, 是否要求退出)`。
