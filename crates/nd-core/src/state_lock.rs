@@ -67,15 +67,13 @@ pub fn write_lock_timeout(path: impl AsRef<Path>, timeout: Duration) -> anyhow::
     let file = open(path.as_ref())?;
     let deadline = Instant::now() + timeout;
     loop {
-        match file.try_lock() {
-            Ok(()) => return Ok(FileLock { file }),
-            Err(_) => {
-                if Instant::now() >= deadline {
-                    return Err(NdError::Busy.into());
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
+        if let Ok(()) = file.try_lock() {
+            return Ok(FileLock { file });
         }
+        if Instant::now() >= deadline {
+            return Err(NdError::Busy.into());
+        }
+        std::thread::sleep(Duration::from_millis(25));
     }
 }
 

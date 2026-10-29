@@ -80,7 +80,9 @@ pub fn apply() -> LayerStatus {
         }
     };
 
-    let mut saved = SAVED.lock().unwrap_or_else(|e| e.into_inner());
+    let mut saved = SAVED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     saved.clear();
     let mut applied = 0usize;
     let mut failures: Vec<String> = Vec::new();
@@ -92,7 +94,7 @@ pub fn apply() -> LayerStatus {
         };
         let mut original = vec![0u16; 768];
         // SAFETY: original 长度固定为 768 个 u16，符合 API 要求。
-        let got = unsafe { GetDeviceGammaRamp(hdc, original.as_mut_ptr() as *mut _) };
+        let got = unsafe { GetDeviceGammaRamp(hdc, original.as_mut_ptr().cast()) };
         if !got.as_bool() {
             // SAFETY: hdc 由本函数创建。
             unsafe {
@@ -103,7 +105,7 @@ pub fn apply() -> LayerStatus {
         }
         let black = black_ramp();
         // SAFETY: black 同样是 768 个 u16。
-        let set = unsafe { SetDeviceGammaRamp(hdc, black.as_ptr() as *const _) };
+        let set = unsafe { SetDeviceGammaRamp(hdc, black.as_ptr().cast()) };
         // SAFETY: hdc 由本函数创建，使用完毕立即释放。
         unsafe {
             let _ = DeleteDC(hdc);
@@ -137,7 +139,9 @@ pub fn apply() -> LayerStatus {
 
 /// 还原所有保存过的 gamma ramp。进程崩溃后由看门狗调用同一函数。
 pub fn restore() -> Result<()> {
-    let mut saved = SAVED.lock().unwrap_or_else(|e| e.into_inner());
+    let mut saved = SAVED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if saved.is_empty() {
         // 没有内存里的备份（例如是另一个进程进来恢复），从磁盘读。
         if let Some(disk) = crate::screen_state::load_gamma() {
@@ -169,7 +173,7 @@ fn write_ramp(device: &str, ramp: &[u16]) {
         return;
     };
     // SAFETY: ramp 长度已检查为 768 个 u16。
-    let ok = unsafe { SetDeviceGammaRamp(hdc, ramp.as_ptr() as *const _) }.as_bool();
+    let ok = unsafe { SetDeviceGammaRamp(hdc, ramp.as_ptr().cast()) }.as_bool();
     // SAFETY: hdc 由本函数创建。
     unsafe {
         let _ = DeleteDC(hdc);
@@ -183,7 +187,9 @@ fn write_ramp(device: &str, ramp: &[u16]) {
 
 /// 当前保存的原始 ramp，供写入磁盘备份。
 pub fn snapshot() -> Vec<(String, Vec<u16>)> {
-    let saved = SAVED.lock().unwrap_or_else(|e| e.into_inner());
+    let saved = SAVED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     saved
         .iter()
         .map(|s| (s.device.clone(), s.ramp.clone()))
@@ -191,6 +197,7 @@ pub fn snapshot() -> Vec<(String, Vec<u16>)> {
 }
 
 /// 判断当前系统是否允许设置 gamma（有些远程/虚拟驱动会拒绝）。
+#[must_use]
 pub fn supported() -> bool {
     let Ok(list) = overlay::display_devices() else {
         return false;
@@ -199,7 +206,7 @@ pub fn supported() -> bool {
         if let Some(hdc) = device_dc(&device) {
             let mut ramp = vec![0u16; 768];
             // SAFETY: ramp 长度正确。
-            let ok = unsafe { GetDeviceGammaRamp(hdc, ramp.as_mut_ptr() as *mut _) }.as_bool();
+            let ok = unsafe { GetDeviceGammaRamp(hdc, ramp.as_mut_ptr().cast()) }.as_bool();
             // SAFETY: hdc 由本函数创建。
             unsafe {
                 let _ = DeleteDC(hdc);

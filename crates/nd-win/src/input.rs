@@ -56,7 +56,8 @@ static MOUSE_HOOK: Mutex<Option<isize>> = Mutex::new(None);
 /// 钩子所在的线程 id，卸载时要用它 `PostThreadMessage` 唤醒消息循环。
 static HOOK_THREAD: AtomicI32 = AtomicI32::new(0);
 
-/// 把 ChordKey 映射成 Windows 虚拟键码。
+/// 把 `ChordKey` 映射成 Windows 虚拟键码。
+#[must_use]
 pub fn vk_for(key: ChordKey) -> Option<u32> {
     let vk = match key {
         ChordKey::Ctrl => VK_CONTROL,
@@ -67,13 +68,13 @@ pub fn vk_for(key: ChordKey) -> Option<u32> {
             VIRTUAL_KEY(VK_A.0 + (c.to_ascii_uppercase() as u16 - 'A' as u16))
         }
         ChordKey::Char(c) if c.is_ascii_digit() => VIRTUAL_KEY(VK_0.0 + (c as u16 - '0' as u16)),
-        ChordKey::Function(n) if (1..=12).contains(&n) => VIRTUAL_KEY(VK_F1.0 + (n as u16 - 1)),
+        ChordKey::Function(n) if (1..=12).contains(&n) => VIRTUAL_KEY(VK_F1.0 + (u16::from(n) - 1)),
         ChordKey::Space => VK_SPACE,
         ChordKey::Tab => VK_TAB,
         ChordKey::Esc => VK_ESCAPE,
         _ => return None,
     };
-    Some(vk.0 as u32)
+    Some(u32::from(vk.0))
 }
 
 /// 配置组合键。`modifier` 标记只是记录用途，判定时统一按虚拟键码比较。
@@ -100,9 +101,9 @@ pub fn configure_chord(keys: &[ChordKey], hold_ms: u64) {
 fn alt_vk(vk: i32) -> Vec<i32> {
     match VIRTUAL_KEY(vk as u16) {
         VK_CONTROL => vec![0xA2, 0xA3], // VK_LCONTROL / VK_RCONTROL
-        VK_MENU => vec![0xA0, 0xA1],    // VK_LMENU / VK_RMENU
-        VK_SHIFT => vec![0xA0, 0xA1],   // VK_LSHIFT / VK_RSHIFT
-        VK_LWIN => vec![VK_RWIN.0 as i32],
+        // VK_LMENU / VK_RMENU 与 VK_LSHIFT / VK_RSHIFT 都是 0xA0 / 0xA1。
+        VK_MENU | VK_SHIFT => vec![0xA0, 0xA1],
+        VK_LWIN => vec![i32::from(VK_RWIN.0)],
         _ => vec![],
     }
 }
@@ -138,14 +139,14 @@ pub fn run_message_loop() {
     let mut msg = MSG::default();
     loop {
         // SAFETY: 标准消息循环；msg 是本栈上的有效结构。
-        let got = unsafe { GetMessageW(&mut msg, None, 0, 0) };
+        let got = unsafe { GetMessageW(&raw mut msg, None, 0, 0) };
         if got.0 <= 0 {
             break;
         }
         // SAFETY: 消息来自 GetMessageW。
         unsafe {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            let _ = TranslateMessage(&raw const msg);
+            DispatchMessageW(&raw const msg);
         }
     }
     stop();
@@ -184,15 +185,21 @@ pub fn start(keys: &[ChordKey], hold_ms: u64, strict_mode: bool) -> anyhow::Resu
     unsafe {
         let kb = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0)
             .map_err(|e| anyhow::anyhow!("安装键盘钩子失败：{e}"))?;
-        *KEYBOARD_HOOK.lock().unwrap_or_else(|e| e.into_inner()) = Some(kb.0 as isize);
+        *KEYBOARD_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(kb.0 as isize);
         match SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), None, 0) {
             Ok(mouse) => {
-                *MOUSE_HOOK.lock().unwrap_or_else(|e| e.into_inner()) = Some(mouse.0 as isize);
+                *MOUSE_HOOK
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(mouse.0 as isize);
             }
             Err(e) => {
                 // 鼠标钩子失败就把键盘钩子也撤掉，不留半套。
                 let _ = UnhookWindowsHookEx(HHOOK(kb.0));
-                *KEYBOARD_HOOK.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                *KEYBOARD_HOOK
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                 return Err(anyhow::anyhow!("安装鼠标钩子失败：{e}"));
             }
         }
@@ -216,12 +223,16 @@ pub fn stop() {
     unsafe {
         if let Some(hook) = KEYBOARD_HOOK
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
             let _ = UnhookWindowsHookEx(HHOOK(hook as *mut core::ffi::c_void));
         }
-        if let Some(hook) = MOUSE_HOOK.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(hook) = MOUSE_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
             let _ = UnhookWindowsHookEx(HHOOK(hook as *mut core::ffi::c_void));
         }
     }
@@ -235,7 +246,7 @@ pub fn stop() {
     );
 }
 
-/// 组合键当前是否都按着（用 GetAsyncKeyState 查全局状态）。
+/// 组合键当前是否都按着（用 `GetAsyncKeyState` 查全局状态）。
 fn chord_down_now() -> bool {
     let list = match CHORD_VK.lock() {
         Ok(l) => l.clone(),
@@ -275,7 +286,7 @@ fn chord_down_now() -> bool {
     })
 }
 
-/// 用 GetTickCount 取毫秒时间戳。
+/// 用 `GetTickCount` 取毫秒时间戳。
 fn now_ms() -> u64 {
     // SAFETY: 纯查询。
     unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
@@ -404,10 +415,10 @@ mod tests {
 
     #[test]
     fn modifier_gets_both_sides() {
-        let alts = alt_vk(VK_CONTROL.0 as i32);
+        let alts = alt_vk(i32::from(VK_CONTROL.0));
         assert_eq!(alts, vec![0xA2, 0xA3]);
-        let alts = alt_vk(VK_LWIN.0 as i32);
-        assert_eq!(alts, vec![VK_RWIN.0 as i32]);
+        let alts = alt_vk(i32::from(VK_LWIN.0));
+        assert_eq!(alts, vec![i32::from(VK_RWIN.0)]);
     }
 
     #[test]

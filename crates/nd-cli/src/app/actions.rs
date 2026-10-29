@@ -50,9 +50,9 @@ fn ask_daemon(
 // ----------------------------------------------------------------------
 
 /// 第二阶段（Tauri）才有的图形界面。现在如实引导用户走向导。
-pub fn gui(_args: &Args) -> Result<ExitCode> {
+pub fn gui(args: &Args) -> Result<ExitCode> {
     // 已有常驻进程时，`--tray` 只是登录时对齐一次，不打扰用户。
-    if (_args.tray || _args.action == "tray") && ask_daemon("reconcile", None)?.is_some() {
+    if (args.tray || args.action == "tray") && ask_daemon("reconcile", None)?.is_some() {
         return Ok(ExitCode::SUCCESS);
     }
     let state = onboarding::load_state();
@@ -124,7 +124,7 @@ pub fn setup(args: &Args) -> Result<ExitCode> {
         .map(|s| step_from_name(s))
         .collect::<NdResult<Vec<_>>>()?;
     let options = SetupOptions {
-        install_vdd: args.vdd,
+        install_vdd: !args.no_vdd,
         self_test_seconds: args.seconds.clamp(3, 60),
         only,
         ..Default::default()
@@ -146,14 +146,14 @@ pub fn setup(args: &Args) -> Result<ExitCode> {
         // 不能因为"还有别的步骤没跑"就报失败。
         let bad = results.iter().filter(|r| r.outcome.failed_hard()).count();
         if bad > 0 {
-            println!("{} 个步骤需要处理，见上面每条的“下一步”。", bad);
+            println!("{bad} 个步骤需要处理，见上面每条的“下一步”。");
             println!("{}", state.log_hint());
             return Ok(ExitCode::from(1));
         }
         println!("指定的步骤都处理完了。");
         return Ok(ExitCode::SUCCESS);
     }
-    finish_wizard(&mut state, &options)
+    Ok(finish_wizard(&mut state, &options))
 }
 
 /// `--action repair`：重新授权 / 修复，只重跑失败的步骤。
@@ -171,16 +171,16 @@ pub fn repair(args: &Args) -> Result<ExitCode> {
             .collect::<Vec<_>>()
             .join("、")
     );
-    let results = setup::repair(&mut state, args.vdd)?;
+    let results = setup::repair(&mut state, !args.no_vdd)?;
     for result in &results {
         print_step(result);
     }
     println!();
-    finish_wizard(&mut state, &SetupOptions::default())
+    Ok(finish_wizard(&mut state, &SetupOptions::default()))
 }
 
 /// 向导收尾：必需步骤都过了就写完成状态，否则列出没过的步骤。
-fn finish_wizard(state: &mut Onboarding, options: &SetupOptions) -> Result<ExitCode> {
+fn finish_wizard(state: &mut Onboarding, options: &SetupOptions) -> ExitCode {
     let pending: Vec<&str> = Step::ALL
         .iter()
         .filter(|s| s.required())
@@ -191,7 +191,7 @@ fn finish_wizard(state: &mut Onboarding, options: &SetupOptions) -> Result<ExitC
         println!("还有这些必需步骤没有完成：{}", pending.join("、"));
         println!("按上面每条的“下一步”做完，再运行：NightDisplay --action repair");
         println!("{}", state.log_hint());
-        return Ok(ExitCode::from(1));
+        return ExitCode::from(1);
     }
     // 自检已经让用户看过黑屏；命令行里不能再弹一个勾选框，
     // 所以按"用户主动跑完向导"记为已确认，并把确认点写进日志。
@@ -211,11 +211,11 @@ fn finish_wizard(state: &mut Onboarding, options: &SetupOptions) -> Result<ExitC
             println!(
                 "        NightDisplay --action activate --start 20:00 --end 10:30 启用每日计划。"
             );
-            Ok(ExitCode::SUCCESS)
+            ExitCode::SUCCESS
         }
-        Err(e) => {
-            println!("{}", nd_core::error::one_line(&e));
-            Ok(ExitCode::from(1))
+        Err(error) => {
+            println!("{}", nd_core::error::one_line(&error));
+            ExitCode::from(1)
         }
     }
 }
@@ -228,7 +228,7 @@ fn completed_text(state: &Onboarding) -> String {
 }
 
 /// `--action onboarding`：打印每一步的真实结果，支持排障。
-pub fn onboarding_report() -> Result<ExitCode> {
+pub fn onboarding_report() -> ExitCode {
     let state = onboarding::load_state();
     println!(
         "向导状态：{}",
@@ -263,7 +263,7 @@ pub fn onboarding_report() -> Result<ExitCode> {
         println!("运行 NightDisplay --action repair 只重跑这些步骤。");
     }
     println!("{}", state.log_hint());
-    Ok(ExitCode::SUCCESS)
+    ExitCode::SUCCESS
 }
 
 // ----------------------------------------------------------------------
@@ -347,22 +347,33 @@ pub fn displays() -> Result<ExitCode> {
         );
     }
     println!();
-    println!("提示：默认的防窥黑幕不会改动这里的任何一项。");
+    println!("提示：虚拟屏模式只会摘掉实体屏的桌面，上面的输出不会消失。");
     Ok(ExitCode::SUCCESS)
 }
 
+/// 演练虚拟屏切换：先校验「预热」，再校验「入夜」，**都不应用**。
+///
+/// 这台机器的显卡/驱动能不能做到"一次调用、不闪"，就在这一步看得出来。
 pub fn plan_virtual() -> Result<ExitCode> {
-    let platform = WinPlatform::new();
     let cfg = Config::load()?;
-    let engine = Engine::new(&platform);
-    match engine.platform.enter_virtual_only(&cfg.virtual_match, true) {
-        Ok(text) => {
-            println!("{text}");
-            println!("这只是演练，显示配置没有改动。真要使用请设置模式后手动切换。");
-            Ok(ExitCode::SUCCESS)
-        }
-        Err(e) => Err(e),
+    let arm = nd_win::topology::arm(&cfg.virtual_match, true)?;
+    println!("① 预热（虚拟屏接入桌面，复制模式）：校验通过");
+    println!("   {}", arm.summary());
+    println!();
+    // 入夜校验要在"预热已生效"的前提下才有意义。这里只能校验当前拓扑，
+    // 所以如果虚拟屏还没接进桌面，就说明需要先预热。
+    let holding = nd_win::topology::virtual_screen_holding();
+    if holding {
+        let detach = nd_win::topology::detach(&cfg.virtual_match, true)?;
+        println!("② 入夜（摘掉实体屏的桌面）：校验通过");
+        println!("   {}", detach.summary());
+    } else {
+        println!("② 入夜（摘掉实体屏的桌面）：虚拟屏还没预热，暂无法校验");
+        println!("   程序启动时会自动预热；也可以执行 --action night 直接切一次。");
     }
+    println!();
+    println!("以上只是校验，显示配置没有任何改动。");
+    Ok(ExitCode::SUCCESS)
 }
 
 pub fn backup() -> Result<ExitCode> {
@@ -387,16 +398,16 @@ pub fn awake(seconds: u64) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-pub fn update() -> Result<ExitCode> {
+pub fn update() -> ExitCode {
     match update::check_text() {
         Ok(text) => {
             println!("{text}");
-            Ok(ExitCode::SUCCESS)
+            ExitCode::SUCCESS
         }
-        Err(e) => {
+        Err(error) => {
             // 检查更新失败不该被当成软件故障。
-            println!("{}", nd_win::error::user_text(&e, "这次没查到更新"));
-            Ok(ExitCode::SUCCESS)
+            println!("{}", nd_win::error::user_text(&error, "这次没查到更新"));
+            ExitCode::SUCCESS
         }
     }
 }
@@ -408,7 +419,7 @@ pub fn update() -> Result<ExitCode> {
 /// 让常驻进程做，常驻进程不在时自己动手（结果一致，只是少了黑幕预热）。
 fn resident_or_local(
     action: &str,
-    detail: Vec<(String, String)>,
+    detail: &[(String, String)],
     local: impl FnOnce(&WinPlatform) -> NdResult<Outcome>,
 ) -> Result<ExitCode> {
     let detail = if detail.is_empty() {
@@ -447,7 +458,7 @@ pub fn night(args: &Args) -> Result<ExitCode> {
     if let Some(mode) = args.mode.clone() {
         detail.push(("mode".to_string(), mode));
     }
-    resident_or_local("night", detail, |platform| {
+    resident_or_local("night", &detail, |platform| {
         let cfg = Config::load()?;
         let mode = match args.mode.as_deref() {
             Some(m) => Mode::parse(m)?,
@@ -493,7 +504,7 @@ pub fn day(args: &Args) -> Result<ExitCode> {
         return Ok(report(&outcome));
     }
 
-    resident_or_local("day", Vec::new(), |platform| {
+    resident_or_local("day", &[], |platform| {
         let engine = Engine::new(platform);
         engine.day()
     })
@@ -530,7 +541,7 @@ pub fn test(args: &Args) -> Result<ExitCode> {
         detail.push(("mode".to_string(), mode));
     }
     detail.push(("seconds".to_string(), seconds.to_string()));
-    resident_or_local("test", detail, |platform| {
+    resident_or_local("test", &detail, |platform| {
         platform.warm()?;
         let engine = Engine::new(platform);
         let mode = match args.mode.as_deref() {
@@ -596,15 +607,12 @@ pub fn uninstall() -> Result<ExitCode> {
 }
 
 pub fn quit() -> Result<ExitCode> {
-    match ask_daemon("quit", None)? {
-        Some(text) => {
-            println!("{text}");
-            Ok(ExitCode::SUCCESS)
-        }
-        None => {
-            println!("常驻进程没有在运行。");
-            Ok(ExitCode::SUCCESS)
-        }
+    if let Some(text) = ask_daemon("quit", None)? {
+        println!("{text}");
+        Ok(ExitCode::SUCCESS)
+    } else {
+        println!("常驻进程没有在运行。");
+        Ok(ExitCode::SUCCESS)
     }
 }
 
@@ -612,30 +620,35 @@ pub fn quit() -> Result<ExitCode> {
 // 驱动与守护进程
 // ----------------------------------------------------------------------
 
-pub fn install_vdd() -> Result<ExitCode> {
+pub fn install_vdd() -> ExitCode {
     // 装驱动必须管理员：转给提升助手，一次 UAC。
-    match helper::call(helper::Command::InstallVdd) {
-        Ok(text) => {
-            println!("{text}");
-            Ok(ExitCode::SUCCESS)
-        }
-        Err(e) => {
-            println!("{}", nd_win::error::user_text(&e, "安装虚拟显示驱动失败"));
-            println!("{}", vdd::manual_steps());
-            Ok(ExitCode::from(1))
-        }
-    }
+    let result = helper::call(&helper::Command::InstallVdd);
+    print_helper_result(result, "安装虚拟显示驱动失败", Some(vdd::manual_steps()))
 }
 
-pub fn uninstall_vdd() -> Result<ExitCode> {
-    match helper::call(helper::Command::UninstallVdd) {
+pub fn uninstall_vdd() -> ExitCode {
+    let result = helper::call(&helper::Command::UninstallVdd);
+    print_helper_result(result, "卸载虚拟显示驱动失败", None)
+}
+
+/// 统一打印提升助手的结果：成功就原样输出助手的话，失败就带上
+/// 能手动照做的下一步（驱动相关会附 `pnputil` 命令）。
+fn print_helper_result(
+    result: NdResult<String>,
+    failure: &str,
+    manual: Option<String>,
+) -> ExitCode {
+    match result {
         Ok(text) => {
             println!("{text}");
-            Ok(ExitCode::SUCCESS)
+            ExitCode::SUCCESS
         }
         Err(e) => {
-            println!("{}", nd_win::error::user_text(&e, "卸载虚拟显示驱动失败"));
-            Ok(ExitCode::from(1))
+            println!("{}", nd_win::error::user_text(&e, failure));
+            if let Some(manual) = manual {
+                println!("{manual}");
+            }
+            ExitCode::from(1)
         }
     }
 }
@@ -652,7 +665,7 @@ pub fn watchdog(args: &Args) -> Result<ExitCode> {
     } else {
         args.parent
     };
-    watchdog::run(watchdog::WatchdogOptions {
+    watchdog::run(&watchdog::WatchdogOptions {
         parent,
         restart_daemon: true,
     })?;

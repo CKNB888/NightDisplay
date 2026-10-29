@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::chord::ChordKey;
 use crate::config::{Config, Mode, RunState};
 use crate::error::{one_line, user, NdResult};
-use crate::mode::NightReport;
+use crate::mode::{attempt_chain, LayerStatus, NightReport, VirtualReport};
 use crate::schedule::Schedule;
 use crate::status::Capabilities;
 
@@ -28,11 +28,18 @@ pub trait Platform {
     /// 夜间修复：重新断言背光和黑幕置顶，不重建窗口。
     fn repair_guard(&self) -> NdResult<()>;
 
-    /// 备份当前显示配置（只有 virtual_only 用得到）。
+    /// 备份当前显示配置（虚拟屏模式用得到）。
     fn backup_display(&self) -> NdResult<()>;
-    /// 切成"只剩虚拟屏"。`dry_run` 只校验不应用。
-    fn enter_virtual_only(&self, match_pat: &str, dry_run: bool) -> NdResult<String>;
-    fn exit_virtual_only(&self) -> NdResult<()>;
+    /// 把桌面交给虚拟屏，实体屏保持枚举但不带桌面。
+    ///
+    /// **必须是一次原子的 `SetDisplayConfig`**：先 `SDC_VALIDATE` 校验，
+    /// 校验不过就什么都不做。成功时活动 target 数不能是 0。
+    /// `dry_run` 只校验不应用。
+    fn enter_virtual_screen(&self, match_pat: &str, dry_run: bool) -> NdResult<VirtualReport>;
+    /// 把桌面交回实体屏。同样是一次原子切换。
+    fn exit_virtual_screen(&self) -> NdResult<()>;
+    /// 虚拟屏是否已经装好并在待命（不改动桌面布局）。
+    fn virtual_screen_ready(&self) -> bool;
 
     /// 直接关屏 / 唤醒屏幕。
     fn screen_off(&self) -> NdResult<()>;
@@ -82,11 +89,14 @@ impl<P: Platform + ?Sized> Platform for &P {
     fn backup_display(&self) -> NdResult<()> {
         (**self).backup_display()
     }
-    fn enter_virtual_only(&self, match_pat: &str, dry_run: bool) -> NdResult<String> {
-        (**self).enter_virtual_only(match_pat, dry_run)
+    fn enter_virtual_screen(&self, match_pat: &str, dry_run: bool) -> NdResult<VirtualReport> {
+        (**self).enter_virtual_screen(match_pat, dry_run)
     }
-    fn exit_virtual_only(&self) -> NdResult<()> {
-        (**self).exit_virtual_only()
+    fn exit_virtual_screen(&self) -> NdResult<()> {
+        (**self).exit_virtual_screen()
+    }
+    fn virtual_screen_ready(&self) -> bool {
+        (**self).virtual_screen_ready()
     }
     fn screen_off(&self) -> NdResult<()> {
         (**self).screen_off()
@@ -145,11 +155,14 @@ impl<P: Platform + ?Sized> Platform for std::sync::Arc<P> {
     fn backup_display(&self) -> NdResult<()> {
         (**self).backup_display()
     }
-    fn enter_virtual_only(&self, match_pat: &str, dry_run: bool) -> NdResult<String> {
-        (**self).enter_virtual_only(match_pat, dry_run)
+    fn enter_virtual_screen(&self, match_pat: &str, dry_run: bool) -> NdResult<VirtualReport> {
+        (**self).enter_virtual_screen(match_pat, dry_run)
     }
-    fn exit_virtual_only(&self) -> NdResult<()> {
-        (**self).exit_virtual_only()
+    fn exit_virtual_screen(&self) -> NdResult<()> {
+        (**self).exit_virtual_screen()
+    }
+    fn virtual_screen_ready(&self) -> bool {
+        (**self).virtual_screen_ready()
     }
     fn screen_off(&self) -> NdResult<()> {
         (**self).screen_off()
@@ -212,6 +225,7 @@ impl Outcome {
         }
     }
 
+    #[must_use]
     pub fn with_mode(mut self, mode: Mode) -> Self {
         self.mode = Some(mode);
         self
@@ -226,6 +240,7 @@ impl Outcome {
         }
     }
 
+    #[must_use]
     pub fn is_ok(&self) -> bool {
         self.errors.is_empty()
     }
@@ -245,6 +260,7 @@ impl<'a, P: Platform> Engine<'a, P> {
     // 模式解析与能力
     // ------------------------------------------------------------------
 
+    #[must_use]
     pub fn capabilities(&self) -> Capabilities {
         self.platform.capabilities()
     }
@@ -253,23 +269,23 @@ impl<'a, P: Platform> Engine<'a, P> {
     pub fn validate_mode(&self, mode: Mode) -> NdResult<Mode> {
         let caps = self.platform.capabilities();
         match mode {
-            Mode::Auto | Mode::Guard => {
+            Mode::Auto | Mode::VirtualScreen => {
+                if !caps.virtual_display {
+                    return Err(user(
+                        "没有检测到虚拟显示器。虚拟屏是默认模式的核心，\
+                         请先在向导里安装虚拟显示驱动（第 2 步是必需项）。",
+                    ));
+                }
+                Ok(Mode::VirtualScreen)
+            }
+            Mode::Overlay => {
                 if !caps.capture_exclusion {
                     return Err(user(
                         "这台系统不支持把窗口排除在屏幕采集之外（需要 Windows 10 2004 及以上）。\
-                         直接黑屏会让远程也变成黑屏，所以默认模式不可用。",
+                         黑幕模式下远程会跟着变黑，所以这个模式不可用。",
                     ));
                 }
-                Ok(Mode::Guard)
-            }
-            Mode::VirtualOnly => {
-                if !caps.virtual_display {
-                    return Err(user(
-                        "没有检测到可用的虚拟显示器。请先安装虚拟显示驱动，\
-                         或在设置里改用防窥黑幕。",
-                    ));
-                }
-                Ok(Mode::VirtualOnly)
+                Ok(Mode::Overlay)
             }
             Mode::ScreenOff => Ok(Mode::ScreenOff),
         }
@@ -280,80 +296,129 @@ impl<'a, P: Platform> Engine<'a, P> {
     // ------------------------------------------------------------------
 
     /// 进入夜间。成功才把状态写成夜间；失败保持原状态并返回中文原因。
+    ///
+    /// 模式顺序由 [`attempt_chain`] 决定：`auto` 先虚拟屏，不行才降级到黑幕，
+    /// 并且**只有**这种情况下才会降级 —— 用户手动选过模式的不会被偷偷改掉。
     pub fn night(&self, mode: Mode, now: DateTime<Local>) -> NdResult<Outcome> {
-        let mut cfg = Config::load()?;
-        let effective = self.validate_mode(mode)?;
+        let cfg = Config::load()?;
         if cfg.state == RunState::Night {
-            if cfg.night_mode == Some(effective) {
-                return Ok(Outcome::ok("已经是夜间状态").with_mode(effective));
+            let current = cfg.night_mode.unwrap_or(Mode::Auto);
+            if attempt_chain(mode).contains(&current) {
+                return Ok(Outcome::ok("已经是夜间状态").with_mode(current));
             }
             return Err(user("请先恢复显示，再切换夜间模式"));
         }
 
+        let chain = attempt_chain(mode);
         tracing::info!(
             requested = mode.as_str(),
-            effective = effective.as_str(),
+            chain = ?chain.iter().map(|m| m.as_str()).collect::<Vec<_>>(),
             "进入夜间"
         );
 
-        let entered = match effective {
-            Mode::Guard => self.enter_guard(&cfg)?,
-            Mode::VirtualOnly => {
-                self.platform.backup_display()?;
-                cfg.recovery_pending = true;
-                Config::update(|c| {
-                    c.recovery_pending = true;
-                    c.night_mode = Some(Mode::VirtualOnly);
-                    Ok(())
-                })?;
-                let name = self
-                    .platform
-                    .enter_virtual_only(&cfg.virtual_match, false)
-                    .inspect_err(|e| {
-                        tracing::error!(error = %e, "仅虚拟屏失败，立即回滚");
-                        let _ = self.platform.exit_virtual_only();
-                        let _ = Config::update(|c| {
-                            c.state = RunState::Day;
-                            c.night_mode = None;
-                            c.recovery_pending = false;
-                            Ok(())
-                        });
-                    })?;
-                tracing::info!(display = %name, "已切换为仅虚拟输出");
-                None
-            }
-            Mode::ScreenOff => {
-                self.platform.screen_off()?;
-                None
-            }
-            Mode::Auto => unreachable!("validate_mode 不会返回 auto"),
-        };
+        let mut attempts: Vec<String> = Vec::new();
+        let mut entered: Option<NightReport> = None;
+        let mut effective = chain[0];
+        let mut fallback_reason: Option<String> = None;
 
-        let latency = entered.as_ref().map(|r| r.start_latency_ms).unwrap_or(0);
-        let summary = match &entered {
-            Some(r) => {
-                if !r.success() {
-                    // 黑幕没确认成功：立刻拆掉，绝不谎报"已黑屏"。
-                    let _ = self.platform.exit_guard();
-                    return Err(user(format!(
-                        "防窥黑幕没有确认成功：{}。屏幕保持正常。",
-                        r.failure_reason().unwrap_or_else(|| "未知原因".into())
-                    )));
+        for (index, candidate) in chain.iter().copied().enumerate() {
+            // 能力不满足的模式直接跳过（例如没装 VDD 就选不了虚拟屏）。
+            if let Err(e) = self.validate_mode(candidate) {
+                attempts.push(format!("{} 不可用：{}", candidate.label(), one_line(&e)));
+                if index == chain.len() - 1 {
+                    return Err(user(attempts.join("；")));
                 }
-                r.summary()
+                fallback_reason = Some(one_line(&e));
+                continue;
             }
-            None => format!("{} 已生效", effective.label()),
-        };
+            let started = std::time::Instant::now();
+            let result = match candidate {
+                Mode::VirtualScreen => self.enter_virtual_screen(&cfg),
+                Mode::Overlay => self.enter_guard(&cfg),
+                Mode::ScreenOff => self.platform.screen_off().map(|()| None),
+                Mode::Auto => unreachable!("attempt_chain 不含 auto"),
+            };
+            match result {
+                Ok(report) => {
+                    let ok = report
+                        .as_ref()
+                        .is_none_or(super::mode::NightReport::success);
+                    if ok {
+                        effective = candidate;
+                        entered = report;
+                        break;
+                    }
+                    let reason = report
+                        .as_ref()
+                        .and_then(super::mode::NightReport::failure_reason)
+                        .unwrap_or_else(|| "未知原因".into());
+                    tracing::warn!(
+                        mode = candidate.as_str(),
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        reason = %reason,
+                        "这个模式没能确认成功"
+                    );
+                    // 黑幕没确认成功时必须拆掉，不能留一个盖住屏幕、
+                    // 却没能排除采集的半成品。
+                    if candidate == Mode::Overlay {
+                        if let Err(revert) = self.platform.exit_guard() {
+                            tracing::warn!(
+                                error = %revert,
+                                "拆掉未确认的黑幕时出错，请手动按 Win+P 或重启"
+                            );
+                        }
+                    }
+                    attempts.push(format!("{} 失败：{reason}", candidate.label()));
+                    if index == chain.len() - 1 {
+                        return Err(user(format!("{}。屏幕保持正常。", attempts.join("；"))));
+                    }
+                    fallback_reason = Some(reason);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        mode = candidate.as_str(),
+                        error = %e,
+                        "这个模式执行失败"
+                    );
+                    attempts.push(format!("{} 失败：{}", candidate.label(), one_line(&e)));
+                    if index == chain.len() - 1 {
+                        return Err(user(format!("{}。屏幕保持正常。", attempts.join("；"))));
+                    }
+                    fallback_reason = Some(one_line(&e));
+                }
+            }
+        }
+
+        let mut report = entered.unwrap_or_else(|| {
+            // screen_off 路径没有报告，构造一个占位以便统一处理。
+            NightReport {
+                requested: mode,
+                effective,
+                virtual_screen: None,
+                fallback_reason: fallback_reason.clone(),
+                overlays: Vec::new(),
+                gamma: LayerStatus::Disabled,
+                brightness: LayerStatus::Disabled,
+                local_input_guard: LayerStatus::Disabled,
+                start_latency_ms: 0,
+                brightness_unsupported_displays: Vec::new(),
+            }
+        });
+        report.fallback_reason.clone_from(&fallback_reason);
+        let latency = report.start_latency_ms;
+        let summary = report.summary();
 
         // 夜间附加动作：保持唤醒、本地防触控、抑制锁屏。
         let mut warnings = Vec::new();
-        let keep_secs = self.keep_awake_seconds(&cfg, now);
+        let keep_secs = Self::keep_awake_seconds(&cfg, now);
         if cfg.keep_awake {
             if let Err(e) = self.platform.keep_awake(true, keep_secs) {
                 warnings.push(format!("防睡眠没有生效：{}", one_line(&e)));
             }
         }
-        if effective == Mode::Guard && cfg.strict_local_input {
+        // 本地防触控和抑制锁屏只在黑幕模式有意义：
+        // 虚拟屏接管后本机根本没有输出，物理键鼠也碰不到那块屏。
+        if effective == Mode::Overlay && cfg.strict_local_input {
             if let Err(e) =
                 self.platform
                     .set_input_guard(true, &cfg.unlock_chord, cfg.unlock_hold_ms)
@@ -361,7 +426,7 @@ impl<'a, P: Platform> Engine<'a, P> {
                 warnings.push(format!("严格本地防触控没有生效：{}", one_line(&e)));
             }
         }
-        if effective == Mode::Guard && cfg.suppress_lock {
+        if effective == Mode::Overlay && cfg.suppress_lock {
             if let Err(e) = self.platform.set_lock_suppression(true) {
                 warnings.push(format!("抑制锁屏没有生效：{}", one_line(&e)));
             }
@@ -389,8 +454,38 @@ impl<'a, P: Platform> Engine<'a, P> {
 
     fn enter_guard(&self, cfg: &Config) -> NdResult<Option<NightReport>> {
         let report = self.platform.enter_guard(cfg)?;
-        tracing::info!(summary = %report.summary(), "防窥黑幕");
+        tracing::info!(success = report.success(), summary = %report.summary(), "防窥黑幕");
         Ok(Some(report))
+    }
+
+    /// 虚拟屏接管桌面。
+    ///
+    /// 先备份一份当前拓扑（真出事还能手工还原），再交给平台层做**一次**
+    /// `SetDisplayConfig`。失败时不留下任何半完成的中间状态。
+    fn enter_virtual_screen(&self, cfg: &Config) -> NdResult<Option<NightReport>> {
+        self.platform.backup_display()?;
+        let report = self
+            .platform
+            .enter_virtual_screen(&cfg.virtual_match, false)?;
+        tracing::info!(
+            success = report.applied,
+            active_before = report.active_before,
+            active_after = report.active_after,
+            summary = %report.summary(),
+            "虚拟屏接管桌面"
+        );
+        Ok(Some(NightReport {
+            requested: Mode::Auto,
+            effective: Mode::VirtualScreen,
+            virtual_screen: Some(report),
+            fallback_reason: None,
+            overlays: Vec::new(),
+            gamma: LayerStatus::Disabled,
+            brightness: LayerStatus::Disabled,
+            local_input_guard: LayerStatus::Disabled,
+            start_latency_ms: 0,
+            brightness_unsupported_displays: Vec::new(),
+        }))
     }
 
     /// 恢复白天。返回是否完全成功；部分失败时把 `recovery_pending` 置上。
@@ -402,13 +497,13 @@ impl<'a, P: Platform> Engine<'a, P> {
 
         if cfg.state == RunState::Night || last.is_some() {
             match last {
-                Some(Mode::Guard) => {
+                Some(Mode::Overlay) => {
                     if let Err(e) = self.platform.exit_guard() {
                         errors.push(format!("关闭黑幕失败：{}", one_line(&e)));
                     }
                 }
-                Some(Mode::VirtualOnly) => {
-                    if let Err(e) = self.platform.exit_virtual_only() {
+                Some(Mode::VirtualScreen) => {
+                    if let Err(e) = self.platform.exit_virtual_screen() {
                         errors.push(format!("还原显示配置失败：{}", one_line(&e)));
                     }
                 }
@@ -455,8 +550,10 @@ impl<'a, P: Platform> Engine<'a, P> {
             return Ok(Outcome::ok("当前不在夜间"));
         }
         match cfg.night_mode {
-            Some(Mode::Guard) => {
-                if !self.platform.guard_active() {
+            Some(Mode::Overlay) => {
+                if self.platform.guard_active() {
+                    self.platform.repair_guard()?;
+                } else {
                     tracing::warn!("黑幕不在了，重新创建");
                     let report = self.platform.enter_guard(&cfg)?;
                     if !report.success() {
@@ -466,8 +563,22 @@ impl<'a, P: Platform> Engine<'a, P> {
                             report.failure_reason().unwrap_or_default()
                         )));
                     }
-                } else {
-                    self.platform.repair_guard()?;
+                }
+            }
+            Some(Mode::VirtualScreen) => {
+                // 虚拟屏接管后桌面本来就不在实体屏上；
+                // 只有在实体屏又拿回桌面时（远程软件、Win+P、驱动重置）才需要重新切一次。
+                if virtual_screen_lost(&self.platform) {
+                    tracing::warn!("实体屏重新拿到了桌面，重新把桌面交给虚拟屏");
+                    let report = self
+                        .platform
+                        .enter_virtual_screen(&cfg.virtual_match, false)?;
+                    if !report.applied {
+                        return Err(user(format!(
+                            "重新切换虚拟屏失败：{}",
+                            report.error.unwrap_or_else(|| "未知原因".into())
+                        )));
+                    }
                 }
             }
             Some(Mode::ScreenOff) => {
@@ -476,11 +587,12 @@ impl<'a, P: Platform> Engine<'a, P> {
                     tracing::warn!(error = %e, "再次关屏未成功，保持夜间");
                 }
             }
-            Some(Mode::VirtualOnly) | None => {}
-            Some(Mode::Auto) => {}
+            // 虚拟屏和黑幕都在上面各自处理；其余情况（包括 auto）
+            // 运行时不会作为 night_mode 落盘。
+            None | Some(Mode::Auto) => {}
         }
         if cfg.keep_awake {
-            let secs = self.keep_awake_seconds(&cfg, now);
+            let secs = Self::keep_awake_seconds(&cfg, now);
             if let Err(e) = self.platform.keep_awake(true, secs) {
                 tracing::warn!(error = %e, "续订防睡眠失败");
             }
@@ -488,7 +600,7 @@ impl<'a, P: Platform> Engine<'a, P> {
         Ok(Outcome::ok("夜间状态正常"))
     }
 
-    fn keep_awake_seconds(&self, cfg: &Config, now: DateTime<Local>) -> u64 {
+    fn keep_awake_seconds(cfg: &Config, now: DateTime<Local>) -> u64 {
         let schedule = cfg.schedule();
         let secs = if cfg.enabled {
             schedule.seconds_left_in_night(now).max(0) + 600
@@ -505,7 +617,7 @@ impl<'a, P: Platform> Engine<'a, P> {
     /// 组合键解锁：恢复白天，并且本段剩余时间不再自动黑屏。
     pub fn chord_unlock(&self, now: DateTime<Local>) -> NdResult<Outcome> {
         let cfg = Config::load()?;
-        self.remember_explicit_day(&cfg, now)?;
+        Self::remember_explicit_day(&cfg, now)?;
         let mut outcome = self.day()?;
         Config::update(|c| {
             c.test_id.clear();
@@ -521,7 +633,7 @@ impl<'a, P: Platform> Engine<'a, P> {
     }
 
     /// 用户明确要求回白天时，记录"本段剩余时间保持白天"。
-    fn remember_explicit_day(&self, cfg: &Config, now: DateTime<Local>) -> NdResult<()> {
+    fn remember_explicit_day(cfg: &Config, now: DateTime<Local>) -> NdResult<()> {
         let mut override_until = None;
         if cfg.enabled && cfg.schedule().is_night_at(now) {
             let left = cfg.schedule().seconds_left_in_night(now).max(1);
@@ -647,7 +759,7 @@ impl<'a, P: Platform> Engine<'a, P> {
         let test_id = crate::ipc::new_token();
         let fingerprint = self.platform.capability_fingerprint();
         Config::update(|c| {
-            c.test_id = test_id.clone();
+            c.test_id.clone_from(&test_id);
             c.last_test_requested = Some(mode);
             c.last_test_mode = Some(effective);
             c.last_test_capability = fingerprint;
@@ -757,10 +869,7 @@ impl<'a, P: Platform> Engine<'a, P> {
                 "请先点「测试 15 秒」完成一次测试，等屏幕自己亮回来，再启用每天自动黑屏。",
             ));
         }
-        let age = cfg
-            .last_test_at
-            .map(|t| (now - t).num_seconds())
-            .unwrap_or(-1);
+        let age = cfg.last_test_at.map_or(-1, |t| (now - t).num_seconds());
         if !(0..=86_400).contains(&age) {
             return Err(user(
                 "上次测试已经超过一天。请再点一次「测试 15 秒」，等屏幕自己亮回来，然后再启用。",
@@ -870,7 +979,18 @@ impl<'a, P: Platform> Engine<'a, P> {
     }
 }
 
+/// 虚拟屏模式是否已经掉了：实体屏上又有桌面了。
+///
+/// 只看"当前活动输出里还有没有实体屏"，不主动改任何东西。
+fn virtual_screen_lost(platform: &impl Platform) -> bool {
+    if !platform.virtual_screen_ready() {
+        return false;
+    }
+    !platform.capabilities().virtual_screen_holding
+}
+
 /// 组合键解锁是否仍然有效（本段剩余时间保持白天）。
+#[must_use]
 pub fn unlock_active(cfg: &Config, now: DateTime<Local>) -> bool {
     match cfg.override_until {
         Some(until) => now < until,
@@ -881,6 +1001,7 @@ pub fn unlock_active(cfg: &Config, now: DateTime<Local>) -> bool {
 /// 白天手动进入夜间时，应该保持到什么时候。
 ///
 /// 当前已在计划夜间内、或没有下一段夜间时返回 `None`。
+#[must_use]
 pub fn manual_night_until(
     schedule: &Schedule,
     enabled: bool,
@@ -918,6 +1039,12 @@ pub mod testing {
         pub schedule_fails: RefCell<bool>,
         pub day_fails: RefCell<bool>,
         pub fingerprint: RefCell<String>,
+        /// 虚拟屏切换是否失败（模拟这台机器不支持）。
+        pub virtual_fails: RefCell<Option<String>>,
+        /// 虚拟屏是否已经被切走（`capabilities().virtual_screen_holding`）。
+        pub virtual_holding: RefCell<bool>,
+        /// 虚拟屏驱动是否装好了。
+        pub vdd_present: RefCell<bool>,
     }
 
     impl FakePlatform {
@@ -932,7 +1059,9 @@ pub mod testing {
                 elevated: false,
                 helper_running: false,
                 virtual_display: false,
+                virtual_screen_holding: false,
                 autostart: true,
+                registration: crate::status::Registration::default(),
             };
             caps.build = 19045;
             Self {
@@ -958,18 +1087,20 @@ pub mod testing {
 
     impl Platform for FakePlatform {
         fn capabilities(&self) -> Capabilities {
-            self.caps.clone()
+            let mut caps = self.caps.clone();
+            caps.virtual_screen_holding = *self.virtual_holding.borrow();
+            caps
         }
 
         fn enter_guard(&self, _cfg: &Config) -> NdResult<NightReport> {
             self.record("enter_guard");
             if let Some(e) = self.guard_result.borrow().as_ref() {
-                return Err(anyhow::anyhow!("{}", e));
+                return Err(anyhow::anyhow!("{e}"));
             }
             *self.guard_active.borrow_mut() = true;
             Ok(NightReport {
-                requested: Mode::Guard,
-                effective: Mode::Guard,
+                requested: Mode::Overlay,
+                effective: Mode::Overlay,
                 overlays: vec![OverlayOutcome {
                     display: "DISPLAY1".into(),
                     shown: true,
@@ -982,6 +1113,8 @@ pub mod testing {
                 local_input_guard: LayerStatus::Applied,
                 start_latency_ms: 130,
                 brightness_unsupported_displays: vec![],
+                virtual_screen: None,
+                fallback_reason: None,
             })
         }
 
@@ -1008,18 +1141,44 @@ pub mod testing {
             Ok(())
         }
 
-        fn enter_virtual_only(&self, _p: &str, dry_run: bool) -> NdResult<String> {
+        fn enter_virtual_screen(&self, _p: &str, dry_run: bool) -> NdResult<VirtualReport> {
             self.record(if dry_run {
                 "plan_virtual"
             } else {
-                "virtual_only"
+                "virtual_screen"
             });
-            Ok("VIRTUAL1".into())
+            if let Some(reason) = self.virtual_fails.borrow().clone() {
+                return Ok(VirtualReport::failure(reason));
+            }
+            if let Some(reason) = self.guard_result.borrow().as_ref() {
+                return Err(anyhow::anyhow!("{reason}"));
+            }
+            *self.virtual_holding.borrow_mut() = true;
+            Ok(VirtualReport {
+                applied: !dry_run,
+                virtual_display: "VIRTUAL1".into(),
+                detached_physical: usize::from(!dry_run),
+                active_before: 2,
+                active_after: 1,
+                mode_matched: true,
+                validate_ms: 3,
+                apply_ms: 40,
+                settle_ms: 150,
+                error: None,
+            })
         }
 
-        fn exit_virtual_only(&self) -> NdResult<()> {
+        fn exit_virtual_screen(&self) -> NdResult<()> {
             self.record("restore_display");
+            *self.virtual_holding.borrow_mut() = false;
+            if *self.day_fails.borrow() {
+                return Err(user("假平台的还原显示失败"));
+            }
             Ok(())
+        }
+
+        fn virtual_screen_ready(&self) -> bool {
+            *self.vdd_present.borrow()
         }
 
         fn screen_off(&self) -> NdResult<()> {
@@ -1119,7 +1278,9 @@ mod tests {
     /// 所有测试共享同一个 NIGHTDISPLAY_HOME，所以统一在一个互斥锁里跑。
     fn with_home<T>(f: impl FnOnce() -> T) -> T {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("NIGHTDISPLAY_HOME", dir.path());
         let out = f();
@@ -1127,31 +1288,78 @@ mod tests {
         out
     }
 
-    fn seed(cfg: Config) {
+    fn seed(cfg: &Config) {
         crate::paths::ensure_home().unwrap();
-        crate::config::write_to(&crate::paths::config_file(), &cfg).unwrap();
+        crate::config::write_to(&crate::paths::config_file(), cfg).unwrap();
     }
 
     #[test]
     fn night_then_day_round_trip() {
         with_home(|| {
-            seed(Config::default());
-            let p = FakePlatform::new();
+            seed(&Config::default());
+            let mut p = FakePlatform::new();
+            *p.vdd_present.borrow_mut() = true;
+            p.caps.virtual_display = true;
             let e = Engine::new(&p);
             let out = e.night(Mode::Auto, at(21, 0, 0)).unwrap();
-            assert_eq!(out.mode, Some(Mode::Guard));
-            assert!(p.called("enter_guard"));
+            assert_eq!(out.mode, Some(Mode::VirtualScreen));
+            assert!(p.called("virtual_screen"));
+            assert!(p.called("backup_display"));
+            assert!(!p.called("enter_guard"), "默认模式不该先用黑幕");
             assert!(p.called("keep_awake_on"));
-            assert!(p.called("input_guard_on"));
-            assert!(p.called("lock_suppress_on"));
+            // 虚拟屏接管后本机没有输出，本地防触控和抑制锁屏都不需要。
+            assert!(!p.called("input_guard_on"));
+            assert!(!p.called("lock_suppress_on"));
             let cfg = Config::load().unwrap();
             assert_eq!(cfg.state, RunState::Night);
-            assert_eq!(cfg.night_mode, Some(Mode::Guard));
+            assert_eq!(cfg.night_mode, Some(Mode::VirtualScreen));
 
             let out = e.day().unwrap();
             assert!(out.is_ok());
-            assert!(p.called("exit_guard"));
-            assert!(p.called("input_guard_off"));
+            assert!(p.called("restore_display"));
+            assert_eq!(Config::load().unwrap().state, RunState::Day);
+        });
+    }
+
+    #[test]
+    fn auto_falls_back_to_overlay_when_virtual_fails_and_says_so() {
+        with_home(|| {
+            seed(&Config::default());
+            let mut p = FakePlatform::new();
+            *p.vdd_present.borrow_mut() = true;
+            p.caps.virtual_display = true;
+            // 驱动拒绝这次切换（校验没过）。
+            *p.virtual_fails.borrow_mut() = Some("显卡驱动不接受这个显示配置（配置无效）".into());
+            let e = Engine::new(&p);
+            let out = e.night(Mode::Auto, at(21, 0, 0)).unwrap();
+            assert_eq!(out.mode, Some(Mode::Overlay), "自动模式必须兜底到黑幕");
+            assert!(p.called("enter_guard"));
+            // 必须明确告诉用户为什么降级了，不能静默替换机制。
+            assert!(out.message.contains("降级"), "{}", out.message);
+            assert!(out.message.contains("虚拟屏"), "{}", out.message);
+            let cfg = Config::load().unwrap();
+            assert_eq!(cfg.night_mode, Some(Mode::Overlay));
+        });
+    }
+
+    #[test]
+    fn explicit_virtual_screen_is_never_silently_replaced() {
+        with_home(|| {
+            seed(&Config::default());
+            let mut p = FakePlatform::new();
+            *p.vdd_present.borrow_mut() = true;
+            p.caps.virtual_display = true;
+            *p.virtual_fails.borrow_mut() = Some("显卡驱动不接受这个显示配置（配置无效）".into());
+            let e = Engine::new(&p);
+            let err = e
+                .night(Mode::VirtualScreen, at(21, 0, 0))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("虚拟屏"), "{err}");
+            assert!(
+                !p.called("enter_guard"),
+                "用户明确选了虚拟屏就不能偷偷换成黑幕"
+            );
             assert_eq!(Config::load().unwrap().state, RunState::Day);
         });
     }
@@ -1159,28 +1367,49 @@ mod tests {
     #[test]
     fn night_fails_when_capture_exclusion_missing_and_does_not_claim_success() {
         with_home(|| {
-            seed(Config::default());
+            seed(&Config::default());
             let p = FakePlatform::new();
             *p.capture_excluded.borrow_mut() = false;
             let e = Engine::new(&p);
-            let err = e.night(Mode::Guard, at(21, 0, 0)).unwrap_err().to_string();
-            assert!(err.contains("防窥黑幕没有确认成功"), "{err}");
+            let err = e
+                .night(Mode::Overlay, at(21, 0, 0))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("无法从屏幕采集中排除"), "{err}");
             assert!(p.called("exit_guard"), "失败时必须把黑幕拆掉");
             assert_eq!(Config::load().unwrap().state, RunState::Day);
         });
     }
 
     #[test]
-    fn no_topology_call_in_default_mode() {
+    fn default_mode_switches_the_virtual_screen_not_an_overlay() {
         with_home(|| {
-            seed(Config::default());
-            let p = FakePlatform::new();
+            seed(&Config::default());
+            let mut p = FakePlatform::new();
+            *p.vdd_present.borrow_mut() = true;
+            p.caps.virtual_display = true;
             let e = Engine::new(&p);
             e.night(Mode::Auto, at(21, 0, 0)).unwrap();
             e.day().unwrap();
-            assert!(!p.called("virtual_only"));
+            assert!(p.called("virtual_screen"), "默认就是虚拟屏");
+            assert!(p.called("backup_display"), "切换前必须备份拓扑");
+            assert!(p.called("restore_display"));
+            assert!(!p.called("enter_guard"));
+        });
+    }
+
+    #[test]
+    fn overlay_mode_never_touches_the_topology() {
+        with_home(|| {
+            seed(&Config::default());
+            let p = FakePlatform::new();
+            let e = Engine::new(&p);
+            e.night(Mode::Overlay, at(21, 0, 0)).unwrap();
+            e.day().unwrap();
+            assert!(!p.called("virtual_screen"));
             assert!(!p.called("backup_display"));
             assert!(!p.called("restore_display"));
+            assert!(p.called("input_guard_on"));
         });
     }
 
@@ -1189,7 +1418,7 @@ mod tests {
         with_home(|| {
             let mut cfg = Config::default();
             cfg.enabled = true;
-            seed(cfg);
+            seed(&cfg);
             let p = FakePlatform::new();
             let e = Engine::new(&p);
 
@@ -1211,7 +1440,7 @@ mod tests {
     #[test]
     fn reconcile_does_nothing_when_disabled() {
         with_home(|| {
-            seed(Config::default());
+            seed(&Config::default());
             let p = FakePlatform::new();
             let e = Engine::new(&p);
             let out = e.reconcile(at(22, 0, 0)).unwrap();
@@ -1225,7 +1454,7 @@ mod tests {
         with_home(|| {
             let mut cfg = Config::default();
             cfg.enabled = true;
-            seed(cfg);
+            seed(&cfg);
             let p = FakePlatform::new();
             let e = Engine::new(&p);
             e.reconcile(at(21, 0, 0)).unwrap();
@@ -1254,7 +1483,7 @@ mod tests {
         with_home(|| {
             let mut cfg = Config::default();
             cfg.enabled = true;
-            seed(cfg);
+            seed(&cfg);
             let p = FakePlatform::new();
             let e = Engine::new(&p);
             e.night(Mode::Auto, at(15, 0, 0)).unwrap();
@@ -1274,10 +1503,10 @@ mod tests {
     #[test]
     fn test_flow_requires_recovery_before_activate() {
         with_home(|| {
-            seed(Config::default());
+            seed(&Config::default());
             let p = FakePlatform::new();
             let e = Engine::new(&p);
-            let out = e.start_test(Mode::Auto, 15, at(15, 0, 0)).unwrap();
+            let out = e.start_test(Mode::Overlay, 15, at(15, 0, 0)).unwrap();
             assert!(out.message.contains("15 秒后自动恢复"), "{}", out.message);
             assert!(p.called("spawn_delayed_day"));
             let cfg = Config::load().unwrap();
@@ -1286,7 +1515,7 @@ mod tests {
 
             // 未恢复就启用必须被拒绝
             let err = e
-                .activate(Mode::Auto, "20:00", "10:30", at(15, 1, 0))
+                .activate(Mode::Overlay, "20:00", "10:30", at(15, 1, 0))
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("请先点「测试 15 秒」"), "{err}");
@@ -1297,7 +1526,7 @@ mod tests {
             assert_eq!(cfg.state, RunState::Day);
 
             let out = e
-                .activate(Mode::Auto, "20:00", "10:30", at(15, 1, 0))
+                .activate(Mode::Overlay, "20:00", "10:30", at(15, 1, 0))
                 .unwrap();
             assert!(out.message.contains("已启用每日计划"), "{}", out.message);
             assert!(p.called("install_schedule"));
@@ -1308,10 +1537,10 @@ mod tests {
     #[test]
     fn activate_rejects_stale_or_other_hardware_tests() {
         with_home(|| {
-            seed(Config::default());
+            seed(&Config::default());
             let p = FakePlatform::new();
             let e = Engine::new(&p);
-            let out = e.start_test(Mode::Guard, 15, at(15, 0, 0)).unwrap();
+            let out = e.start_test(Mode::Overlay, 15, at(15, 0, 0)).unwrap();
             assert!(out.is_ok());
             let id = Config::load().unwrap().test_id.clone();
             e.finish_test(&id, at(15, 0, 15)).unwrap();
@@ -1319,7 +1548,7 @@ mod tests {
             // 换了硬件（指纹变了）
             *p.fingerprint.borrow_mut() = "fp-2".into();
             let err = e
-                .activate(Mode::Guard, "20:00", "10:30", at(15, 1, 0))
+                .activate(Mode::Overlay, "20:00", "10:30", at(15, 1, 0))
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("请先点"), "{err}");
@@ -1327,7 +1556,7 @@ mod tests {
             // 指纹恢复但测试超过一天
             *p.fingerprint.borrow_mut() = "fp-1".into();
             let err = e
-                .activate(Mode::Guard, "20:00", "10:30", at_day(30, 20, 0, 0))
+                .activate(Mode::Overlay, "20:00", "10:30", at_day(30, 20, 0, 0))
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("超过一天"), "{err}");
@@ -1337,17 +1566,17 @@ mod tests {
     #[test]
     fn failed_schedule_write_leaves_plan_disabled() {
         with_home(|| {
-            seed(Config::default());
+            seed(&Config::default());
             let p = FakePlatform::new();
             let e = Engine::new(&p);
-            let out = e.start_test(Mode::Guard, 15, at(15, 0, 0)).unwrap();
+            let out = e.start_test(Mode::Overlay, 15, at(15, 0, 0)).unwrap();
             assert!(out.is_ok());
             let id = Config::load().unwrap().test_id.clone();
             e.finish_test(&id, at(15, 0, 15)).unwrap();
 
             *p.schedule_fails.borrow_mut() = true;
             let err = e
-                .activate(Mode::Guard, "20:00", "10:30", at(15, 1, 0))
+                .activate(Mode::Overlay, "20:00", "10:30", at(15, 1, 0))
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("写入系统计划任务失败"), "{err}");
@@ -1360,21 +1589,21 @@ mod tests {
         with_home(|| {
             let mut cfg = Config::default();
             cfg.enabled = true;
-            seed(cfg);
+            seed(&cfg);
             let p = FakePlatform::new();
             let e = Engine::new(&p);
             let err = e
-                .start_test(Mode::Guard, 15, at(15, 0, 0))
+                .start_test(Mode::Overlay, 15, at(15, 0, 0))
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("请先暂停"), "{err}");
 
             let mut cfg = Config::default();
             cfg.state = RunState::Night;
-            cfg.night_mode = Some(Mode::Guard);
-            seed(cfg);
+            cfg.night_mode = Some(Mode::Overlay);
+            seed(&cfg);
             let err = e
-                .start_test(Mode::Guard, 15, at(15, 0, 0))
+                .start_test(Mode::Overlay, 15, at(15, 0, 0))
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("还黑着"), "{err}");
@@ -1384,11 +1613,11 @@ mod tests {
     #[test]
     fn test_duration_bounds() {
         with_home(|| {
-            seed(Config::default());
+            seed(&Config::default());
             let p = FakePlatform::new();
             let e = Engine::new(&p);
-            assert!(e.start_test(Mode::Guard, 5, at(15, 0, 0)).is_err());
-            assert!(e.start_test(Mode::Guard, 4000, at(15, 0, 0)).is_err());
+            assert!(e.start_test(Mode::Auto, 5, at(15, 0, 0)).is_err());
+            assert!(e.start_test(Mode::Auto, 4000, at(15, 0, 0)).is_err());
         });
     }
 
@@ -1397,7 +1626,7 @@ mod tests {
         with_home(|| {
             let mut cfg = Config::default();
             cfg.enabled = true;
-            seed(cfg);
+            seed(&cfg);
             let p = FakePlatform::new();
             let e = Engine::new(&p);
             e.reconcile(at(21, 0, 0)).unwrap();
@@ -1415,10 +1644,10 @@ mod tests {
     #[test]
     fn partial_recovery_reports_nonzero_and_flags_pending() {
         with_home(|| {
-            seed(Config::default());
+            seed(&Config::default());
             let p = FakePlatform::new();
             let e = Engine::new(&p);
-            e.night(Mode::Guard, at(21, 0, 0)).unwrap();
+            e.night(Mode::Overlay, at(21, 0, 0)).unwrap();
             *p.day_fails.borrow_mut() = true;
             let out = e.day().unwrap();
             assert!(!out.is_ok(), "恢复失败不能被当成成功");
@@ -1430,7 +1659,7 @@ mod tests {
     #[test]
     fn uninstall_clears_autostart_preference() {
         with_home(|| {
-            seed(Config::default());
+            seed(&Config::default());
             let p = FakePlatform::new();
             let e = Engine::new(&p);
             let out = e.uninstall().unwrap();
@@ -1444,60 +1673,85 @@ mod tests {
     }
 
     #[test]
-    fn virtual_only_is_opt_in_only() {
+    fn virtual_screen_needs_the_driver_installed() {
         with_home(|| {
-            seed(Config::default());
+            seed(&Config::default());
             let p = FakePlatform::new();
             let e = Engine::new(&p);
-            // 没有虚拟屏时明确报错，不静默降级
+            // VDD 是必需项：没装就明确报错，不能假装成功。
             let err = e
-                .night(Mode::VirtualOnly, at(21, 0, 0))
+                .night(Mode::VirtualScreen, at(21, 0, 0))
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("虚拟显示"), "{err}");
-            assert!(!p.called("virtual_only"));
+            assert!(!p.called("virtual_screen"));
         });
     }
 
     #[test]
-    fn virtual_only_works_when_user_opted_in_and_driver_present() {
+    fn virtual_screen_switches_when_the_driver_is_there() {
         with_home(|| {
-            seed(Config::default());
+            seed(&Config::default());
             let mut p = FakePlatform::new();
             p.caps.virtual_display = true;
+            *p.vdd_present.borrow_mut() = true;
             let e = Engine::new(&p);
-            let out = e.night(Mode::VirtualOnly, at(21, 0, 0)).unwrap();
-            assert_eq!(out.mode, Some(Mode::VirtualOnly));
+            let out = e.night(Mode::VirtualScreen, at(21, 0, 0)).unwrap();
+            assert_eq!(out.mode, Some(Mode::VirtualScreen));
             assert!(p.called("backup_display"));
-            assert!(p.called("virtual_only"));
+            assert!(p.called("virtual_screen"));
             assert!(!p.called("enter_guard"));
         });
     }
 
     #[test]
-    fn guard_unavailable_warns_instead_of_switching_topology() {
+    fn auto_reports_both_paths_when_neither_works() {
         with_home(|| {
-            seed(Config::default());
+            seed(&Config::default());
             let mut p = FakePlatform::new();
             p.caps.capture_exclusion = false;
             let e = Engine::new(&p);
             let err = e.night(Mode::Auto, at(21, 0, 0)).unwrap_err().to_string();
+            // 两条路都要说清楚为什么不行，不能只说“失败”。
+            assert!(err.contains("虚拟"), "{err}");
             assert!(err.contains("2004"), "{err}");
-            assert!(!p.called("virtual_only"), "绝不能自动切到会断远程的模式");
+            assert!(!p.called("virtual_screen"));
         });
     }
 
     #[test]
     fn ensure_night_rebuilds_missing_overlay() {
         with_home(|| {
-            seed(Config::default());
+            seed(&Config::default());
             let p = FakePlatform::new();
             let e = Engine::new(&p);
-            e.night(Mode::Guard, at(21, 0, 0)).unwrap();
+            e.night(Mode::Overlay, at(21, 0, 0)).unwrap();
             *p.guard_active.borrow_mut() = false;
             e.ensure_night(at(21, 1, 0)).unwrap();
             assert_eq!(p.call_count("enter_guard"), 2);
             assert!(!p.called("repair_guard"));
+        });
+    }
+
+    #[test]
+    fn ensure_night_takes_the_desktop_back_when_the_virtual_screen_loses_it() {
+        with_home(|| {
+            seed(&Config::default());
+            let mut p = FakePlatform::new();
+            p.caps.virtual_display = true;
+            *p.vdd_present.borrow_mut() = true;
+            let e = Engine::new(&p);
+            e.night(Mode::VirtualScreen, at(21, 0, 0)).unwrap();
+            assert_eq!(p.call_count("virtual_screen"), 1);
+
+            // 好好的时候不折腾拓扑。
+            e.ensure_night(at(21, 1, 0)).unwrap();
+            assert_eq!(p.call_count("virtual_screen"), 1);
+
+            // 实体屏又拿回了桌面（例如用户按了 Win+P），必须重新切回去。
+            *p.virtual_holding.borrow_mut() = false;
+            e.ensure_night(at(21, 2, 0)).unwrap();
+            assert_eq!(p.call_count("virtual_screen"), 2);
         });
     }
 

@@ -34,10 +34,11 @@ pub struct ScreenState {
     pub displays: Vec<DisplayState>,
     /// 进入夜间的时刻，用于判断快照是否过期。
     pub entered_at: Option<chrono::DateTime<chrono::Local>>,
-    /// 是否曾切到 virtual_only（需要还原拓扑）。
+    /// 是否曾切到 `virtual_only（需要还原拓扑`）。
     pub topology_changed: bool,
 }
 
+#[must_use]
 pub fn state_file() -> PathBuf {
     nd_core::paths::screen_state_file()
 }
@@ -68,6 +69,7 @@ pub fn clear() {
 }
 
 /// 从磁盘快照里取 gamma 备份。
+#[must_use]
 pub fn load_gamma() -> Option<Vec<crate::gamma::SavedGamma>> {
     let state = load()?;
     let entries: Vec<crate::gamma::SavedGamma> = state

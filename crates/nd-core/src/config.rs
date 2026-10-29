@@ -109,7 +109,7 @@ pub struct Config {
     /// 夜间抑制系统锁屏，避免登录界面盖住黑幕。
     pub suppress_lock: bool,
     pub guard: GuardSettings,
-    /// 虚拟屏名称匹配（正则），仅 virtual_only 用。
+    /// 虚拟屏名称匹配（正则），仅 `virtual_only` 用。
     pub virtual_match: String,
     pub theme: Theme,
 
@@ -176,22 +176,25 @@ impl Default for Config {
 
 impl Config {
     /// 主时间段的起止（界面第一行）。
+    #[must_use]
     pub fn primary_range(&self) -> NightRange {
-        self.ranges
-            .first()
-            .map(|r| r.0)
-            .unwrap_or_else(|| NightRange {
+        self.ranges.first().map_or_else(
+            || NightRange {
                 start: "20:00".parse().expect("常量合法"),
                 end: "10:30".parse().expect("常量合法"),
-            })
+            },
+            |r| r.0,
+        )
     }
 
     /// 转成用于判定的时间计划。
+    #[must_use]
     pub fn schedule(&self) -> Schedule {
         Schedule::new(self.ranges.iter().map(|r| r.0).collect())
     }
 
     /// 所有区间的 `HH:MM` 字符串对，给界面和计划任务用。
+    #[must_use]
     pub fn range_strings(&self) -> Vec<(String, String)> {
         self.ranges
             .iter()
@@ -200,6 +203,7 @@ impl Config {
     }
 
     /// 组合键展示文本，例如 `C + K`。
+    #[must_use]
     pub fn chord_text(&self) -> String {
         chord::format_chord(&self.unlock_chord)
     }
@@ -223,9 +227,6 @@ impl Config {
             regex::Regex::new(&self.virtual_match).map_err(|e| {
                 crate::error::user(format!("虚拟屏匹配规则不是有效正则表达式：{e}"))
             })?;
-        }
-        if self.mode == Mode::VirtualOnly && self.recovery_pending {
-            // 允许：应急恢复要能用这个状态继续工作。
         }
         let gap = self.guard.brightness_reassert_secs.clamp(2, 60);
         self.guard.brightness_reassert_secs = gap;
@@ -254,6 +255,7 @@ impl Config {
     }
 
     /// 夜间是否处于"计划驱动"的锁定状态。
+    #[must_use]
     pub fn is_locked(&self) -> bool {
         self.state == RunState::Night && self.lock
     }
@@ -474,8 +476,13 @@ mod tests {
     }
 
     #[test]
-    fn legacy_overlay_mode_maps_to_guard() {
-        assert_eq!(Mode::parse("overlay").unwrap(), Mode::Guard);
+    fn legacy_mode_names_still_parse() {
+        // 旧配置里叫 guard / virtual_only，升级后必须读得进来。
+        assert_eq!(Mode::parse("overlay").unwrap(), Mode::Overlay);
+        assert_eq!(Mode::parse("guard").unwrap(), Mode::Overlay);
+        assert_eq!(Mode::parse("virtual_only").unwrap(), Mode::VirtualScreen);
+        assert_eq!(Mode::parse("virtual_screen").unwrap(), Mode::VirtualScreen);
+        assert_eq!(Mode::parse("auto").unwrap(), Mode::Auto);
     }
 
     #[test]
@@ -531,9 +538,10 @@ mod tests {
 
     #[test]
     fn mode_flags_mark_remote_interruption() {
-        assert!(!Mode::Guard.interrupts_remote());
+        // 虚拟屏设计上不打断远程；只有真的关屏会。
+        assert!(!Mode::Overlay.interrupts_remote());
         assert!(!Mode::Auto.interrupts_remote());
-        assert!(Mode::VirtualOnly.interrupts_remote());
+        assert!(!Mode::VirtualScreen.interrupts_remote());
         assert!(Mode::ScreenOff.interrupts_remote());
     }
 

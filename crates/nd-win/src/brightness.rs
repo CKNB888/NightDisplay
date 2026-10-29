@@ -41,7 +41,7 @@ impl Control {
     pub fn open() -> Result<Self> {
         let mut panels = Vec::new();
         let mut unsupported = Vec::new();
-        let monitors = enumerate()?;
+        let monitors = enumerate();
         for (index, hmonitor) in monitors.into_iter().enumerate() {
             let mut array = [PHYSICAL_MONITOR::default(); 4];
             // SAFETY: array 长度与传入的切片长度一致，API 只会写入不超过该长度。
@@ -50,7 +50,7 @@ impl Control {
                 unsupported.push(format!("DISPLAY{}（无法打开物理显示器）", index + 1));
                 continue;
             }
-            for monitor in array.iter() {
+            for monitor in &array {
                 // PHYSICAL_MONITOR 是 packed 结构，按值取字段（不能取引用）。
                 let handle = monitor.hPhysicalMonitor;
                 let raw_name = monitor.szPhysicalMonitorDescription;
@@ -71,8 +71,8 @@ impl Control {
                         handle,
                         VCP_BRIGHTNESS,
                         None,
-                        &mut current,
-                        Some(&mut maximum),
+                        &raw mut current,
+                        Some(&raw mut maximum),
                     )
                 };
                 if read == 0 && maximum > 0 {
@@ -161,6 +161,7 @@ impl Control {
     }
 
     /// 原始亮度，供落盘备份。
+    #[must_use]
     pub fn snapshot(&self) -> Vec<(String, u32)> {
         self.panels
             .iter()
@@ -168,10 +169,12 @@ impl Control {
             .collect()
     }
 
+    #[must_use]
     pub fn supported_count(&self) -> usize {
         self.panels.len()
     }
 
+    #[must_use]
     pub fn unsupported(&self) -> &[String] {
         &self.unsupported
     }
@@ -192,21 +195,16 @@ impl Drop for Control {
     }
 }
 
-/// 枚举所有 HMONITOR。
-fn enumerate() -> Result<Vec<HMONITOR>> {
+/// 枚举所有 HMONITOR。`EnumDisplayMonitors` 没有失败路径需要处理，
+/// 回调返回 FALSE 只会提前结束枚举，所以直接返回列表。
+fn enumerate() -> Vec<HMONITOR> {
     use std::cell::RefCell;
 
     let list: RefCell<Vec<HMONITOR>> = RefCell::new(Vec::new());
     // SAFETY: 回调只在本次同步调用期间执行，捕获的引用一直有效。
-    let _ = unsafe {
-        EnumDisplayMonitors(
-            None,
-            None,
-            Some(collect),
-            LPARAM(&list as *const _ as isize),
-        )
-    };
-    Ok(list.into_inner())
+    let _ =
+        unsafe { EnumDisplayMonitors(None, None, Some(collect), LPARAM(&raw const list as isize)) };
+    list.into_inner()
 }
 
 unsafe extern "system" fn collect(
@@ -256,6 +254,7 @@ pub fn restore_from_snapshot(state: &crate::screen_state::ScreenState) -> Result
 }
 
 /// 当前系统有几块面板支持 DDC/CI 亮度。
+#[must_use]
 pub fn supported_display_count() -> usize {
     match Control::open() {
         Ok(c) => c.supported_count(),

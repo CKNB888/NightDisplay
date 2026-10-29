@@ -41,6 +41,7 @@ pub struct CommandDetail {
 }
 
 impl Command {
+    #[must_use]
     pub fn action(&self) -> &str {
         match self {
             Command::Bare(s) => s.as_str(),
@@ -66,6 +67,7 @@ pub struct Response {
 }
 
 impl Response {
+    #[must_use]
     pub fn ok() -> Self {
         Self {
             ok: true,
@@ -89,14 +91,22 @@ impl Response {
 }
 
 /// 32 字节随机令牌的十六进制表示。
+#[must_use]
 pub fn new_token() -> String {
     use rand::RngCore;
+    use std::fmt::Write as _;
+
     let mut buf = [0u8; 32];
     rand::rng().fill_bytes(&mut buf);
-    buf.iter().map(|b| format!("{b:02x}")).collect()
+    buf.iter().fold(String::with_capacity(64), |mut acc, b| {
+        // Writing into a String cannot fail.
+        let _ = write!(acc, "{b:02x}");
+        acc
+    })
 }
 
 /// 令牌比较，常量时间。
+#[must_use]
 pub fn token_matches(expected: &str, given: &str) -> bool {
     let a = expected.as_bytes();
     let b = given.as_bytes();
@@ -122,6 +132,7 @@ pub fn encode_request(req: &Request) -> NdResult<String> {
 }
 
 /// 编码一条回复，末尾带换行。
+#[must_use]
 pub fn encode_response(resp: &Response) -> String {
     let mut text = serde_json::to_string(resp)
         .unwrap_or_else(|_| r#"{"ok":false,"result":"IPC 回复无法编码"}"#.to_string());
@@ -194,6 +205,7 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
+    #[must_use]
     pub fn new(pipe: String) -> Self {
         Self {
             token: new_token(),
@@ -238,7 +250,7 @@ mod tests {
                 assert_eq!(d.mode.as_deref(), Some("guard"));
                 assert_eq!(d.seconds, Some(15));
             }
-            _ => panic!("应当解析成带参数命令"),
+            Command::Bare(other) => panic!("应当解析成带参数命令，实际是 {other}"),
         }
     }
 

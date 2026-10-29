@@ -1,4 +1,4 @@
-//! NightDisplay Windows 平台层。
+//! `NightDisplay` Windows 平台层。
 //!
 //! 只在 Windows 上编译；非 Windows 下 `platform` / `helper` 等对外接口都返回
 //! "仅支持 Windows"错误，这样纯逻辑的 `nd-core` 和它的测试可以在 Linux CI 上跑。
@@ -9,6 +9,26 @@
 //!   全部经由一个常驻的**提升助手**（[`helper`]），IPC 面很小且只接受白名单命令；
 //! * 黑幕、gamma、背光、键鼠钩子这些**不需要管理员**的动作在主进程里直接做。
 
+// Lint policy (see `docs/architecture.md` § "Lint policy").
+//
+// This crate is a thin, typed wrapper over Win32: the casts and the boolean
+// bundles come from the API shapes, not from our abstractions.
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate,
+    clippy::module_name_repetitions,
+    clippy::struct_excessive_bools,
+    clippy::too_many_lines,
+    // `DISPLAYCONFIG_*` fields are `u32`/`i32` by definition, LUID halves are
+    // `u32`/`i32`, and `SetWindowLongPtr` takes an `isize`. Every cast below is
+    // either a Win32 ABI conversion or a value we just bounds-checked.
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_lossless,
+    clippy::doc_markdown
+)]
 // 测试里构造配置时逐字段赋值更贴近"用户改一项"的场景，不必强求结构体字面量。
 #![cfg_attr(test, allow(clippy::field_reassign_with_default))]
 #![cfg_attr(not(windows), allow(unused))]
@@ -58,6 +78,7 @@ mod test_support;
 pub use platform::{current_capabilities, WinPlatform};
 
 /// 非 Windows 上的统一错误。
+#[must_use]
 pub fn unsupported() -> anyhow::Error {
     nd_core::error::user("NightDisplay 4.x 目前只支持 Windows 10 2004 及以上版本。")
 }

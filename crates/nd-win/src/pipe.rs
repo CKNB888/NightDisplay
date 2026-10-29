@@ -33,20 +33,29 @@ fn wide(s: &str) -> Vec<u16> {
 }
 
 /// 当前用户的稳定短标识，避免两个用户抢同一条管道。
+#[must_use]
 pub fn user_tag() -> String {
     let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".into());
     let domain = std::env::var("USERDOMAIN").unwrap_or_default();
     // 用户名可能带非 ASCII，转成十六进制，避免管道名里出现奇怪字符。
-    let raw = format!("{domain}\\{user}");
-    raw.bytes().map(|b| format!("{b:02x}")).collect::<String>()
+    format!("{domain}\\{user}")
+        .bytes()
+        .fold(String::with_capacity(64), |mut acc, b| {
+            use std::fmt::Write as _;
+            // Writing into a String cannot fail.
+            let _ = write!(acc, "{b:02x}");
+            acc
+        })
 }
 
 /// 主进程（serve）的管道全名。
+#[must_use]
 pub fn serve_pipe_name() -> String {
     format!(r"\\.\pipe\NightDisplay-serve-{}", user_tag())
 }
 
 /// 提升助手的管道全名。
+#[must_use]
 pub fn helper_pipe_name() -> String {
     format!(r"\\.\pipe\NightDisplay-helper-{}", user_tag())
 }
@@ -151,14 +160,14 @@ fn handle_connection(
     Ok(stop)
 }
 
-/// 用 ReadFile 包一个 `Read`，让协议层的 `read_line_limited` 能用。
+/// 用 `ReadFile` 包一个 `Read`，让协议层的 `read_line_limited` 能用。
 struct HandleReader(HANDLE);
 
 impl std::io::Read for HandleReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let mut read = 0u32;
         // SAFETY: buf 长度与传入的缓冲区一致。
-        let ok = unsafe { ReadFile(self.0, Some(buf), Some(&mut read), None) };
+        let ok = unsafe { ReadFile(self.0, Some(buf), Some(&raw mut read), None) };
         match ok {
             Ok(()) => Ok(read as usize),
             Err(e) => Err(std::io::Error::other(e.to_string())),
@@ -170,7 +179,7 @@ fn write_all(handle: HANDLE, text: &str) -> Result<()> {
     let bytes = text.as_bytes();
     let mut written = 0u32;
     // SAFETY: bytes 长度与缓冲区一致；管道是小报文，一次写完。
-    let ok = unsafe { WriteFile(handle, Some(bytes), Some(&mut written), None) };
+    let ok = unsafe { WriteFile(handle, Some(bytes), Some(&raw mut written), None) };
     ok.map_err(|e| nd_core::error::user(format!("写入本地通信管道失败：{e}")))
 }
 
@@ -243,8 +252,7 @@ pub fn load_endpoint() -> Option<nd_core::ipc::Endpoint> {
     let pipe = value
         .get("pipe")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(serve_pipe_name);
+        .map_or_else(serve_pipe_name, std::string::ToString::to_string);
     Some(nd_core::ipc::Endpoint { token, pipe })
 }
 
@@ -304,7 +312,7 @@ mod tests {
     #[test]
     fn user_tag_is_hex() {
         let tag = user_tag();
-        assert!(!tag.is_empty());
+        assert_ne!(tag, "");
         assert!(tag.chars().all(|c| c.is_ascii_hexdigit()));
     }
 

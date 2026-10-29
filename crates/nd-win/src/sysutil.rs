@@ -17,23 +17,27 @@ use windows::Win32::System::Threading::{
 const NO_WINDOW: u32 = CREATE_NO_WINDOW.0;
 
 /// 当前可执行文件路径。
+#[must_use]
 pub fn current_exe() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("NightDisplay.exe"))
 }
 
 /// 本程序自己的 exe 路径（GUI 里叫 NightDisplay.exe，CLI 也叫 NightDisplay.exe）。
+#[must_use]
 pub fn exe_path() -> PathBuf {
     current_exe()
 }
 
 /// 组装 `程序 --action xxx --home <dir>` 这种命令行。
+#[must_use]
 pub fn self_args(home: &std::path::Path, extra: &[&str]) -> Vec<String> {
     let mut args = vec!["--home".to_string(), home.display().to_string()];
-    args.extend(extra.iter().map(|s| s.to_string()));
+    args.extend(extra.iter().map(std::string::ToString::to_string));
     args
 }
 
 /// 用 Windows 的 `CommandLineToArgvW` 规则做一次引号化。
+#[must_use]
 pub fn quote(arg: &str) -> String {
     if !arg.is_empty() && !arg.contains([' ', '\t', '"']) {
         return arg.to_string();
@@ -61,6 +65,7 @@ pub fn quote(arg: &str) -> String {
 }
 
 /// 把 exe + 参数拼成一条命令行字符串（写注册表 Run、计划任务时用）。
+#[must_use]
 pub fn command_line(exe: &std::path::Path, args: &[String]) -> String {
     let mut parts = Vec::with_capacity(args.len() + 1);
     parts.push(quote(&exe.display().to_string()));
@@ -101,7 +106,7 @@ pub fn run_powershell(script: &str, env: &[(&str, &str)]) -> std::io::Result<Out
         cmd.env(k, v);
     }
     cmd.spawn()
-        .and_then(|c| c.wait_with_output())
+        .and_then(std::process::Child::wait_with_output)
         .map_err(|e| std::io::Error::new(e.kind(), format!("无法启动 PowerShell：{e}")))
 }
 
@@ -137,11 +142,12 @@ pub fn run_powershell_script(script: &std::path::Path, args: &[&str]) -> std::io
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
     cmd.spawn()
-        .and_then(|c| c.wait_with_output())
+        .and_then(std::process::Child::wait_with_output)
         .map_err(|e| std::io::Error::new(e.kind(), format!("无法启动 PowerShell：{e}")))
 }
 
 /// 静默参数（不需要控制台窗口）。
+#[must_use]
 pub fn no_window_flag() -> u32 {
     NO_WINDOW
 }

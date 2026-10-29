@@ -87,6 +87,7 @@ impl Default for Overlays {
 }
 
 impl Overlays {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             windows: Mutex::new(Vec::new()),
@@ -109,8 +110,11 @@ impl Overlays {
     pub fn warm_up(&self) -> Result<ShowTiming> {
         let started = Instant::now();
         let count = {
-            let mut windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
-            self.rebuild_locked(&mut windows)?;
+            let mut windows = self
+                .windows
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Self::rebuild_locked(&mut windows)?;
             windows.len()
         };
         self.warmed.store(true, Ordering::SeqCst);
@@ -124,8 +128,11 @@ impl Overlays {
 
     /// 显示器数量或布局变了：销毁旧窗口，按当前显示器重建（保持隐藏）。
     pub fn refresh(&self) -> Result<()> {
-        let mut windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
-        self.rebuild_locked(&mut windows)
+        let mut windows = self
+            .windows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::rebuild_locked(&mut windows)
     }
 
     /// 进入夜间：显示全部黑幕，并校验每一块都被排除在采集之外。
@@ -133,9 +140,12 @@ impl Overlays {
     /// 任何一块失败都会把已经显示的窗口全部收回，返回的错误里带显示器名字。
     pub fn show(&self) -> Result<Vec<OverlayOutcome>> {
         let started = Instant::now();
-        let mut windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
+        let mut windows = self
+            .windows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // 显示器可能在这期间变了（插拔、分辨率调整），先对齐一次。
-        self.rebuild_locked(&mut windows)?;
+        Self::rebuild_locked(&mut windows)?;
         if windows.is_empty() {
             return Err(user("没有检测到任何显示器，无法创建黑幕"));
         }
@@ -179,7 +189,10 @@ impl Overlays {
 
     /// 退出夜间：隐藏全部窗口（不销毁，下次直接复用）。
     pub fn hide(&self) -> Result<()> {
-        let windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
+        let windows = self
+            .windows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for overlay in windows.iter() {
             // SAFETY: hwnd 由本进程创建并持有。
             unsafe {
@@ -193,7 +206,10 @@ impl Overlays {
 
     /// 夜间修复：重新置顶并再次校验采集排除（远程软件或别的程序可能改动过）。
     pub fn reassert(&self) -> Result<()> {
-        let windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
+        let windows = self
+            .windows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for overlay in windows.iter() {
             // SAFETY: hwnd 由本进程创建并持有，且仍在有效期内。
             unsafe {
@@ -220,7 +236,10 @@ impl Overlays {
 
     /// 进程退出前调用：销毁所有窗口。
     pub fn destroy_all(&self) {
-        let mut windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
+        let mut windows = self
+            .windows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for overlay in windows.drain(..) {
             // SAFETY: hwnd 由本进程创建，只销毁一次。
             unsafe {
@@ -231,8 +250,9 @@ impl Overlays {
         self.warmed.store(false, Ordering::SeqCst);
     }
 
-    /// 按当前显示器布局重建窗口列表。调用方必须已经持有锁。
-    fn rebuild_locked(&self, windows: &mut Vec<Overlay>) -> Result<()> {
+    /// 按当前显示器布局重建窗口列表。`self` 只承载身份，
+    /// 真正的状态是传进来的 `windows`（调用方必须已经持有锁）。
+    fn rebuild_locked(windows: &mut Vec<Overlay>) -> Result<()> {
         let monitors = enumerate_monitors()?;
         // 布局没变就不重建，避免无意义闪烁。
         if same_layout(windows, &monitors) {
@@ -292,7 +312,7 @@ fn enumerate_monitors() -> Result<Vec<MonitorInfo>> {
             None,
             None,
             Some(enum_proc),
-            LPARAM(&collected as *const _ as isize),
+            LPARAM(&raw const collected as isize),
         )
     };
     if !ok.as_bool() && collected.borrow().is_empty() {
@@ -305,7 +325,7 @@ fn enumerate_monitors() -> Result<Vec<MonitorInfo>> {
             .cmp(&(b.rect.left, b.rect.top))
             .then_with(|| a.name.cmp(&b.name))
     });
-    for m in list.iter_mut() {
+    for m in &mut list {
         if m.name.is_empty() {
             index += 1;
             m.name = format!("DISPLAY{index}");
@@ -326,7 +346,7 @@ unsafe extern "system" fn enum_proc(
     let mut info = MONITORINFOEXW::default();
     info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
     // SAFETY: info 尺寸已按 API 要求填好。
-    if unsafe { GetMonitorInfoW(monitor, &mut info.monitorInfo).as_bool() } {
+    if unsafe { GetMonitorInfoW(monitor, &raw mut info.monitorInfo).as_bool() } {
         let name = String::from_utf16_lossy(
             &info.szDevice[..info
                 .szDevice
@@ -355,12 +375,12 @@ fn ensure_class_registered() -> Result<()> {
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             lpfnWndProc: Some(window_proc),
-            hInstance: Default::default(),
+            hInstance: windows::Win32::Foundation::HINSTANCE::default(),
             lpszClassName: CLASS_NAME,
             ..Default::default()
         };
         // SAFETY: wc 是完整初始化的结构体，类名是静态宽字符串。
-        let atom = unsafe { RegisterClassExW(&wc) };
+        let atom = unsafe { RegisterClassExW(&raw const wc) };
         if atom == 0 {
             let err = windows::core::Error::from_thread();
             // 重复注册会返回 0 且 last error 是 ERROR_CLASS_ALREADY_EXISTS。
@@ -446,7 +466,7 @@ fn show_one(overlay: &Overlay, started: Instant) -> OverlayOutcome {
             };
         }
         let mut affinity = 0u32;
-        if let Err(e) = GetWindowDisplayAffinity(overlay.hwnd, &mut affinity) {
+        if let Err(e) = GetWindowDisplayAffinity(overlay.hwnd, &raw mut affinity) {
             return OverlayOutcome {
                 display: overlay.display.clone(),
                 shown: true,
@@ -507,9 +527,9 @@ unsafe extern "system" fn window_proc(
             // SAFETY: BeginPaint/EndPaint 成对调用，hwnd 有效。
             unsafe {
                 let mut ps = windows::Win32::Graphics::Gdi::PAINTSTRUCT::default();
-                let hdc = windows::Win32::Graphics::Gdi::BeginPaint(hwnd, &mut ps);
+                let hdc = windows::Win32::Graphics::Gdi::BeginPaint(hwnd, &raw mut ps);
                 paint_black(hwnd, hdc);
-                let _ = windows::Win32::Graphics::Gdi::EndPaint(hwnd, &ps);
+                let _ = windows::Win32::Graphics::Gdi::EndPaint(hwnd, &raw const ps);
             }
             LRESULT(0)
         }
@@ -549,8 +569,12 @@ fn paint_black(hwnd: HWND, hdc: HDC) {
     // SAFETY: rect/get client 均以有效 hwnd 调用；画刷是有效的 HBRUSH。
     unsafe {
         let mut rect = RECT::default();
-        if windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect).is_ok() {
-            let _ = windows::Win32::Graphics::Gdi::FillRect(hdc, &rect, HBRUSH(brush as *mut _));
+        if windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &raw mut rect).is_ok() {
+            let _ = windows::Win32::Graphics::Gdi::FillRect(
+                hdc,
+                &raw const rect,
+                HBRUSH(brush as *mut _),
+            );
         }
     }
 }
@@ -562,7 +586,7 @@ fn resize_to_monitor(hwnd: HWND) {
         let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
         let mut info = MONITORINFOEXW::default();
         info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
-        if GetMonitorInfoW(monitor, &mut info.monitorInfo).as_bool() {
+        if GetMonitorInfoW(monitor, &raw mut info.monitorInfo).as_bool() {
             let r = info.monitorInfo.rcMonitor;
             let _ = SetWindowPos(
                 hwnd,
@@ -579,6 +603,7 @@ fn resize_to_monitor(hwnd: HWND) {
 }
 
 /// 整个虚拟桌面尺寸（日志用）。
+#[must_use]
 pub fn virtual_screen_size() -> (i32, i32) {
     // SAFETY: 纯查询，无副作用。
     unsafe {
@@ -590,6 +615,7 @@ pub fn virtual_screen_size() -> (i32, i32) {
 }
 
 /// 虚拟桌面原点（多屏时可能是负数）。
+#[must_use]
 pub fn virtual_screen_origin() -> (i32, i32) {
     // SAFETY: 纯查询，无副作用。
     unsafe {
@@ -606,8 +632,9 @@ pub fn display_devices() -> Result<Vec<String>> {
 }
 
 /// 显示器数量（用于能力探测）。
+#[must_use]
 pub fn display_count() -> usize {
-    enumerate_monitors().map(|m| m.len()).unwrap_or(0)
+    enumerate_monitors().map_or(0, |m| m.len())
 }
 
 /// 释放进程级画刷。进程退出时无所谓，测试里调用可以避免句柄泄漏。

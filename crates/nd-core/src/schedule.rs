@@ -32,25 +32,29 @@ impl MinuteOfDay {
 
     /// 从分钟数构造，越界返回中文错误而不是截断。
     pub fn from_minutes(minutes: i64) -> NdResult<Self> {
-        if !(0..=Self::MAX as i64).contains(&minutes) {
+        if !(0..=i64::from(Self::MAX)).contains(&minutes) {
             return Err(user("时间格式应为 HH:MM，例如 20:00"));
         }
         Ok(Self(minutes as u16))
     }
 
+    #[must_use]
     pub fn minutes(self) -> u16 {
         self.0
     }
 
+    #[must_use]
     pub fn hour(self) -> u32 {
         u32::from(self.0 / 60)
     }
 
+    #[must_use]
     pub fn minute(self) -> u32 {
         u32::from(self.0 % 60)
     }
 
     /// `HH:MM` 形式，配置和日志都用这个写法。
+    #[must_use]
     pub fn to_hm(self) -> String {
         format!("{:02}:{:02}", self.hour(), self.minute())
     }
@@ -106,11 +110,13 @@ impl NightRange {
     }
 
     /// 这段是否跨午夜（例如 20:00→10:30）。
+    #[must_use]
     pub fn crosses_midnight(&self) -> bool {
         self.start > self.end
     }
 
     /// 给定时刻是否落在这一段里。`now` 只看时分。
+    #[must_use]
     pub fn contains(&self, now: MinuteOfDay) -> bool {
         if self.start == self.end {
             return false;
@@ -156,28 +162,34 @@ pub struct Schedule {
 }
 
 impl Schedule {
+    #[must_use]
     pub fn new(ranges: Vec<NightRange>) -> Self {
         Self { ranges }
     }
 
+    #[must_use]
     pub fn ranges(&self) -> &[NightRange] {
         &self.ranges
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.ranges.is_empty()
     }
 
+    #[must_use]
     pub fn contains_minute(&self, now: MinuteOfDay) -> bool {
         self.ranges.iter().any(|r| r.contains(now))
     }
 
     /// 某个具体时刻是否在夜间。
+    #[must_use]
     pub fn is_night_at(&self, now: DateTime<Local>) -> bool {
         self.contains_minute(minute_of_day(now))
     }
 
     /// 所有边界时间点（去重后升序）。用来注册系统计划任务。
+    #[must_use]
     pub fn boundaries(&self) -> Vec<MinuteOfDay> {
         let mut v: Vec<MinuteOfDay> = self.ranges.iter().flat_map(|r| [r.start, r.end]).collect();
         v.sort();
@@ -189,6 +201,7 @@ impl Schedule {
     ///
     /// 以分钟为粒度向前找，最多 24 小时。全天被覆盖或完全没有有效段时返回 `None`，
     /// 表示不存在切换点（旧版在这里返回 (None, 86400)）。
+    #[must_use]
     pub fn next_switch(&self, now: DateTime<Local>) -> Option<(bool, i64)> {
         let current = self.is_night_at(now);
         let base = now.with_second(0)?.with_nanosecond(0)?;
@@ -203,6 +216,7 @@ impl Schedule {
     }
 
     /// 下一次进入夜间还要多久（秒）。已经在夜间时返回 0。
+    #[must_use]
     pub fn seconds_until_night(&self, now: DateTime<Local>) -> i64 {
         if self.is_night_at(now) {
             return 0;
@@ -214,6 +228,7 @@ impl Schedule {
     }
 
     /// 当前这一段夜间还剩多少秒。不在夜间时返回 0。
+    #[must_use]
     pub fn seconds_left_in_night(&self, now: DateTime<Local>) -> i64 {
         if !self.is_night_at(now) {
             return 0;
@@ -226,11 +241,13 @@ impl Schedule {
 }
 
 /// 取某个时刻的“时:分”。
+#[must_use]
 pub fn minute_of_day(t: DateTime<Local>) -> MinuteOfDay {
     MinuteOfDay((t.hour() as u16) * 60 + t.minute() as u16)
 }
 
 /// 把 `HH:MM` 转成今天（或明天）的 `NaiveTime`，供状态文本展示用。
+#[must_use]
 pub fn naive_time(m: MinuteOfDay) -> NaiveTime {
     NaiveTime::from_hms_opt(m.hour(), m.minute(), 0).unwrap_or(NaiveTime::MIN)
 }

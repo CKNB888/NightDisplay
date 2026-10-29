@@ -28,8 +28,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: 格式检查
         run: cargo fmt --all --check
-      - name: clippy（-D warnings）
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: clippy（-D warnings + pedantic）
+        run: cargo clippy --workspace --all-targets -- -D warnings -W clippy::pedantic
       - name: 单元测试
         run: cargo test --workspace
       - name: 构建 release
@@ -81,7 +81,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: 格式检查
         run: cargo fmt --all --check
-      - name: clippy（nd-core）
-        run: cargo clippy -p nd-core --all-targets -- -D warnings
+      - name: clippy（nd-core，含 pedantic）
+        run: cargo clippy -p nd-core --all-targets -- -D warnings -W clippy::pedantic
       - name: 单元测试（时间计划、组合键、配置、模式降级、向导状态）
         run: cargo test -p nd-core

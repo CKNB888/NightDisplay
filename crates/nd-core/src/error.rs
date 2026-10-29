@@ -51,6 +51,7 @@ pub enum NdError {
 }
 
 /// 把错误压成一行，供 IPC 和状态文本使用。
+#[must_use]
 pub fn one_line(err: &anyhow::Error) -> String {
     let mut text = err.to_string();
     text = text.replace(['\n', '\r'], " ");

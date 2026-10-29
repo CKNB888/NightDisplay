@@ -1,9 +1,22 @@
-//! 每日计划任务：每个时间边界一个任务，跑 `--action reconcile`。
+//! 计划任务：每日边界任务 + 开机/登录自启 + 看门狗。
 //!
-//! 优先用 PowerShell 的 ScheduledTasks 模块（能设 `StartWhenAvailable`，
-//! 睡眠错过的边界醒来后补跑）；PowerShell 不可用时退回 `schtasks`。
-//! 任务名沿用 Python 版的 `NightDisplay_Night` / `NightDisplay_Day` / `NightDisplay_Txx`，
-//! 升级和卸载都能认出来。
+//! ## 为什么要三条自启路径
+//!
+//! 断电、蓝屏、强制关机之后，「登录时触发」的任务不一定会补跑，
+//! 而「开机时触发」的任务会。所以自启是这样铺的：
+//!
+//! | 路径 | 触发 | 身份 | 作用 |
+//! |---|---|---|---|
+//! | HKCU Run | 用户登录 | 当前用户（普通权限） | 最普通的一条，被安全软件拦掉的概率最低 |
+//! | `NightDisplay_Logon` | 登录 | 当前用户 | 带 `StartWhenAvailable`，错过就补 |
+//! | `NightDisplay_Boot` | 开机（延迟 30 秒） | SYSTEM + 最高权限 | 断电后也会跑 |
+//!
+//! 三条路径都只是把同一个 exe 拉起来，单实例锁（`daemon.lock`）保证只有一个
+//! 真的在跑，其余几个立刻退出 —— 重复触发是安全的。
+//!
+//! 每日边界任务（`NightDisplay_Night` / `_Day` / `_Txx`）沿用旧版命名，
+//! 升级和卸载都能认出来。优先用 PowerShell 的 `ScheduledTasks` 模块
+//! （能设 `StartWhenAvailable`，睡眠错过的边界醒来后补跑）；不可用时退回 `schtasks`。
 
 #![cfg(windows)]
 
@@ -19,6 +32,14 @@ pub const NIGHT_TASK: &str = "NightDisplay_Night";
 pub const DAY_TASK: &str = "NightDisplay_Day";
 /// 看门狗任务：登录后常驻，主进程死掉几秒内恢复屏幕。
 pub const WATCHDOG_TASK: &str = "NightDisplay_Watchdog";
+/// 登录时拉起常驻进程（带 `StartWhenAvailable`）。
+pub const LOGON_TASK: &str = "NightDisplay_Logon";
+/// 开机时拉起常驻进程，SYSTEM + 最高权限 + 延迟启动。
+pub const BOOT_TASK: &str = "NightDisplay_Boot";
+/// 开机任务延迟多少秒，避开开机时的服务风暴。
+pub const BOOT_DELAY: &str = "PT30S";
+/// 看门狗任务在失败后重启的间隔（ISO 8601 时长）。
+pub const WATCHDOG_RESTART: &str = "PT1M";
 
 const TASK_SCRIPT: &str = r#"
 $ErrorActionPreference = "Stop"
@@ -34,6 +55,36 @@ foreach ($task in $payload.tasks) {
 }
 "#;
 
+/// 注册两条自启任务的脚本（一次 PowerShell 调用，两条一起登记）。
+///
+/// * `NightDisplay_Logon`：当前用户、登录触发、`StartWhenAvailable`；
+/// * `NightDisplay_Boot`：SYSTEM、开机触发、延迟 30 秒、最高权限、
+///   失败后每 1 分钟重启一次（最多 3 次）。
+///
+/// 两条都跑 `--action reconcile`，重复触发由单实例锁挡掉。
+const AUTOSTART_SCRIPT: &str = r#"
+$ErrorActionPreference = "Stop"
+$payload = $env:NIGHTDISPLAY_AUTOSTART | ConvertFrom-Json
+$exe = $payload.exe
+$args = $payload.args
+
+# 登录任务：当前用户，普通权限即可（它只负责把常驻进程拉起来）。
+$action = New-ScheduledTaskAction -Execute $exe -Argument $args
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
+$account = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+$principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $account
+Register-ScheduledTask -TaskName $payload.logon -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+
+# 开机任务：SYSTEM + 最高权限 + 延迟，断电重启后也能跑起来。
+$bootAction = New-ScheduledTaskAction -Execute $exe -Argument $args
+$bootSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+$bootPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+$bootTrigger = New-ScheduledTaskTrigger -AtStartup
+$bootTrigger.Delay = $payload.delay
+Register-ScheduledTask -TaskName $payload.boot -Action $bootAction -Trigger $bootTrigger -Settings $bootSettings -Principal $bootPrincipal -Force | Out-Null
+"#;
+
 /// 一个要登记的任务。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct TaskPlan {
@@ -43,6 +94,7 @@ pub struct TaskPlan {
 }
 
 /// 按配置算出任务清单：每个切换点一个。
+#[must_use]
 pub fn plan(cfg: &Config) -> Vec<TaskPlan> {
     cfg.schedule()
         .boundaries()
@@ -170,6 +222,7 @@ fn task_args(home: &Path) -> Vec<String> {
 }
 
 /// 当前系统里存在的本程序任务名。
+#[must_use]
 pub fn query_names() -> Vec<String> {
     let Ok(out) = sysutil::run_hidden(
         std::ffi::OsStr::new("schtasks"),
@@ -212,6 +265,114 @@ pub fn remove_all() -> Result<usize> {
     Ok(removed)
 }
 
+/// 登记两条自启任务（登录 + 开机）。**幂等**：重复调用只会覆盖同名任务。
+pub fn install_autostart(home: &Path) -> Result<()> {
+    let payload = serde_json::json!({
+        "exe": sysutil::exe_path().display().to_string(),
+        "args": sysutil::command_line(Path::new(""), &task_args(home)),
+        "logon": LOGON_TASK,
+        "boot": BOOT_TASK,
+        "delay": BOOT_DELAY,
+    });
+    let out = sysutil::run_powershell(
+        AUTOSTART_SCRIPT,
+        &[("NIGHTDISPLAY_AUTOSTART", &payload.to_string())],
+    )?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let reason = err.trim().lines().last().unwrap_or("未知原因").to_string();
+        // 开机任务（SYSTEM）在个别策略下会被拒；登录任务能成就还能用，如实说明。
+        let existing = query_names();
+        let logon_ok = existing.iter().any(|n| n == LOGON_TASK);
+        let boot_ok = existing.iter().any(|n| n == BOOT_TASK);
+        if logon_ok {
+            return Err(nd_core::error::user(format!(
+                "登录自启已登记，但开机自启（SYSTEM）失败：{reason}。\
+                 断电重启后需要等用户登录才会恢复；如果设置了自动登录则没有影响"
+            )));
+        }
+        let _ = boot_ok;
+        return Err(nd_core::error::user(format!(
+            "登记自启任务失败：{reason}（可能被组策略或安全软件拦下了）"
+        )));
+    }
+    // 回读校验：两条都必须真的在。
+    let existing = query_names();
+    let mut missing = Vec::new();
+    for name in [LOGON_TASK, BOOT_TASK] {
+        if !existing.iter().any(|n| n == name) {
+            missing.push(name);
+        }
+    }
+    if !missing.is_empty() {
+        return Err(nd_core::error::user(format!(
+            "自启任务登记后没有查到：{}（可能被安全软件拦下了）",
+            missing.join("、")
+        )));
+    }
+    tracing::info!("已登记登录 + 开机自启任务");
+    Ok(())
+}
+
+/// 删除两条自启任务。不存在也算成功。
+pub fn remove_autostart() -> Result<()> {
+    let existing = query_names();
+    for name in [LOGON_TASK, BOOT_TASK] {
+        if !existing.iter().any(|n| n == name) {
+            continue;
+        }
+        let out = sysutil::run_hidden(
+            std::ffi::OsStr::new("schtasks"),
+            &["/Delete", "/F", "/TN", name],
+            "schtasks",
+        )?;
+        if !out.status.success() {
+            tracing::warn!(task = name, "删除自启任务失败");
+        }
+    }
+    Ok(())
+}
+
+/// 两条自启任务是否都在。
+#[must_use]
+pub fn autostart_tasks_installed() -> (bool, bool) {
+    let names = query_names();
+    (
+        names.iter().any(|n| n == LOGON_TASK),
+        names.iter().any(|n| n == BOOT_TASK),
+    )
+}
+
+/// 回读三条自启路径 + 看门狗 + 每日任务的**真实**状态。
+///
+/// 设置页显示的必须是这个，而不是用户勾的那个开关：任务可能被安全软件删了，
+/// Run 项可能被「启动」页禁用了，这些都要如实反映出来。
+#[must_use]
+pub fn registration() -> nd_core::status::Registration {
+    let (task_logon, task_boot) = autostart_tasks_installed();
+    let names = query_names();
+    let schedule_tasks = names
+        .iter()
+        .filter(|n| {
+            n.as_str() != LOGON_TASK && n.as_str() != BOOT_TASK && n.as_str() != WATCHDOG_TASK
+        })
+        .count();
+    let home = nd_core::paths::home_dir();
+    let run_key = crate::autostart::is_enabled();
+    let mut note = crate::autostart::diagnose(&home);
+    if note == "已注册" {
+        note = String::new();
+    }
+    nd_core::status::Registration {
+        run_key,
+        task_logon,
+        task_boot,
+        watchdog_task: names.iter().any(|n| n == WATCHDOG_TASK),
+        schedule_tasks,
+        run_key_note: note,
+    }
+}
+
 /// 登记看门狗任务：登录后拉起，主进程退出时恢复屏幕。
 ///
 /// 用 `ONLOGON` 触发；它本身是常驻的轻量进程，只监听父进程 PID。
@@ -242,10 +403,28 @@ pub fn install_watchdog(home: &Path) -> Result<()> {
             err.trim().lines().last().unwrap_or("未知原因")
         )));
     }
+    // 补上"失败后自动重启"：schtasks 设不了，用 PowerShell 改一遍设置。
+    let _ = enable_restart_on_failure(WATCHDOG_TASK, WATCHDOG_RESTART);
+    Ok(())
+}
+
+/// 给已有任务加上"失败后每隔 interval 重启一次（最多 3 次）"。
+fn enable_restart_on_failure(task: &str, interval: &str) -> Result<()> {
+    let script = format!(
+        r#"$ErrorActionPreference = "Stop"
+$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval ([TimeSpan]::Parse("{interval}"))
+Set-ScheduledTask -TaskName "{task}" -Settings $s | Out-Null
+"#
+    );
+    let out = sysutil::run_powershell(&script, &[])?;
+    if !out.status.success() {
+        tracing::warn!(task, "看门狗任务没能设置失败重启，主进程崩溃时不会自动重拉");
+    }
     Ok(())
 }
 
 /// 看门狗任务是否已登记。
+#[must_use]
 pub fn watchdog_installed() -> bool {
     query_names().iter().any(|n| n == WATCHDOG_TASK)
 }
@@ -260,10 +439,12 @@ mod tests {
         let cfg = Config::default();
         let tasks = plan(&cfg);
         assert_eq!(tasks.len(), 2);
+        // 边界按一天内的先后排序，所以跨午夜的主时段是 10:30 在前。
+        // 任务名只是标识：每个任务都跑 `--action reconcile`，按当前时间重新判断。
         assert_eq!(tasks[0].name, NIGHT_TASK);
         assert_eq!(tasks[1].name, DAY_TASK);
-        assert_eq!(tasks[0].time, "20:00");
-        assert_eq!(tasks[1].time, "10:30");
+        assert_eq!(tasks[0].time, "10:30");
+        assert_eq!(tasks[1].time, "20:00");
     }
 
     #[test]
@@ -281,7 +462,7 @@ mod tests {
         assert!(tasks.iter().any(|t| t.name == "NightDisplay_T02"));
         // 时间必须单调递增，任务名按这个顺序分配。
         let times: Vec<&str> = tasks.iter().map(|t| t.time.as_str()).collect();
-        assert_eq!(times, vec!["13:00", "14:00", "20:00", "10:30"]);
+        assert_eq!(times, vec!["10:30", "13:00", "14:00", "20:00"]);
     }
 
     #[test]

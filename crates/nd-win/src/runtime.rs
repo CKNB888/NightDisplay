@@ -87,7 +87,7 @@ impl UiHandle {
 
         std::thread::Builder::new()
             .name("nd-ui".into())
-            .spawn(move || ui_thread(thread_shared, ready_tx))
+            .spawn(move || ui_thread(&thread_shared, &ready_tx))
             .map_err(|e| nd_core::error::user(format!("无法启动界面线程：{e}")))?;
 
         match ready_rx.recv_timeout(Duration::from_secs(10)) {
@@ -131,10 +131,11 @@ impl UiHandle {
             .shared
             .on_unlock
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(f));
     }
 
     /// 到目前为止检测到的解锁次数。
+    #[must_use]
     pub fn unlock_count(&self) -> u32 {
         self.shared.unlocks.load(Ordering::SeqCst)
     }
@@ -157,7 +158,7 @@ impl UiHandle {
 }
 
 /// UI 线程主体。
-fn ui_thread(shared: Arc<Shared>, ready: Reply<Result<()>>) {
+fn ui_thread(shared: &Shared, ready: &Reply<Result<()>>) {
     // 记下线程 id，供 PostThreadMessageW 唤醒。
     // SAFETY: 纯查询当前线程 id。
     let tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
@@ -199,7 +200,7 @@ fn ui_thread(shared: Arc<Shared>, ready: Reply<Result<()>>) {
     let mut msg = MSG::default();
     loop {
         // SAFETY: 标准消息循环。
-        let got = unsafe { GetMessageW(&mut msg, None, 0, 0) };
+        let got = unsafe { GetMessageW(&raw mut msg, None, 0, 0) };
         if got.0 <= 0 {
             break;
         }
@@ -219,14 +220,14 @@ fn ui_thread(shared: Arc<Shared>, ready: Reply<Result<()>>) {
         }
         if msg.message == WM_TIMER {
             if msg.wParam.0 == TIMER_ID {
-                tick(&mut state, &shared, &unlocks, &mut last_tick);
+                tick(&mut state, shared, &unlocks, &mut last_tick);
             }
             continue;
         }
         // SAFETY: 消息来自 GetMessageW，转发给对应的窗口过程。
         unsafe {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            let _ = TranslateMessage(&raw const msg);
+            DispatchMessageW(&raw const msg);
         }
     }
 
@@ -242,7 +243,7 @@ fn ui_thread(shared: Arc<Shared>, ready: Reply<Result<()>>) {
 /// 定时心跳：检查解锁组合键。
 fn tick(state: &mut UiState, shared: &Shared, unlocks: &Arc<AtomicU32>, last_tick: &mut Instant) {
     let now = Instant::now();
-    if now.duration_since(*last_tick) < Duration::from_millis(TICK_MS as u64 / 2) {
+    if now.duration_since(*last_tick) < Duration::from_millis(u64::from(TICK_MS) / 2) {
         return;
     }
     *last_tick = now;
@@ -259,7 +260,7 @@ fn tick(state: &mut UiState, shared: &Shared, unlocks: &Arc<AtomicU32>, last_tic
         if let Some(hook) = shared
             .on_unlock
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
         {
             hook();

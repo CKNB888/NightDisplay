@@ -75,6 +75,7 @@ pub fn clear_clean_exit_marker() {
 }
 
 /// 进程是否还活着。
+#[must_use]
 pub fn process_alive(pid: u32) -> bool {
     use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
     use windows::Win32::System::Threading::{
@@ -89,14 +90,14 @@ pub fn process_alive(pid: u32) -> bool {
             return false;
         };
         let mut code = 0u32;
-        let ok = GetExitCodeProcess(handle, &mut code).is_ok();
+        let ok = GetExitCodeProcess(handle, &raw mut code).is_ok();
         let _ = CloseHandle(handle);
         ok && code == STILL_ACTIVE.0 as u32
     }
 }
 
 /// 看门狗主循环。`parent` 消失或出现正常退出标记时返回。
-pub fn run(options: WatchdogOptions) -> Result<()> {
+pub fn run(options: &WatchdogOptions) -> Result<()> {
     tracing::info!(
         parent = options.parent,
         restart_daemon = options.restart_daemon,

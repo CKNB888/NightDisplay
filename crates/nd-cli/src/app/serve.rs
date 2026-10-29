@@ -30,15 +30,11 @@ const BRIGHTNESS_REASSERT: Duration = Duration::from_secs(5);
 /// 常驻进程入口。
 pub fn serve() -> Result<ExitCode> {
     // 单实例：拿不到锁说明已经有一个在跑，这时只回一句就退出，别抢。
-    let lock = match nd_core::state_lock::write_lock_timeout(
-        nd_core::paths::daemon_lock(),
-        Duration::ZERO,
-    ) {
-        Ok(lock) => lock,
-        Err(_) => {
-            println!("NightDisplay 常驻进程已经在运行。");
-            return Ok(ExitCode::SUCCESS);
-        }
+    let Ok(lock) =
+        nd_core::state_lock::write_lock_timeout(nd_core::paths::daemon_lock(), Duration::ZERO)
+    else {
+        println!("NightDisplay 常驻进程已经在运行。");
+        return Ok(ExitCode::SUCCESS);
     };
 
     nd_core::paths::ensure_home()
@@ -68,7 +64,7 @@ pub fn serve() -> Result<ExitCode> {
     let loop_platform = std::sync::Arc::new(platform);
     let worker = {
         let platform = std::sync::Arc::clone(&loop_platform);
-        std::thread::spawn(move || run_loop(platform))
+        std::thread::spawn(move || run_loop(&platform))
     };
 
     let handler_token = token;
@@ -94,7 +90,7 @@ pub fn serve() -> Result<ExitCode> {
 static WORKER_STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// 定时对齐循环。
-fn run_loop(platform: std::sync::Arc<WinPlatform>) {
+fn run_loop(platform: &std::sync::Arc<WinPlatform>) {
     let engine = Engine::new(&platform);
     let mut last_brightness = Instant::now();
     let mut was_night = false;

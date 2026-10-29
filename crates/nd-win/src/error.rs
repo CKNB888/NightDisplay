@@ -4,13 +4,15 @@
 //! 这样既不会把 `Os { code: 5, ... }` 这种垃圾抛给用户，也不会丢掉排查线索。
 
 /// 取错误链里最底层那句话（通常是 Win32 的说明），用于日志。
+#[must_use]
 pub fn chain_text(err: &anyhow::Error) -> String {
-    let mut parts: Vec<String> = err.chain().map(|e| e.to_string()).collect();
+    let mut parts: Vec<String> = err.chain().map(std::string::ToString::to_string).collect();
     parts.dedup();
     parts.join(" ← ")
 }
 
 /// 给用户看的一句话。已经是用户可读错误时原样返回，否则补一个通用前缀。
+#[must_use]
 pub fn user_text(err: &anyhow::Error, fallback: &str) -> String {
     let text = err.to_string();
     if text.trim().is_empty() {
@@ -24,6 +26,7 @@ pub fn user_text(err: &anyhow::Error, fallback: &str) -> String {
 }
 
 /// 把 `os error N` 翻成人话。
+#[must_use]
 pub fn friendly_os_error(text: &str) -> String {
     for (code, message) in [
         (5, "权限不足，需要以管理员身份运行一次安装向导"),

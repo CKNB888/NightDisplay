@@ -13,7 +13,7 @@ use std::sync::Arc;
 use nd_core::chord::ChordKey;
 use nd_core::config::Config;
 use nd_core::engine::Platform;
-use nd_core::mode::{LayerStatus, NightReport, OverlayOutcome};
+use nd_core::mode::{LayerStatus, NightReport, OverlayOutcome, VirtualReport};
 use nd_core::status::Capabilities;
 use nd_core::NdResult;
 
@@ -47,6 +47,7 @@ impl Default for WinPlatform {
 }
 
 impl WinPlatform {
+    #[must_use]
     pub fn new() -> Self {
         let guard_visible = Arc::new(AtomicBool::new(false));
         let unlock_pending = Arc::new(AtomicBool::new(false));
@@ -60,7 +61,10 @@ impl WinPlatform {
 
     /// 拿到（必要时创建）界面线程。
     fn ui(&self) -> NdResult<UiHandle> {
-        let mut guard = self.ui.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .ui
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(handle) = guard.as_ref() {
             return Ok(handle.clone());
         }
@@ -80,7 +84,10 @@ impl WinPlatform {
 
     /// 界面线程是否已经起来（看门狗判断用）。
     pub fn ui_running(&self) -> bool {
-        self.ui.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+        self.ui
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
     }
 
     /// 提前把界面线程和黑幕窗口建好（常驻进程启动时调用）。
@@ -93,7 +100,10 @@ impl WinPlatform {
 
     /// 关掉界面线程。
     pub fn shutdown(&self) {
-        let mut guard = self.ui.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .ui
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(handle) = guard.take() {
             handle.shutdown();
         }
@@ -115,10 +125,10 @@ impl Platform for WinPlatform {
             displays,
             elevated: power::is_elevated(),
             helper_running: crate::helper::is_running(),
-            virtual_display: topology::describe(true)
-                .map(|list| list.iter().any(topology::is_virtual))
-                .unwrap_or(false),
+            virtual_display: topology::standby_present(),
+            virtual_screen_holding: cfg!(windows) && topology::virtual_screen_holding(),
             autostart: crate::autostart::is_enabled(),
+            registration: crate::tasks::registration(),
         }
     }
 
@@ -132,7 +142,8 @@ impl Platform for WinPlatform {
         // 1) 黑幕：必须在界面线程上显示并校验采集排除。
         let outcomes: Vec<OverlayOutcome> = ui.call(|state| state.overlays.show())?;
         let latency = started.elapsed().as_millis() as u64;
-        let overlay_ok = !outcomes.is_empty() && outcomes.iter().all(|o| o.ok());
+        let overlay_ok =
+            !outcomes.is_empty() && outcomes.iter().all(nd_core::mode::OverlayOutcome::ok);
         if !overlay_ok {
             // 失败时界面线程已经把所有窗口收回去了，这里不需要再 hide。
             self.guard_visible.store(false, Ordering::SeqCst);
@@ -145,6 +156,8 @@ impl Platform for WinPlatform {
                 local_input_guard: LayerStatus::Disabled,
                 start_latency_ms: latency,
                 brightness_unsupported_displays: Vec::new(),
+                virtual_screen: None,
+                fallback_reason: None,
             });
         }
         self.guard_visible.store(true, Ordering::SeqCst);
@@ -170,7 +183,10 @@ impl Platform for WinPlatform {
                             description: desc,
                         });
                     }
-                    let mut guard = self.brightness.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut guard = self
+                        .brightness
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     *guard = Some(control);
                     if !unsupported.is_empty() {
                         tracing::info!(
@@ -225,12 +241,19 @@ impl Platform for WinPlatform {
             local_input_guard,
             start_latency_ms: latency,
             brightness_unsupported_displays: Vec::new(),
+            virtual_screen: None,
+            fallback_reason: None,
         })
     }
 
     fn exit_guard(&self) -> NdResult<()> {
         let mut errors: Vec<String> = Vec::new();
-        if let Some(handle) = self.ui.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        if let Some(handle) = self
+            .ui
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
             if let Err(e) = handle.call(|state| state.overlays.hide()) {
                 errors.push(format!(
                     "关闭黑幕失败：{}",
@@ -246,7 +269,10 @@ impl Platform for WinPlatform {
             ));
         }
         // Drop 里会还原背光。
-        let mut guard = self.brightness.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self
+            .brightness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = None;
         crate::screen_state::clear();
         if errors.is_empty() {
@@ -263,7 +289,7 @@ impl Platform for WinPlatform {
         let Ok(handle) = self
             .ui
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .ok_or_else(|| nd_core::error::user("界面线程没起来"))
         else {
@@ -278,7 +304,10 @@ impl Platform for WinPlatform {
         let handle = self.ui()?;
         handle.call(|state| state.overlays.reassert())?;
         // 背光会被显示器自己拉回去（省电策略、菜单按钮），这里重新压一次。
-        let guard = self.brightness.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self
+            .brightness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(control) = guard.as_ref() {
             let (_status, _) = control.to_zero();
         }
@@ -302,35 +331,60 @@ impl Platform for WinPlatform {
         Ok(())
     }
 
-    fn enter_virtual_only(&self, match_pat: &str, dry_run: bool) -> NdResult<String> {
-        let plan = topology::plan_virtual_only(match_pat)?;
-        let label = if plan.target.name.is_empty() {
-            plan.target.device_path.clone()
-        } else {
-            plan.target.name.clone()
-        };
-        topology::apply_virtual_only(&plan, dry_run)?;
-        if dry_run {
-            return Ok(format!(
-                "校验通过：将只保留虚拟屏 {label}，放弃 {} 块实体屏（未应用）",
-                plan.physical_count
-            ));
+    fn enter_virtual_screen(&self, match_pat: &str, dry_run: bool) -> NdResult<VirtualReport> {
+        // 1) 白天预热：让虚拟屏接进桌面（复制），不改布局、不动采集表面。
+        //    这一步在白天就做完了，入夜才能真正"一次调用"。
+        let armed = topology::arm(match_pat, dry_run)?;
+        if !armed.applied && !dry_run {
+            // 预热失败说明这台机器的驱动不接受复制/接管；
+            // 直接把原因交回引擎，由它决定是否降级到黑幕。
+            return Ok(armed);
         }
-        // 记录"拓扑被改过"，看门狗能据此还原。
-        let mut state = crate::screen_state::load().unwrap_or_default();
-        state.topology_changed = true;
-        state.entered_at = Some(chrono::Local::now());
-        let _ = crate::screen_state::save(&state);
-        Ok(format!("已切换到「仅虚拟屏」{label}，远程画面会中断一次"))
+        if dry_run {
+            return Ok(armed);
+        }
+        tracing::info!(summary = %armed.summary(), "虚拟屏已预热");
+
+        // 2) 入夜：一次 SetDisplayConfig 摘掉实体屏的桌面。
+        let report = topology::detach(match_pat, false)?;
+        if report.applied {
+            // 先落盘"拓扑被改过"，看门狗/下次启动据此还原。
+            let mut state = crate::screen_state::load().unwrap_or_default();
+            state.topology_changed = true;
+            state.entered_at = Some(chrono::Local::now());
+            if let Err(e) = crate::screen_state::save(&state) {
+                tracing::warn!(error = %e, "无法保存拓扑状态，异常退出后可能不会自动还原");
+            }
+            tracing::warn!(
+                active = report.active_after,
+                summary = %report.summary(),
+                "已把桌面交给虚拟屏"
+            );
+        } else if report.error.is_some() {
+            // 入夜这一步失败：把预热撤掉，回到原样，不留半成品。
+            if let Err(e) = topology::reattach() {
+                tracing::warn!(error = %nd_core::error::one_line(&e), "回滚预热时出错");
+            }
+        }
+        Ok(report)
     }
 
-    fn exit_virtual_only(&self) -> NdResult<()> {
-        let _level = topology::restore()?;
+    fn exit_virtual_screen(&self) -> NdResult<()> {
+        let report = topology::reattach()?;
+        if !report.applied {
+            // 路径集方式失败，restore() 会退到系统拓扑兜底。
+            let level = topology::restore()?;
+            tracing::warn!(level, "路径集还原失败，已用兜底方式还原");
+        }
         if let Some(mut state) = crate::screen_state::load() {
             state.topology_changed = false;
             let _ = crate::screen_state::save(&state);
         }
         Ok(())
+    }
+
+    fn virtual_screen_ready(&self) -> bool {
+        topology::standby_present()
     }
 
     fn screen_off(&self) -> NdResult<()> {
@@ -428,8 +482,9 @@ impl Platform for WinPlatform {
         // 显卡/驱动/显示器型号变了，就得重新测一次。这里只用可读的稳定信息，
         // 不用句柄（每次启动都不一样）。
         let build = power::windows_build();
-        let displays = topology::describe(true)
-            .map(|list| {
+        let displays = topology::describe(true).map_or_else(
+            |_| "unknown".into(),
+            |list| {
                 list.iter()
                     .map(|d| {
                         format!(
@@ -441,13 +496,14 @@ impl Platform for WinPlatform {
                     })
                     .collect::<Vec<_>>()
                     .join(",")
-            })
-            .unwrap_or_else(|_| "unknown".into());
-        format!("win{}_{}", build, displays)
+            },
+        );
+        format!("win{build}_{displays}")
     }
 }
 
 /// 一次性取能力快照（不起界面线程，CLI 的 `status`/`selfcheck` 用）。
+#[must_use]
 pub fn current_capabilities() -> Capabilities {
     let build = power::windows_build();
     Capabilities {
@@ -459,10 +515,10 @@ pub fn current_capabilities() -> Capabilities {
         displays: overlay::display_count(),
         elevated: power::is_elevated(),
         helper_running: crate::helper::is_running(),
-        virtual_display: topology::describe(true)
-            .map(|list| list.iter().any(topology::is_virtual))
-            .unwrap_or(false),
+        virtual_display: topology::standby_present(),
+        virtual_screen_holding: topology::virtual_screen_holding(),
         autostart: crate::autostart::is_enabled(),
+        registration: crate::tasks::registration(),
     }
 }
 

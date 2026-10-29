@@ -10,6 +10,7 @@ use serde::Deserialize;
 use crate::{NdResult, REPO_NAME, REPO_OWNER, REPO_URL, VERSION};
 
 /// releases 接口地址。
+#[must_use]
 pub fn api_url() -> String {
     format!("https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest")
 }
@@ -40,6 +41,7 @@ pub struct UpdateInfo {
 }
 
 /// 解析 `4.0.1` / `v4.0.1`，返回 (major, minor, patch)。
+#[must_use]
 pub fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
     let t = text.trim().trim_start_matches(['v', 'V']);
     // 忽略 -beta 之类的后缀，只比较数字部分。
@@ -52,6 +54,7 @@ pub fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
 }
 
 /// `a` 是否比 `b` 新。解析不了的版本号一律当作"不是更新"。
+#[must_use]
 pub fn is_newer(a: &str, b: &str) -> bool {
     match (parse_version(a), parse_version(b)) {
         (Some(x), Some(y)) => x > y,
@@ -87,6 +90,7 @@ fn truncate(text: &str, max: usize) -> String {
 }
 
 /// 当前版本的更新检查结果（不联网），供 UI 在检查失败时展示。
+#[must_use]
 pub fn current_info() -> UpdateInfo {
     UpdateInfo {
         latest: VERSION.to_string(),
@@ -98,7 +102,8 @@ pub fn current_info() -> UpdateInfo {
     }
 }
 
-/// 下载页。永远指向我们自己的仓库，不用 API 返回的 html_url。
+/// 下载页。永远指向我们自己的仓库，不用 API 返回的 `html_url`。
+#[must_use]
 pub fn download_page() -> String {
     format!("{REPO_URL}/releases/latest")
 }

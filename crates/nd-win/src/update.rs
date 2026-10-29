@@ -18,10 +18,10 @@ fn fetch_latest_json() -> Result<String> {
     let url = updates::api_url();
     // PowerShell 里用单引号包字符串，避免 URL 里的字符被解释。
     let script = format!(
-        r#"$ProgressPreference='SilentlyContinue'
+        r"$ProgressPreference='SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $r = Invoke-RestMethod -Uri '{url}' -Headers @{{ 'User-Agent' = 'NightDisplay/{ver}'; 'Accept' = 'application/vnd.github+json' }} -TimeoutSec 15
-$r | ConvertTo-Json -Depth 4 -Compress"#,
+$r | ConvertTo-Json -Depth 4 -Compress",
         url = url,
         ver = nd_core::VERSION
     );

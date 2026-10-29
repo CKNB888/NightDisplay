@@ -27,6 +27,7 @@ pub enum ChordKey {
 }
 
 impl ChordKey {
+    #[must_use]
     pub fn is_modifier(self) -> bool {
         matches!(
             self,
@@ -35,6 +36,7 @@ impl ChordKey {
     }
 
     /// 展示名，配置里保存的也是这个写法。
+    #[must_use]
     pub fn name(self) -> String {
         match self {
             ChordKey::Ctrl => "Ctrl".into(),
@@ -115,6 +117,7 @@ impl<'de> serde::Deserialize<'de> for ChordKey {
 }
 
 /// 默认组合键：C + K。
+#[must_use]
 pub fn default_chord() -> Vec<ChordKey> {
     vec![ChordKey::Char('C'), ChordKey::Char('K')]
 }
@@ -167,6 +170,7 @@ pub fn validate_hold_ms(ms: u64) -> NdResult<u64> {
 }
 
 /// `C + K` 这样的展示文本。
+#[must_use]
 pub fn format_chord(keys: &[ChordKey]) -> String {
     keys.iter()
         .map(|k| k.name())
@@ -186,6 +190,7 @@ pub struct ChordWatcher {
 }
 
 impl ChordWatcher {
+    #[must_use]
     pub fn new(keys: Vec<ChordKey>, hold_ms: u64) -> Self {
         Self {
             keys,
@@ -195,6 +200,7 @@ impl ChordWatcher {
         }
     }
 
+    #[must_use]
     pub fn keys(&self) -> &[ChordKey] {
         &self.keys
     }
@@ -282,7 +288,7 @@ mod tests {
     fn watcher_fires_once_after_hold() {
         let mut w = ChordWatcher::new(default_chord(), 300);
         let t0 = Instant::now();
-        let down = |k: ChordKey| matches!(k, ChordKey::Char('C') | ChordKey::Char('K'));
+        let down = |k: ChordKey| matches!(k, ChordKey::Char('C' | 'K'));
         assert!(!w.poll(down, t0));
         assert!(!w.poll(down, t0 + Duration::from_millis(200)));
         assert!(w.poll(down, t0 + Duration::from_millis(300)));

@@ -35,52 +35,63 @@ pub fn home_dir() -> PathBuf {
     }
 }
 
+#[must_use]
 pub fn config_file() -> PathBuf {
     home_dir().join("config.json")
 }
 
+#[must_use]
 pub fn logs_dir() -> PathBuf {
     home_dir().join("logs")
 }
 
+#[must_use]
 pub fn backups_dir() -> PathBuf {
     home_dir().join("backups")
 }
 
+#[must_use]
 pub fn selfcheck_file() -> PathBuf {
     home_dir().join("selfcheck.json")
 }
 
+#[must_use]
 pub fn status_file() -> PathBuf {
     home_dir().join("status.txt")
 }
 
 /// IPC 端点信息（端口 + 随机令牌）。
+#[must_use]
 pub fn ipc_file() -> PathBuf {
     home_dir().join("ipc.json")
 }
 
 /// 全局动作锁，保证同一时间只有一个进程在改显示状态。
+#[must_use]
 pub fn action_lock() -> PathBuf {
     home_dir().join("actions.lock")
 }
 
 /// 常驻进程的单实例锁。
+#[must_use]
 pub fn daemon_lock() -> PathBuf {
     home_dir().join("daemon.lock")
 }
 
 /// 组合键解锁后的"本段剩余时间不再黑屏"标记。
+#[must_use]
 pub fn unlock_file() -> PathBuf {
     home_dir().join("unlock.json")
 }
 
 /// 夜间期间保存的原始屏幕状态（gamma、背光、拓扑备份）。
+#[must_use]
 pub fn screen_state_file() -> PathBuf {
     home_dir().join("screen-state.json")
 }
 
 /// 看门狗记录父进程状态的握手文件。
+#[must_use]
 pub fn watchdog_file() -> PathBuf {
     home_dir().join("watchdog.json")
 }
@@ -95,14 +106,13 @@ pub fn ensure_home() -> std::io::Result<PathBuf> {
 }
 
 /// 把用户给的 `--home` 解析成绝对路径。
+#[must_use]
 pub fn absolute(p: &str) -> PathBuf {
     let path = Path::new(p);
     if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(path))
-            .unwrap_or_else(|_| path.to_path_buf())
+        std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
     }
 }
 

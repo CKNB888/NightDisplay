@@ -38,8 +38,10 @@ pub struct Args {
     pub debug: bool,
     /// 看门狗要监视的父进程 PID。
     pub parent: u32,
-    /// 向导：勾选"兼容老远程软件"，安装虚拟显示驱动。
-    pub vdd: bool,
+    /// 向导：跳过虚拟显示驱动的安装（**只给自动化测试用**）。
+    ///
+    /// 4.0 起 VDD 是必需组件，正常使用时不提供跳过选项。
+    pub no_vdd: bool,
     /// 向导：只跑这些步骤（修复模式）。
     pub only: Vec<String>,
     /// 界面自检：N 秒后自动退出（这一阶段没有界面，接受但忽略）。
@@ -63,7 +65,7 @@ impl Default for Args {
             test_id: String::new(),
             debug: false,
             parent: 0,
-            vdd: false,
+            no_vdd: false,
             only: Vec::new(),
             selftest: 0,
             autostart: false,
@@ -102,7 +104,7 @@ const ACTIONS: &[&str] = &[
     "quit",
 ];
 
-const HELP: &str = r#"NightDisplay —— 夜间本地黑屏、远程正常
+const HELP: &str = r"NightDisplay —— 夜间本地黑屏、远程正常
 
 用法：
   NightDisplay --action <动作> [选项]
@@ -127,7 +129,7 @@ const HELP: &str = r#"NightDisplay —— 夜间本地黑屏、远程正常
   plan-virtual   只校验“仅虚拟屏”，不改动
   backup         备份当前显示配置
   restore        还原显示配置
-  install-vdd    安装内置虚拟显示驱动（会弹一次管理员确认）
+  install-vdd    安装内置虚拟显示驱动并验证虚拟屏（会弹一次管理员确认）
   uninstall-vdd  卸载虚拟显示驱动
   awake          保持唤醒 N 秒
   update         检查新版本
@@ -143,13 +145,13 @@ const HELP: &str = r#"NightDisplay —— 夜间本地黑屏、远程正常
   --test-id <id>                测试标识（内部使用）
   --test-recovery               测试的恢复阶段（内部使用）
   --parent <pid>                看门狗监视的进程
-  --vdd                         setup 时安装虚拟显示驱动（兼容老远程软件）
+  --no-vdd                      仅测试用：跳过虚拟显示驱动安装（正常安装必须装）
   --only a,b                    setup/repair 只跑指定步骤
   --home <目录>                 指定数据目录
   --debug                       出错时打印完整错误链
   -h, --help                    显示这段说明
   -V, --version                 显示版本
-"#;
+";
 
 /// 进程入口。所有错误在这里收敛成一句中文 + 退出码。
 pub fn main_entry() -> ExitCode {
@@ -212,7 +214,7 @@ fn run(args: &Args) -> Result<ExitCode> {
 
     if args.delay > 0 {
         tracing::info!(delay = args.delay, action = %args.action, "延迟执行");
-        std::thread::sleep(std::time::Duration::from_secs(args.delay as u64));
+        std::thread::sleep(std::time::Duration::from_secs(args.delay.cast_unsigned()));
     }
 
     match args.action.as_str() {
@@ -227,12 +229,12 @@ fn run(args: &Args) -> Result<ExitCode> {
         "backup" => actions::backup(),
         "restore" => actions::restore(),
         "awake" => actions::awake(args.seconds),
-        "update" => actions::update(),
+        "update" => Ok(actions::update()),
         "setup" => actions::setup(args),
         "repair" => actions::repair(args),
-        "onboarding" => actions::onboarding_report(),
-        "install-vdd" => actions::install_vdd(),
-        "uninstall-vdd" => actions::uninstall_vdd(),
+        "onboarding" => Ok(actions::onboarding_report()),
+        "install-vdd" => Ok(actions::install_vdd()),
+        "uninstall-vdd" => Ok(actions::uninstall_vdd()),
         "night" => actions::night(args),
         "day" => actions::day(args),
         "reconcile" => actions::reconcile(),
@@ -250,11 +252,11 @@ fn run(args: &Args) -> Result<ExitCode> {
 
 /// 解析参数。返回 `Ok(None)` 表示已经把帮助或版本打印出去了。
 fn parse_args(argv: Vec<String>) -> Result<Option<Args>> {
-    let mut args = Args::default();
+    let mut parsed = Args::default();
     let mut it = argv.into_iter();
     while let Some(raw) = it.next() {
-        let (key, inline) = match raw.split_once('=') {
-            Some((k, v)) => (k.to_string(), Some(v.to_string())),
+        let (flag, inline) = match raw.split_once('=') {
+            Some((key, value)) => (key.to_string(), Some(value.to_string())),
             None => (raw.clone(), None),
         };
         let mut value = |name: &str| -> Result<String> {
@@ -265,7 +267,7 @@ fn parse_args(argv: Vec<String>) -> Result<Option<Args>> {
                     .ok_or_else(|| nd_core::error::user(format!("{name} 后面缺少参数值"))),
             }
         };
-        match key.as_str() {
+        match flag.as_str() {
             "-h" | "--help" => {
                 print!("{HELP}");
                 return Ok(None);
@@ -274,28 +276,28 @@ fn parse_args(argv: Vec<String>) -> Result<Option<Args>> {
                 println!("NightDisplay {}", nd_core::VERSION);
                 return Ok(None);
             }
-            "--action" => args.action = value("--action")?,
-            "--home" => args.home = Some(value("--home")?),
-            "--mode" => args.mode = Some(value("--mode")?),
-            "--start" => args.start = Some(value("--start")?),
-            "--end" => args.end = Some(value("--end")?),
-            "--test-id" => args.test_id = value("--test-id")?,
+            "--action" => parsed.action = value("--action")?,
+            "--home" => parsed.home = Some(value("--home")?),
+            "--mode" => parsed.mode = Some(value("--mode")?),
+            "--start" => parsed.start = Some(value("--start")?),
+            "--end" => parsed.end = Some(value("--end")?),
+            "--test-id" => parsed.test_id = value("--test-id")?,
             "--only" => {
-                args.only = value("--only")?
+                parsed.only = value("--only")?
                     .split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-                    .collect()
+                    .collect();
             }
-            "--delay" => args.delay = parse_num(&value("--delay")?, "--delay")?,
-            "--seconds" => args.seconds = parse_num(&value("--seconds")?, "--seconds")?,
-            "--selftest" => args.selftest = parse_num(&value("--selftest")?, "--selftest")?,
-            "--parent" => args.parent = parse_num(&value("--parent")?, "--parent")?,
-            "--tray" => args.tray = true,
-            "--debug" => args.debug = true,
-            "--vdd" => args.vdd = true,
-            "--test-recovery" => args.test_recovery = true,
-            "--autostart" => args.autostart = true,
+            "--delay" => parsed.delay = parse_num(&value("--delay")?, "--delay")?,
+            "--seconds" => parsed.seconds = parse_num(&value("--seconds")?, "--seconds")?,
+            "--selftest" => parsed.selftest = parse_num(&value("--selftest")?, "--selftest")?,
+            "--parent" => parsed.parent = parse_num(&value("--parent")?, "--parent")?,
+            "--tray" => parsed.tray = true,
+            "--debug" => parsed.debug = true,
+            "--no-vdd" => parsed.no_vdd = true,
+            "--test-recovery" => parsed.test_recovery = true,
+            "--autostart" => parsed.autostart = true,
             other => {
                 return Err(nd_core::error::user(format!(
                     "不认识的参数 “{other}”。运行 NightDisplay --help 看用法。"
@@ -303,16 +305,16 @@ fn parse_args(argv: Vec<String>) -> Result<Option<Args>> {
             }
         }
     }
-    if args.action.trim().is_empty() {
-        args.action = "gui".into();
+    if parsed.action.trim().is_empty() {
+        parsed.action = "gui".into();
     }
-    if !ACTIONS.contains(&args.action.as_str()) {
+    if !ACTIONS.contains(&parsed.action.as_str()) {
         return Err(nd_core::error::user(format!(
             "不认识的 --action “{}”。可用动作见 --help。",
-            args.action
+            parsed.action
         )));
     }
-    Ok(Some(args))
+    Ok(Some(parsed))
 }
 
 fn parse_num<T: std::str::FromStr>(text: &str, name: &str) -> Result<T> {
@@ -330,7 +332,7 @@ mod tests {
         let args = parse_args(
             ["--action", "test", "--seconds", "15", "--mode", "guard"]
                 .iter()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .collect(),
         )
         .unwrap()

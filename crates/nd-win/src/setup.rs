@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! 1 授权并准备后台服务   → 一次 UAC，之后夜间不再弹（提升助手常驻）
-//! 2 虚拟显示驱动（可选） → pnputil 静默安装，默认跳过
+//! 2 虚拟显示驱动（必需） → pnputil 静默安装包内驱动 + 验证虚拟屏可枚举
 //! 3 开机自启与看门狗     → Run 键 + 计划任务 + 看门狗
 //! 4 本地防触控与锁屏     → 写配置并立即生效
 //! 5 15 秒自检           → 真的黑屏 15 秒再恢复，附远程连接提示
@@ -36,7 +36,10 @@ pub type ProgressFn = Box<dyn Fn(Step, &str) + Send>;
 
 /// 向导选项。
 pub struct SetupOptions {
-    /// 用户勾选了"兼容老远程软件"，需要安装虚拟显示驱动。
+    /// 是否在第 2 步安装虚拟显示驱动。
+    ///
+    /// 4.0 起 VDD 是必需组件，默认就是 true；保留这个开关只为让自动化测试
+    /// 能跳过真实驱动安装（测试环境没有驱动文件）。
     pub install_vdd: bool,
     /// 自检秒数（默认 15）。
     pub self_test_seconds: u64,
@@ -60,7 +63,8 @@ impl std::fmt::Debug for SetupOptions {
 impl Default for SetupOptions {
     fn default() -> Self {
         Self {
-            install_vdd: false,
+            // 必需组件：默认就装，不需要用户勾选。
+            install_vdd: true,
             self_test_seconds: 15,
             only: Vec::new(),
             progress: None,
@@ -89,7 +93,6 @@ pub fn run(options: &SetupOptions, onboarding: &mut Onboarding) -> Result<Vec<St
         if !options.wants(step) {
             continue;
         }
-        // 第 2 步只有用户明确要装才跑，否则直接记"跳过"。
         let started = Instant::now();
         options.notify(step, "正在执行…");
         let outcome = match step {
@@ -149,21 +152,51 @@ fn helper_log_hint() -> String {
     nd_core::paths::logs_dir().display().to_string()
 }
 
-/// 2. 可选：安装虚拟显示驱动。
-fn step_virtual_driver(wanted: bool) -> StepOutcome {
-    if vdd::installed() {
-        return StepOutcome::ok("虚拟显示驱动已安装（“仅虚拟屏”模式可用）");
-    }
-    if !wanted {
-        return StepOutcome::skipped(
-            "没有勾选“兼容老远程软件”。默认的防窥黑幕不需要虚拟屏，随时可以在设置里再装",
+/// 第 2 步：安装（或确认）虚拟显示驱动，并验证虚拟屏能待命。
+///
+/// 这是**必需**步骤：
+/// * 驱动装好 → ok；
+/// * 已经装好但虚拟屏不在显示配置里 → 失败，给出确切的下一步；
+/// * 安装失败 → 失败，原样带出脚本的手动命令，`finish` 会被挡住。
+///
+/// 无论装还是没装，**都不会**改桌面布局：虚拟屏只是存在并待命，
+/// 不激活、不扩展，只有用户主动选「仅虚拟屏」时才会切过去。
+fn step_virtual_driver(enabled: bool) -> StepOutcome {
+    if !enabled {
+        return StepOutcome::failed(
+            "虚拟显示驱动是必需组件，这一步被跳过了",
+            "重新运行向导并把第 2 步包含进来：NightDisplay --action repair",
         );
     }
-    match helper::call(helper::Command::InstallVdd) {
+
+    let already = vdd::installed();
+    if already {
+        // 已装：仍然验证一次虚拟屏在不在，避免"驱动在、设备被禁用"。
+        return match vdd::verify_ready() {
+            Ok(report) if report.active => StepOutcome::ok(format!(
+                "虚拟显示驱动已装好，虚拟屏 {} 已在输出（桌面布局未改动）",
+                report.label()
+            )),
+            Ok(report) => StepOutcome::ok(format!(
+                "虚拟显示驱动已装好，虚拟屏 {} 已在待命，需要时可直接切「仅虚拟屏」",
+                report.label()
+            )),
+            Err(e) => StepOutcome::failed(
+                format!(
+                    "驱动已安装，但系统显示配置里没有虚拟屏：{}",
+                    crate::error::user_text(&e, "查询显示配置失败")
+                ),
+                vdd::manual_steps(),
+            ),
+        };
+    }
+
+    match helper::call(&helper::Command::InstallVdd) {
+        // 助手侧已经做过 verify_ready，这里只管把结果讲清楚。
         Ok(text) => StepOutcome::ok(text),
         Err(e) => {
             let text = crate::error::user_text(&e, "安装虚拟显示驱动失败");
-            StepOutcome::manual(text, Some(nd_core::REPO_URL.to_string()))
+            StepOutcome::failed(text, vdd::manual_steps())
         }
     }
 }
@@ -186,7 +219,7 @@ fn step_autostart() -> StepOutcome {
         .schedule()
         .boundaries()
         .into_iter()
-        .map(|m| m.to_hm())
+        .map(nd_core::schedule::MinuteOfDay::to_hm)
         .collect();
     match install_tasks(&boundaries) {
         Ok(text) => notes.push(text),
@@ -221,7 +254,7 @@ fn install_tasks(boundaries: &[String]) -> Result<String> {
             names.join("、")
         ));
     }
-    helper::call(helper::Command::InstallTasks {
+    helper::call(&helper::Command::InstallTasks {
         boundaries: boundaries.to_vec(),
     })
 }
@@ -231,7 +264,7 @@ fn install_watchdog() -> Result<String> {
         tasks::install_watchdog(&nd_core::paths::home_dir())?;
         return Ok("看门狗任务已登记".into());
     }
-    helper::call(helper::Command::InstallWatchdog)
+    helper::call(&helper::Command::InstallWatchdog)
 }
 
 /// 4. 本地防触控 + 抑制锁屏：写配置并立刻生效。
@@ -245,7 +278,7 @@ fn step_input_guard() -> StepOutcome {
         c.suppress_lock = true;
         Ok(())
     }) {
-        Ok(_) => notes.push(format!(
+        Ok(()) => notes.push(format!(
             "已开启严格本地防触控（解锁组合键 {}）",
             Config::load().map(|c| c.chord_text()).unwrap_or_default()
         )),
@@ -324,10 +357,13 @@ fn step_self_test(seconds: u64, options: &SetupOptions) -> StepOutcome {
             let (status, unsupported) = control.to_zero();
             let mut note = status.summary("背光");
             if !unsupported.is_empty() {
-                note.push_str(&format!(
+                use std::fmt::Write as _;
+                // Writing into a String cannot fail.
+                let _ = write!(
+                    note,
                     "（{} 不支持 DDC/CI，这是正常的）",
                     unsupported.join("、")
-                ));
+                );
             }
             (note, Some(control))
         }
@@ -424,7 +460,8 @@ mod tests {
         for step in Step::ALL {
             assert!(options.wants(step));
         }
-        assert!(!options.install_vdd);
+        // 4.0 起虚拟显示驱动是必需的，默认就装。
+        assert!(options.install_vdd);
         assert_eq!(options.self_test_seconds, 15);
     }
 
@@ -448,12 +485,21 @@ mod tests {
     }
 
     #[test]
-    fn virtual_driver_is_skipped_by_default() {
+    fn disabled_virtual_driver_step_fails_instead_of_skipping() {
+        // 虚拟显示驱动是必需组件：被跳过必须是"失败"，不能悄悄放过。
         let outcome = step_virtual_driver(false);
-        assert!(matches!(outcome, StepOutcome::Skipped { .. }));
-        // 没勾选时绝不应该去碰助手或驱动。
-        if let StepOutcome::Skipped { reason } = outcome {
-            assert!(reason.contains("防窥黑幕不需要"));
+        assert!(matches!(outcome, StepOutcome::Failed { .. }));
+        if let StepOutcome::Failed { reason, next } = outcome {
+            assert!(reason.contains("必需"), "{reason}");
+            assert!(next.contains("repair"), "{next}");
         }
+    }
+
+    #[test]
+    fn virtual_driver_manual_steps_are_actionable() {
+        // 失败时给用户的下一步必须是能照抄的命令。
+        let steps = vdd::manual_steps();
+        assert!(steps.contains("pnputil"), "{steps}");
+        assert!(steps.contains("--action install-vdd"), "{steps}");
     }
 }

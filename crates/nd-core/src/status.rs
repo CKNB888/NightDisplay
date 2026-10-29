@@ -1,11 +1,80 @@
 //! 状态文本与自检报告（纯逻辑，平台信息由调用方注入）。
 
+use std::fmt::Write as _;
+
 use chrono::Local;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{Config, Mode, RunState};
 use crate::schedule::minute_of_day;
 use crate::VERSION;
+
+/// 开机自启 / 计划任务的**真实**注册状态（不是配置里的开关）。
+///
+/// 用户能在「设置」里看到的是这个，而不是"我希望它开着"。三者任何一条
+/// 都能把程序拉起来，所以要分开报告：Run 键、登录任务、开机任务。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Registration {
+    /// HKCU Run 里有这一项，且没在「启动」里被禁用。
+    pub run_key: bool,
+    /// 登录时触发的计划任务存在（普通用户权限即可）。
+    pub task_logon: bool,
+    /// 开机时触发的计划任务存在（SYSTEM、最高权限）。
+    pub task_boot: bool,
+    /// 看门狗任务存在。
+    pub watchdog_task: bool,
+    /// 每日边界任务的数量。
+    pub schedule_tasks: usize,
+    /// 诊断文字：命令是旧路径、被安全软件禁用之类的具体原因。
+    #[serde(default)]
+    pub run_key_note: String,
+}
+
+impl Registration {
+    /// 至少有一条自启路径能用。
+    #[must_use]
+    pub fn any(&self) -> bool {
+        self.run_key || self.task_logon || self.task_boot
+    }
+
+    /// 三条路径都在。
+    #[must_use]
+    pub fn all(&self) -> bool {
+        self.run_key && self.task_logon && self.task_boot
+    }
+
+    /// 逐条写出真实状态，设置页和 `--action env` 共用。
+    #[must_use]
+    pub fn lines(&self) -> Vec<String> {
+        let mark = |on: bool| if on { "已注册" } else { "未注册" };
+        let run_key = if self.run_key_note.is_empty() {
+            mark(self.run_key).to_string()
+        } else {
+            format!("{}（{}）", mark(self.run_key), self.run_key_note)
+        };
+        vec![
+            format!("开机自启 · HKCU Run：{run_key}"),
+            format!("开机自启 · 登录任务：{}", mark(self.task_logon)),
+            format!("开机自启 · 开机任务（SYSTEM）：{}", mark(self.task_boot)),
+            format!("看门狗任务：{}", mark(self.watchdog_task)),
+            format!("每日切换任务：{} 个", self.schedule_tasks),
+        ]
+    }
+
+    /// 一句话总结，状态文本里用。
+    #[must_use]
+    pub fn summary(&self) -> String {
+        let count = [self.run_key, self.task_logon, self.task_boot]
+            .iter()
+            .filter(|on| **on)
+            .count();
+        match count {
+            3 => "三条自启路径都已注册".into(),
+            0 => "没有注册任何自启路径".into(),
+            n => format!("{n}/3 条自启路径已注册"),
+        }
+    }
+}
 
 /// 平台层汇报的能力，供状态文本和自检使用。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -25,10 +94,18 @@ pub struct Capabilities {
     /// 提升助手是否已安装并在运行。
     pub helper_running: bool,
     pub virtual_display: bool,
+    /// 虚拟屏当前正接着桌面（`virtual_screen` 模式生效中）。
+    #[serde(default)]
+    pub virtual_screen_holding: bool,
+    /// 至少有一条自启路径可用（旧字段，等价于 `registration.any()`）。
     pub autostart: bool,
+    /// 每条自启路径的真实状态。
+    #[serde(default)]
+    pub registration: Registration,
 }
 
 /// 一行状态文本。
+#[must_use]
 pub fn status_text(cfg: &Config, caps: &Capabilities, now: chrono::DateTime<Local>) -> String {
     let schedule = cfg.schedule();
     let ranges = cfg
@@ -54,8 +131,7 @@ pub fn status_text(cfg: &Config, caps: &Capabilities, now: chrono::DateTime<Loca
     };
     let night_mode = cfg
         .night_mode
-        .map(|m| m.label().to_string())
-        .unwrap_or_else(|| "—".into());
+        .map_or_else(|| "—".into(), |m| m.label().to_string());
     format!(
         "版本 {VERSION} ｜ {}（build {}）\n\
          模式：{} ｜ 自动计划：{} ｜ 夜间 {} ｜ 现在 {}，{}\n\
@@ -116,6 +192,18 @@ pub struct SelfCheck {
     pub brightness_displays: usize,
     pub displays: usize,
     pub virtual_display: bool,
+    /// 虚拟屏此刻正接着桌面（夜间状态）。
+    #[serde(default)]
+    pub virtual_screen_holding: bool,
+    /// 三条自启路径 + 看门狗 + 每日任务的真实状态。
+    #[serde(default)]
+    pub registration: Registration,
+    /// 显卡与驱动版本（平台层填，非 Windows 为空）。
+    #[serde(default)]
+    pub gpu: Vec<GpuInfo>,
+    /// 每一块显示器：名字、分辨率、是否支持 DDC/CI。
+    #[serde(default)]
+    pub monitors: Vec<MonitorInfo>,
     pub autostart_config: bool,
     pub autostart_actual: bool,
     pub mode: Mode,
@@ -131,44 +219,137 @@ pub struct SelfCheck {
     pub notes: Vec<String>,
 }
 
+/// 显卡与驱动版本。诊断包里靠它判断"这个组合能不能无闪切换"。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GpuInfo {
+    pub name: String,
+    pub driver_version: String,
+    #[serde(default)]
+    pub driver_date: String,
+}
+
+impl GpuInfo {
+    #[must_use]
+    pub fn label(&self) -> String {
+        if self.driver_version.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{}（驱动 {}）", self.name, self.driver_version)
+        }
+    }
+}
+
+/// 一块显示器。`ddc` 为真表示支持 DDC/CI 背光。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitorInfo {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub refresh_hz: u32,
+    pub ddc: bool,
+    pub virtual_output: bool,
+}
+
+impl MonitorInfo {
+    #[must_use]
+    pub fn label(&self) -> String {
+        let mut out = if self.name.is_empty() {
+            "未命名显示器".to_string()
+        } else {
+            self.name.clone()
+        };
+        if self.width > 0 && self.height > 0 {
+            // Writing into a String cannot fail.
+            let _ = write!(out, " {}×{}", self.width, self.height);
+            if self.refresh_hz > 0 {
+                let _ = write!(out, "@{}Hz", self.refresh_hz);
+            }
+        }
+        if self.virtual_output {
+            out.push_str("（虚拟屏）");
+        }
+        if self.ddc {
+            out.push_str(" · DDC/CI");
+        }
+        out
+    }
+}
+
 impl SelfCheck {
+    #[must_use]
     pub fn build(cfg: &Config, caps: &Capabilities) -> Self {
         let effective = crate::mode::resolve(cfg.mode);
         let mut notes = Vec::new();
-        if caps.capture_exclusion {
+
+        // 第一句永远是"这台机器会怎么黑"。
+        match effective {
+            Mode::VirtualScreen => notes.push(
+                "默认模式是虚拟屏：夜里把桌面交给虚拟屏，实体屏不再显示任何东西，\
+                 远程工具仍然能正常看到并操作桌面。"
+                    .to_string(),
+            ),
+            Mode::Overlay => {
+                notes
+                    .push("当前使用防窥黑幕兜底：屏幕全黑，远程照常能看到桌面和操作。".to_string());
+            }
+            Mode::ScreenOff => notes.push(
+                "当前使用基础关屏：只关显示器，动一下鼠标就会亮，远程画面会中断。".to_string(),
+            ),
+            Mode::Auto => notes.push("当前是自动模式。".to_string()),
+        }
+
+        if !caps.virtual_display {
             notes.push(
-                "本机默认使用防窥黑幕：屏幕全黑，远程照常能看到桌面和操作，不会断开连接。"
+                "没有检测到虚拟显示器（VDD）。虚拟屏是默认模式的核心，\
+                 请先运行安装向导的第 2 步安装虚拟显示驱动。"
                     .to_string(),
             );
+        } else if caps.virtual_screen_holding {
+            notes.push("虚拟屏当前正接着桌面（夜间状态）。".to_string());
         } else {
+            notes.push("虚拟屏已就绪、正在待命，不影响白天的桌面布局。".to_string());
+        }
+
+        if effective == Mode::VirtualScreen && !caps.capture_exclusion {
             notes.push(
-                "系统不支持把窗口排除在屏幕采集之外（需要 Windows 10 2004 及以上），\
-                 防窥黑幕无法保证远程看得见画面。请升级系统。"
+                "系统版本较旧（需要 Windows 10 2004 及以上）。虚拟屏模式本身不依赖采集排除，\
+                 但如果被迫降级到黑幕，远程可能跟着变黑。"
                     .to_string(),
             );
         }
+
         if caps.brightness_displays == 0 {
             notes.push(
-                "没有检测到支持 DDC/CI 调光的面板：屏幕会变成纯黑，但背光仍然亮着。\
-                 多数一体机属于这种情况，属于正常限制。"
+                "没有检测到支持 DDC/CI 调光的面板。虚拟屏模式下本机不显示画面，\
+                 所以这不影响使用；只有降级到黑幕时背光才会亮着。"
                     .to_string(),
             );
         } else {
             notes.push(format!(
-                "{} 块面板支持背光调节，夜间会把背光调到 0。",
+                "{} 块面板支持背光调节，降级到黑幕时会把背光调到 0。",
                 caps.brightness_displays
             ));
         }
-        if !cfg.strict_local_input {
-            notes.push(
-                "已关闭“严格本地防触控”：本机真实键鼠仍会送到桌面，只是看不到画面。".to_string(),
-            );
+
+        if effective == Mode::Overlay {
+            if !cfg.strict_local_input {
+                notes.push(
+                    "已关闭“严格本地防触控”：本机真实键鼠仍会送到桌面，只是看不到画面。"
+                        .to_string(),
+                );
+            }
+            if cfg.suppress_lock {
+                notes.push(
+                    "夜间会抑制系统锁屏，否则登录界面会盖住黑幕。请自行评估安全影响。".to_string(),
+                );
+            }
         }
-        if cfg.suppress_lock {
-            notes.push(
-                "夜间会抑制系统锁屏，否则登录界面会盖住黑幕。请自行评估安全影响。".to_string(),
-            );
+
+        let registration = caps.registration.clone();
+        if !registration.all() {
+            notes.push(registration.summary());
         }
+
         SelfCheck {
             version: VERSION.to_string(),
             os: caps.os.clone(),
@@ -180,6 +361,10 @@ impl SelfCheck {
             brightness_displays: caps.brightness_displays,
             displays: caps.displays,
             virtual_display: caps.virtual_display,
+            virtual_screen_holding: caps.virtual_screen_holding,
+            registration,
+            gpu: Vec::new(),
+            monitors: Vec::new(),
             autostart_config: cfg.autostart,
             autostart_actual: caps.autostart,
             mode: cfg.mode,
@@ -197,6 +382,7 @@ impl SelfCheck {
 }
 
 /// `1 小时 5 分` 这样的中文时长。
+#[must_use]
 pub fn human_secs(secs: i64) -> String {
     let s = secs.max(0);
     let hours = s / 3600;
@@ -261,14 +447,15 @@ mod tests {
             ..Default::default()
         };
         let report = SelfCheck::build(&cfg, &caps);
-        assert_eq!(report.effective_mode, Mode::Guard);
+        // 默认模式是虚拟屏，不是黑幕。
+        assert_eq!(report.effective_mode, Mode::VirtualScreen);
         assert!(
-            report.notes.iter().any(|n| n.contains("背光仍然亮着")),
-            "{:?}",
+            report.notes.iter().any(|n| n.contains("虚拟显示器")),
+            "没装 VDD 必须明说：{:?}",
             report.notes
         );
         assert!(
-            report.notes.iter().any(|n| n.contains("防窥黑幕")),
+            report.notes.iter().any(|n| n.contains("虚拟屏")),
             "{:?}",
             report.notes
         );

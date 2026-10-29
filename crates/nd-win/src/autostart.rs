@@ -57,7 +57,7 @@ fn open_for_write(path: &str) -> Result<HKEY> {
             REG_OPTION_NON_VOLATILE,
             KEY_QUERY_VALUE | KEY_SET_VALUE,
             None,
-            &mut key,
+            &raw mut key,
             None,
         )
     };
@@ -69,7 +69,8 @@ fn open_for_read(path: &str) -> Option<HKEY> {
     let mut key = HKEY::default();
     let sub = wide(path);
     // SAFETY: 同上；读不到就返回 None。
-    let status = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, &sub, None, KEY_QUERY_VALUE, &mut key) };
+    let status =
+        unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, &sub, None, KEY_QUERY_VALUE, &raw mut key) };
     (status == ERROR_SUCCESS).then_some(key)
 }
 
@@ -84,11 +85,11 @@ impl Drop for KeyGuard {
     }
 }
 
-/// 写一个 REG_SZ。
+/// 写一个 `REG_SZ`。
 fn write_string(key: HKEY, name: &str, value: &str) -> Result<()> {
     let name_w = wide(name);
     // UTF-16 字节（不含结尾 NUL）直接交给 API。
-    let mut bytes: Vec<u8> = value.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    let mut bytes: Vec<u8> = value.encode_utf16().flat_map(u16::to_le_bytes).collect();
     if bytes.is_empty() {
         bytes.extend([0, 0]);
     }
@@ -120,8 +121,16 @@ fn read_value(key: HKEY, name: &str) -> Option<(Vec<u8>, REG_VALUE_TYPE)> {
     let mut kind = REG_VALUE_TYPE::default();
     let mut len = 0u32;
     // SAFETY: 第一次探测长度，buf 传 None。
-    let status =
-        unsafe { RegQueryValueExW(key, &name_w, None, Some(&mut kind), None, Some(&mut len)) };
+    let status = unsafe {
+        RegQueryValueExW(
+            key,
+            &name_w,
+            None,
+            Some(&raw mut kind),
+            None,
+            Some(&raw mut len),
+        )
+    };
     if status != ERROR_SUCCESS {
         return None;
     }
@@ -133,9 +142,9 @@ fn read_value(key: HKEY, name: &str) -> Option<(Vec<u8>, REG_VALUE_TYPE)> {
             key,
             &name_w,
             None,
-            Some(&mut kind2),
+            Some(&raw mut kind2),
             Some(buf.as_mut_ptr()),
-            Some(&mut len),
+            Some(&raw mut len),
         )
     };
     if status != ERROR_SUCCESS {
@@ -146,12 +155,14 @@ fn read_value(key: HKEY, name: &str) -> Option<(Vec<u8>, REG_VALUE_TYPE)> {
 }
 
 /// 当前程序应在 Run 里写的命令。
+#[must_use]
 pub fn desired_command(home: &Path) -> String {
     let args = sysutil::self_args(home, &["--tray"]);
     sysutil::command_line(&sysutil::exe_path(), &args)
 }
 
 /// 读取 Run 里现有的命令。没有这一项、类型不对或读失败都返回空串。
+#[must_use]
 pub fn current_command() -> String {
     let Some(key) = open_for_read(RUN_KEY) else {
         return String::new();
@@ -173,6 +184,7 @@ pub fn current_command() -> String {
 }
 
 /// 「启动」里这一项有没有被禁用。
+#[must_use]
 pub fn startup_approved() -> bool {
     let Some(key) = open_for_read(APPROVED_KEY) else {
         // 没有这个键就说明用户没动过，按允许算。
@@ -232,11 +244,13 @@ pub fn set(enabled: bool, home: &Path) -> Result<()> {
 }
 
 /// 实际是否注册了（命令非空且没被禁用）。
+#[must_use]
 pub fn is_enabled() -> bool {
     !current_command().is_empty() && startup_approved()
 }
 
 /// 开机自启的诊断信息，给设置页和自检用。
+#[must_use]
 pub fn diagnose(home: &Path) -> String {
     let actual = current_command();
     if actual.is_empty() {

@@ -87,6 +87,7 @@ impl Command {
     }
 
     /// 记日志用的名字。
+    #[must_use]
     pub fn label(&self) -> &'static str {
         match self {
             Command::Ping => "ping",
@@ -122,6 +123,7 @@ fn load_token() -> String {
 }
 
 /// 助手进程是否在跑（一次 ping）。
+#[must_use]
 pub fn is_running() -> bool {
     ping().is_ok()
 }
@@ -141,14 +143,14 @@ pub fn ping() -> Result<String> {
 }
 
 /// 通过助手执行一条命令。助手没在跑时先弹一次 UAC 拉起它。
-pub fn call(command: Command) -> Result<String> {
+pub fn call(command: &Command) -> Result<String> {
     let request = nd_core::ipc::Request {
         token: load_token(),
         command: nd_core::ipc::Command::Detailed(nd_core::ipc::CommandDetail {
             action: command.label().to_string(),
             mode: None,
             seconds: None,
-            test_id: task_argument(&command),
+            test_id: task_argument(command),
         }),
     };
     // 先试一次，助手没起来再提升。
@@ -268,7 +270,7 @@ pub fn serve() -> Result<()> {
         }
         let detail = match &request.command {
             nd_core::ipc::Command::Detailed(d) => Some(d.clone()),
-            _ => None,
+            nd_core::ipc::Command::Bare(_) => None,
         };
         let command = match Command::parse(request.command.action(), detail.as_ref()) {
             Ok(c) => c,
@@ -327,7 +329,7 @@ mod tests {
             action: String::new(),
             mode: None,
             seconds: None,
-            test_id: test_id.map(|s| s.to_string()),
+            test_id: test_id.map(std::string::ToString::to_string),
         }
     }
 

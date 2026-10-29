@@ -17,7 +17,11 @@ use crate::error::NdResult;
 pub enum Step {
     /// 申请管理员权限，并留一个提升助手常驻，之后夜间操作不再弹 UAC。
     Elevate,
-    /// 可选：安装随包内置的虚拟显示驱动（兼容老远程软件）。
+    /// 安装随包内置的虚拟显示驱动，并验证虚拟屏真的出现在显示配置里。
+    ///
+    /// 4.0 起这是**必需**步骤：guard 模式本身不切到虚拟屏，但虚拟屏必须
+    /// 装好待命 —— 「仅虚拟屏」模式要能立刻用，远程软件也能枚举到一块稳定的
+    /// 额外显示。安装后会把桌面布局还原成安装前的样子，不多出一块屏。
     VirtualDriver,
     /// 写入开机自启（Run 键 + 计划任务），并装好看门狗。
     Autostart,
@@ -39,10 +43,11 @@ impl Step {
         Step::Confirm,
     ];
 
+    #[must_use]
     pub fn title(self) -> &'static str {
         match self {
             Step::Elevate => "授权并准备后台服务",
-            Step::VirtualDriver => "虚拟显示驱动（可选）",
+            Step::VirtualDriver => "虚拟显示驱动",
             Step::Autostart => "开机自启与看门狗",
             Step::InputGuard => "本地防触控与锁屏",
             Step::SelfTest => "15 秒自检",
@@ -51,6 +56,7 @@ impl Step {
     }
 
     /// 步骤说明，界面上直接显示，讲清楚"这一步会发生什么"。
+    #[must_use]
     pub fn detail(self) -> &'static str {
         match self {
             Step::Elevate => {
@@ -58,8 +64,9 @@ impl Step {
                  管理员权限只用来装驱动、写计划任务和调背光。"
             }
             Step::VirtualDriver => {
-                "给只在重连后画面才正常的老远程软件备用。默认的防窥黑幕不需要它；\
-                 装它会让“仅虚拟屏”模式可用，但那个模式会中断一次远程画面。"
+                "安装包内的虚拟显示驱动，用 pnputil 静默安装并创建虚拟屏，装完立刻验证\
+                 它出现在系统显示配置里。它平时只是待命，不会改动桌面布局；\
+                 只有你主动选「仅虚拟屏」时才会把桌面切过去。"
             }
             Step::Autostart => {
                 "把 NightDisplay 加到开机启动，并注册每天的时间点任务；\
@@ -79,12 +86,19 @@ impl Step {
 
     /// 这一步是否必需。
     ///
-    /// 虚拟驱动只是可选增强；最后的“确认远程能连”本身就是那个勾选框
-    /// （`Onboarding::remote_confirmed`），不重复算作一个执行步骤。
+    /// 4.0 起虚拟显示驱动是必需的：guard 模式不切到它，但它必须装好待命，
+    /// 「仅虚拟屏」才能随时作为后备方案用。
+    /// 最后的“确认远程能连”本身就是那个勾选框（`Onboarding::remote_confirmed`），
+    /// 不重复算作一个执行步骤。
+    #[must_use]
     pub fn required(self) -> bool {
         matches!(
             self,
-            Step::Elevate | Step::Autostart | Step::InputGuard | Step::SelfTest
+            Step::Elevate
+                | Step::VirtualDriver
+                | Step::Autostart
+                | Step::InputGuard
+                | Step::SelfTest
         )
     }
 }
@@ -134,10 +148,12 @@ impl StepOutcome {
     }
 
     /// 算不算"这一步已经处理完了"。跳过算完，手动和失败不算。
+    #[must_use]
     pub fn done(&self) -> bool {
         matches!(self, StepOutcome::Ok { .. } | StepOutcome::Skipped { .. })
     }
 
+    #[must_use]
     pub fn failed_hard(&self) -> bool {
         matches!(
             self,
@@ -146,6 +162,7 @@ impl StepOutcome {
     }
 
     /// 一行中文说明，日志和界面共用。
+    #[must_use]
     pub fn summary(&self) -> String {
         match self {
             StepOutcome::Ok { detail } => detail.clone(),
@@ -156,6 +173,7 @@ impl StepOutcome {
     }
 
     /// 这一步给用户的下一步动作（日志链接、命令等）。
+    #[must_use]
     pub fn action_hint(&self) -> Option<String> {
         match self {
             StepOutcome::Manual { link, .. } => link.clone(),
@@ -191,20 +209,23 @@ pub struct Onboarding {
 
 impl Onboarding {
     /// 向导是否应当自动弹出：没完成过就弹。
+    #[must_use]
     pub fn should_show(&self) -> bool {
         !self.completed
     }
 
     /// 记录一步结果，并同步失败列表。
     pub fn record(&mut self, result: StepResult) {
-        if let Some(existing) = self.results.iter_mut().find(|r| r.step == result.step) {
-            *existing = result.clone();
+        let step = result.step;
+        let failed = result.outcome.failed_hard();
+        if let Some(existing) = self.results.iter_mut().find(|r| r.step == step) {
+            *existing = result;
         } else {
-            self.results.push(result.clone());
+            self.results.push(result);
         }
-        self.failed_steps.retain(|s| *s != result.step);
-        if result.outcome.failed_hard() {
-            self.failed_steps.push(result.step);
+        self.failed_steps.retain(|s| *s != step);
+        if failed {
+            self.failed_steps.push(step);
             self.failed_steps.sort();
             self.failed_steps.dedup();
         }
@@ -233,6 +254,7 @@ impl Onboarding {
         Ok(())
     }
 
+    #[must_use]
     pub fn step_done(&self, step: Step) -> bool {
         self.results
             .iter()
@@ -240,11 +262,13 @@ impl Onboarding {
             .is_some_and(|r| r.outcome.done())
     }
 
+    #[must_use]
     pub fn result_for(&self, step: Step) -> Option<&StepResult> {
         self.results.iter().find(|r| r.step == step)
     }
 
     /// "重新授权 / 修复"要跑的步骤：只跑失败的，失败列表为空时全部重跑一遍检查。
+    #[must_use]
     pub fn steps_to_repair(&self) -> Vec<Step> {
         if self.failed_steps.is_empty() {
             Step::ALL.to_vec()
@@ -256,6 +280,7 @@ impl Onboarding {
     }
 
     /// 需要用户点开日志时给出路径提示。
+    #[must_use]
     pub fn log_hint(&self) -> String {
         format!(
             "如果某一步失败，日志在 {}",
@@ -265,11 +290,13 @@ impl Onboarding {
 }
 
 /// 向导状态文件。
+#[must_use]
 pub fn state_file() -> std::path::PathBuf {
     crate::paths::home_dir().join("onboarding.json")
 }
 
 /// 读向导状态。文件不存在或损坏时当作"没做过"，向导会再弹一次。
+#[must_use]
 pub fn load_state() -> Onboarding {
     let path = state_file();
     match std::fs::read_to_string(&path) {
@@ -302,6 +329,7 @@ pub fn save_state(ob: &Onboarding) {
 }
 
 /// 向导结束后的摘要，写到日志里方便排障。
+#[must_use]
 pub fn summary_lines(ob: &Onboarding) -> Vec<String> {
     ob.results
         .iter()
@@ -331,7 +359,7 @@ mod tests {
         let ob: Onboarding = serde_json::from_str("{}").unwrap();
         assert!(!ob.completed);
         assert!(ob.should_show());
-        assert!(ob.results.is_empty());
+        assert_eq!(ob.results.len(), 0, "默认状态不该有步骤结果");
     }
 
     #[test]
@@ -348,7 +376,7 @@ mod tests {
         assert!(!ob.step_done(Step::Autostart));
 
         ob.record(result(Step::Autostart, StepOutcome::ok("已注册 2 个任务")));
-        assert!(ob.failed_steps.is_empty());
+        assert_eq!(ob.failed_steps.len(), 0, "成功后必须从待修复列表里移除");
         assert!(ob.step_done(Step::Autostart));
     }
 
@@ -356,15 +384,16 @@ mod tests {
     fn skipped_step_counts_as_done() {
         let mut ob = Onboarding::default();
         ob.record(result(
-            Step::VirtualDriver,
-            StepOutcome::skipped("你选择了兼容老远程软件之外的方式"),
+            Step::Autostart,
+            StepOutcome::skipped("测试里不碰真实计划任务"),
         ));
-        assert!(ob.step_done(Step::VirtualDriver));
-        assert!(ob.failed_steps.is_empty());
+        assert!(ob.step_done(Step::Autostart));
+        assert_eq!(ob.failed_steps.len(), 0, "跳过的步骤不算失败");
     }
 
     #[test]
-    fn manual_step_blocks_completion() {
+    fn virtual_driver_is_required_and_blocks_completion() {
+        // 4.0 起虚拟显示驱动是必需的：只做手动提示不能让向导通过。
         let mut ob = Onboarding::default();
         for step in [
             Step::Elevate,
@@ -374,13 +403,22 @@ mod tests {
         ] {
             ob.record(result(step, StepOutcome::ok("ok")));
         }
+        ob.remote_confirmed = true;
+        let err = ob.finish(now()).unwrap_err().to_string();
+        assert!(err.contains("虚拟显示驱动"), "{err}");
+
         ob.record(result(
             Step::VirtualDriver,
             StepOutcome::manual("在设置里点“安装驱动”，或运行 install-vdd", None),
         ));
-        // 虚拟驱动是可选的，手动状态不应挡住完成
-        ob.remote_confirmed = true;
-        assert!(ob.finish(now()).is_ok());
+        assert!(ob.finish(now()).is_err(), "手动状态同样不该放行");
+
+        ob.record(result(
+            Step::VirtualDriver,
+            StepOutcome::ok("已装好并通过验证"),
+        ));
+        ob.finish(now()).unwrap();
+        assert!(ob.completed);
     }
 
     #[test]
@@ -393,17 +431,19 @@ mod tests {
         let err = ob.finish(now()).unwrap_err().to_string();
         assert!(err.contains("授权并准备后台服务"), "{err}");
 
-        for step in [
-            Step::Elevate,
-            Step::Autostart,
-            Step::InputGuard,
-            Step::SelfTest,
-        ] {
+        for step in Step::ALL.iter().copied().filter(|s| s.required()) {
             ob.record(result(step, StepOutcome::ok("ok")));
         }
         ob.finish(now()).unwrap();
         assert!(ob.completed);
         assert!(!ob.should_show());
+    }
+
+    #[test]
+    fn required_steps_include_the_virtual_driver() {
+        assert!(Step::VirtualDriver.required());
+        // Confirm 是勾选框本身，不算执行步骤。
+        assert!(!Step::Confirm.required());
     }
 
     #[test]

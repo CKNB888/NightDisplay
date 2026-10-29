@@ -38,7 +38,9 @@ pub fn keep_awake(on: bool, seconds: u64) -> anyhow::Result<()> {
         unsafe {
             let _ = SetThreadExecutionState(ES_CONTINUOUS);
         }
-        let mut guard = WORKER.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = WORKER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(worker) = guard.take() {
             let _ = worker.stop.send(());
             if let Some(handle) = worker.handle {
@@ -54,7 +56,9 @@ pub fn keep_awake(on: bool, seconds: u64) -> anyhow::Result<()> {
     }
 
     DESIRED.store(true, Ordering::SeqCst);
-    let mut guard = WORKER.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = WORKER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if guard.is_some() {
         tracing::debug!(seconds, "防睡眠已在运行，续订时长");
         return Ok(());
@@ -124,7 +128,7 @@ pub fn screen_off() -> anyhow::Result<()> {
             LPARAM(MONITOR_OFF),
             SMTO_ABORTIFHUNG,
             2000,
-            Some(&mut result),
+            Some(&raw mut result),
         )
     };
     let _ = HWND(std::ptr::null_mut());
@@ -152,7 +156,7 @@ pub fn screen_on() -> anyhow::Result<()> {
             LPARAM(MONITOR_ON),
             SMTO_ABORTIFHUNG,
             2000,
-            Some(&mut result),
+            Some(&raw mut result),
         );
     }
     // SAFETY: 发送零位移鼠标移动，确保显示器被唤醒；这是注入事件，钩子会放行。
@@ -181,11 +185,15 @@ pub fn set_lock_suppression(on: bool) -> anyhow::Result<()> {
         // 用 condvar 唤醒而不是等 60 秒的 sleep 走完 —— 否则"关闭抑制"
         // 会把 UI 卡住最多一分钟（首启向导第 4 步就会踩到）。
         {
-            let mut stopped = STOP.lock().unwrap_or_else(|e| e.into_inner());
+            let mut stopped = STOP
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *stopped = true;
         }
         WAKE_SIGNAL.notify_all();
-        let mut guard = SUPPRESSION.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = SUPPRESSION
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(handle) = guard.take() {
             let _ = handle.join();
         }
@@ -193,26 +201,32 @@ pub fn set_lock_suppression(on: bool) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let mut guard = SUPPRESSION.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = SUPPRESSION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if guard.is_some() {
         return Ok(());
     }
     {
-        let mut stopped = STOP.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stopped = STOP
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *stopped = false;
     }
     let handle = thread::Builder::new()
         .name("nd-locksuppress".into())
         .spawn(|| loop {
             poke_idle_timer();
-            let stopped = STOP.lock().unwrap_or_else(|e| e.into_inner());
+            let stopped = STOP
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             // 先看谓词再等，避免通知比 wait 先到就丢掉（会白等 60 秒）。
             if *stopped {
                 break;
             }
             let (stopped, _timeout) = WAKE_SIGNAL
                 .wait_timeout(stopped, Duration::from_secs(60))
-                .unwrap_or_else(|e| e.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if *stopped {
                 break;
             }
@@ -238,7 +252,8 @@ fn poke_idle_timer() {
                 ki: KEYBDINPUT {
                     wVk: VK_F15,
                     wScan: 0,
-                    dwFlags: Default::default(),
+                    dwFlags:
+                        windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS::default(),
                     time: 0,
                     dwExtraInfo: 0,
                 },
@@ -264,15 +279,16 @@ fn poke_idle_timer() {
 }
 
 /// 当前进程是否有管理员权限。
+#[must_use]
 pub fn is_elevated() -> bool {
     use windows::Win32::Security::{
         GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
     };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-    let mut token = Default::default();
+    let mut token = windows::Win32::Foundation::HANDLE::default();
     // SAFETY: 只查询当前进程的令牌。
     unsafe {
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token).is_err() {
             return false;
         }
         let mut elevation = TOKEN_ELEVATION::default();
@@ -280,9 +296,9 @@ pub fn is_elevated() -> bool {
         let ok = GetTokenInformation(
             token,
             TokenElevation,
-            Some(&mut elevation as *mut _ as *mut _),
+            Some((&raw mut elevation).cast()),
             std::mem::size_of::<TOKEN_ELEVATION>() as u32,
-            &mut size,
+            &raw mut size,
         )
         .is_ok();
         let _ = windows::Win32::Foundation::CloseHandle(token);
@@ -291,6 +307,7 @@ pub fn is_elevated() -> bool {
 }
 
 /// 当前 Windows 版本号（build），用于判断 `WDA_EXCLUDEFROMCAPTURE` 是否可用。
+#[must_use]
 pub fn windows_build() -> u32 {
     // SAFETY: 纯查询，不分配。
     unsafe {
@@ -300,7 +317,7 @@ pub fn windows_build() -> u32 {
             >() as u32,
             ..Default::default()
         };
-        if windows::Wdk::System::SystemServices::RtlGetVersion(&mut info).is_ok() {
+        if windows::Wdk::System::SystemServices::RtlGetVersion(&raw mut info).is_ok() {
             info.dwBuildNumber
         } else {
             0
@@ -309,6 +326,7 @@ pub fn windows_build() -> u32 {
 }
 
 /// 操作系统描述，写进状态文本。
+#[must_use]
 pub fn os_description() -> String {
     format!("Windows (build {})", windows_build())
 }

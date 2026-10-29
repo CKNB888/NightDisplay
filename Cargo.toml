@@ -25,6 +25,19 @@ fs4 = "1"
 rand = "0.9"
 regex = "1"
 
+# Lint policy. Everything below is an explicit, documented decision — see
+# `docs/architecture.md` §"Lint policy". The goal is `-D warnings -W clippy::pedantic`
+# passing with no blanket `#[allow]` sprinkled through the code.
+[workspace.lints.rust]
+# Every `unsafe` block must say why it is sound; an unsafe fn body is treated the
+# same as an unsafe block so the invariant has to be written down even there.
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+# Clippy allows live at each crate root (`#![allow(...)]`), because a command-line
+# `-W clippy::pedantic` overrides anything set here. See `docs/architecture.md`
+# § "Lint policy" for the full list and the reason for each entry.
+
 [profile.release]
 opt-level = "s"
 lto = "thin"

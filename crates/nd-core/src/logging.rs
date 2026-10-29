@@ -22,6 +22,7 @@ pub struct FileWriter {
 }
 
 impl FileWriter {
+    #[must_use]
     pub fn new(dir: PathBuf) -> Self {
         Self {
             dir,
@@ -96,6 +97,7 @@ pub fn init() -> anyhow::Result<()> {
 
 /// 把完整错误链写进 `logs/traceback.log`，只在出错时调用。
 pub fn record_error(context: &str, err: &anyhow::Error) {
+    use std::fmt::Write as _;
     let mut text = format!(
         "{} {}\n{:#}\n\n",
         Local::now().format("%Y-%m-%d %H:%M:%S"),
@@ -103,7 +105,8 @@ pub fn record_error(context: &str, err: &anyhow::Error) {
         err
     );
     for (i, cause) in err.chain().enumerate().skip(1) {
-        text.push_str(&format!("  cause[{i}]: {cause}\n"));
+        // Writing into a String cannot fail.
+        let _ = writeln!(text, "  cause[{i}]: {cause}");
     }
     let dir = paths::logs_dir();
     let _ = std::fs::create_dir_all(&dir);
