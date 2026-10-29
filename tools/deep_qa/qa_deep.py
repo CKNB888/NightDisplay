@@ -38,6 +38,13 @@ OUT = ROOT / "qa-out"
 HOME = OUT / "home"
 EXE_INSTALLED = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "NightDisplay" / "NightDisplay.exe"
 
+# Windows 上的 python 默认用 cp1252 打 stdout，中文检查名第一次 print 就抛
+# UnicodeEncodeError —— 那会让整个 QA 连第一条断言都没跑完就退出。
+# 显式改成 UTF-8，日志和报告才不会因为一个编码问题丢掉全部证据。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 results = []
 timings = {}
 
@@ -580,6 +587,12 @@ def main():
         except Exception as exc:  # noqa: BLE001 - QA 脚本：任何异常都要记录而不是崩掉
             check("看门狗检查", False, f"异常：{exc}")
         step_diag()
+    except Exception as exc:  # noqa: BLE001
+        # 任何一步抛异常都不能让整轮"没有任何报告"——那等于把证据一起丢掉。
+        # 记一条失败，仍然走 finally 导出诊断包，最后照常写报告。
+        import traceback
+        say(traceback.format_exc())
+        check("QA 执行未中断", False, f"{type(exc).__name__}: {exc}")
     finally:
         # 不管成败都导出一次诊断包，失败才可复盘。
         try:
