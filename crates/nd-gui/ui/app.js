@@ -386,7 +386,7 @@ function renderMode(snap) {
 
 /* 夜间会话里每一步的中文名。和 nd-core 的 session 模块一一对应。 */
 const SESSION_STEPS = {
-  prewarm: '预热黑幕窗口',
+  prewarm: '预热虚拟屏（提前枚举、对齐模式）',
   topology: '切换显示路径（单次 SetDisplayConfig）',
   mode_match: '模式匹配（请求 → 实际）',
   settle: '等待显示稳定',

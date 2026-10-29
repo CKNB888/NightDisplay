@@ -22,6 +22,11 @@
 
 * { box-sizing: border-box; }
 
+/* `hidden` 必须真的隐藏。这里几条规则都带 display（.wizard 是 grid、
+   卡片是 flex），作者样式优先级高于浏览器默认的 [hidden] { display: none }，
+   否则向导关掉之后还会一直盖在界面上。 */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100%;
