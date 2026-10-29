@@ -59,12 +59,49 @@ pub fn redact(text: &str, home: &Path) -> String {
         let escaped = home_text.replace('\\', "\\\\");
         out = out.replace(&escaped, "<home>");
     }
-    // 这里**不能**拿 `home.file_name()` 当账号名去全局替换：数据目录名是
-    // `NightDisplay`，把它当用户名会把 `NightDisplay.exe` 一起吃掉，产物里
-    // 就只剩 `<user>.exe`。账号名一律交给 `redact_users` 按用户目录结构识别。
+    // 数据目录名是 `NightDisplay`，把它当用户名会把 `NightDisplay.exe`
+    // 一起吃掉（产物里只剩 `<user>.exe`）。所以**只有**数据目录本身就是
+    // 用户主目录（`C:\Users\alice`、`/home/alice`）时，最后一段才等于账号名。
+    // 路径里的账号名一律交给 `redact_users()` 按目录结构识别；这里只补
+    // "账号名自己在别处单独出现、不带 Users\\ 前缀"这一种情况。
+    if is_user_profile(&home_text) {
+        if let Some(name) = last_segment(&home_text) {
+            // 只替换长度 >= 3 的名字，避免把短词误伤。
+            if name.len() >= 3 {
+                out = out.replace(name, "<user>");
+            }
+        }
+    }
     out = redact_users(&out);
     out = redact_tokens(&out);
     out
+}
+
+/// 取路径的最后一段。`/` 和 `\` 都算分隔符。
+///
+/// 不用 `Path::file_name()`：它在 Linux 上不把反斜杠当分隔符，于是
+/// `C:\Users\x` 会被当成一整段文件名 —— 同一个函数在两种系统上行为不同，
+/// 单元测试也就测不出真机上的样子。
+fn last_segment(path: &str) -> Option<&str> {
+    let trimmed = path.trim_end_matches(['\\', '/']);
+    let start = trimmed.rfind(['\\', '/']).map_or(0, |i| i + 1);
+    let segment = &trimmed[start..];
+    if segment.is_empty() {
+        None
+    } else {
+        Some(segment)
+    }
+}
+
+/// 这个目录是不是"就是一个用户主目录"，即上一段是 `Users` / `home`。
+fn is_user_profile(path: &str) -> bool {
+    let trimmed = path.trim_end_matches(['\\', '/']);
+    let Some((parent, _name)) = trimmed.rsplit_once(['\\', '/']) else {
+        return false;
+    };
+    last_segment(parent)
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|seg| seg == "users" || seg == "home")
 }
 
 /// 用户目录标记：这些片段后面紧跟的那一段就是账号名。
@@ -369,6 +406,35 @@ mod tests {
         // 没有账号名可替换时不能把文本改坏。
         let text = "路径 C:\\Users\\ 后面没有名字";
         assert_eq!(redact(text, &home), text);
+    }
+
+    #[test]
+    fn redact_does_not_mistake_the_product_name_for_a_username() {
+        // Windows 默认数据目录是 `%LOCALAPPDATA%\NightDisplay`，最后一段是
+        // 产品名而不是账号名。以前这里不看上下文，会把诊断包里每一处
+        // `NightDisplay` 都换成 `<user>`，真正的账号名反而留着。
+        let home = PathBuf::from("C:\\Users\\runneradmin\\AppData\\Local\\NightDisplay");
+        let text =
+            "NightDisplay.exe 在 C:\\Users\\runneradmin\\AppData\\Local\\Programs\\NightDisplay";
+        let out = redact(text, &home);
+        assert!(!out.contains("runneradmin"), "{out}");
+        assert_eq!(
+            out.matches("NightDisplay").count(),
+            2,
+            "产品名不该被抹掉：{out}"
+        );
+    }
+
+    #[test]
+    fn redact_hides_a_bare_username_when_home_is_the_profile() {
+        // 数据目录就是主目录时，账号名可能在别的地方单独出现（没有 Users\ 前缀）。
+        let home = PathBuf::from("C:\\Users\\runneradmin");
+        let out = redact("登录用户 runneradmin 在 21:00 进入夜间", &home);
+        assert!(!out.contains("runneradmin"), "{out}");
+        assert!(out.contains("<user>"), "{out}");
+        // unix 同理，且不用 Path::file_name（它在 Windows 上对 `/` 的处理不同）。
+        let unix = redact("/home/alice/logs 目录", &PathBuf::from("/home/alice"));
+        assert!(!unix.contains("alice"), "{unix}");
     }
 
     #[test]
