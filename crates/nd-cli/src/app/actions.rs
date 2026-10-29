@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use nd_core::config::Config;
+use nd_core::diag;
 use nd_core::engine::{Engine, Outcome, Platform};
 use nd_core::mode::Mode;
 use nd_core::onboarding::{self, Onboarding, Step};
@@ -290,8 +291,23 @@ pub fn selfcheck() -> Result<ExitCode> {
         .map_err(|e| nd_core::error::user(format!("自检报告无法序列化：{e}")))?;
     std::fs::write(&path, &text)
         .map_err(|e| nd_core::error::user(format!("自检报告写入失败：{e}")))?;
+    // 人看上半段，机器看下半段；`--action selfcheck` 的输出可以直接贴。
+    print!("{}", diag::selfcheck_summary(&report));
+    println!("\n—— 下面是完整 JSON（也是 selfcheck.json 的内容）——");
     println!("{text}");
     println!("\n已写入 {}", path.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+/// 导出诊断包：一个 ZIP，装日志、脱敏配置、自检、显示能力和最近几次会话。
+///
+/// 用户排障时只要把生成的文件发出来，不用再问东问西。里面不含画面内容，
+/// 也不含远程工具的账号；本机路径和 IPC 令牌都会换成占位符。
+pub fn export_diag(dir: Option<&str>) -> Result<ExitCode> {
+    let target = dir.map(std::path::PathBuf::from);
+    let path = nd_win::diag::export(target.as_deref())?;
+    println!("诊断包已导出：{}", path.display());
+    println!("里面没有画面内容，本机路径和令牌已替换成 <home> / <token>。");
     Ok(ExitCode::SUCCESS)
 }
 

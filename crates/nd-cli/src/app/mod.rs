@@ -48,6 +48,8 @@ pub struct Args {
     pub selftest: u64,
     /// 看门狗由登录任务拉起（不跟随父进程）。
     pub autostart: bool,
+    /// 诊断包的导出目录（默认 `<数据目录>/diag`）。
+    pub out: Option<String>,
 }
 
 impl Default for Args {
@@ -69,6 +71,7 @@ impl Default for Args {
             only: Vec::new(),
             selftest: 0,
             autostart: false,
+            out: None,
         }
     }
 }
@@ -93,6 +96,8 @@ const ACTIONS: &[&str] = &[
     "install-vdd",
     "uninstall-vdd",
     "selfcheck",
+    "export-diag",
+    "diag",
     "env",
     "setup",
     "repair",
@@ -123,7 +128,8 @@ const HELP: &str = r"NightDisplay —— 夜间本地黑屏、远程正常
   emergency      应急恢复：立刻亮屏并暂停计划，可远程执行
   uninstall      卸载：恢复 + 删除计划任务和自启项
   status         打印当前状态
-  selfcheck      写一份自检报告 selfcheck.json
+  selfcheck      打印自检结果（人读摘要 + 完整 JSON），并写 selfcheck.json
+  export-diag    导出诊断包（日志 / 脱敏配置 / 自检 / 显示能力 / 最近会话）
   env            打印本机能力（排障用）
   displays       列出显示器
   plan-virtual   只校验“仅虚拟屏”，不改动
@@ -148,6 +154,7 @@ const HELP: &str = r"NightDisplay —— 夜间本地黑屏、远程正常
   --no-vdd                      仅测试用：跳过虚拟显示驱动安装（正常安装必须装）
   --only a,b                    setup/repair 只跑指定步骤
   --home <目录>                 指定数据目录
+  --out <目录>                  诊断包导出到哪里（默认 <数据目录>/diag）
   --debug                       出错时打印完整错误链
   -h, --help                    显示这段说明
   -V, --version                 显示版本
@@ -227,6 +234,7 @@ fn run(args: &Args) -> Result<ExitCode> {
         "helper" => actions::helper(),
         "status" => actions::status(),
         "selfcheck" => actions::selfcheck(),
+        "export-diag" | "diag" => actions::export_diag(args.out.as_deref()),
         "env" => actions::env(),
         "displays" => actions::displays(),
         "plan-virtual" => actions::plan_virtual(),
@@ -282,6 +290,7 @@ fn parse_args(argv: Vec<String>) -> Result<Option<Args>> {
             }
             "--action" => parsed.action = value("--action")?,
             "--home" => parsed.home = Some(value("--home")?),
+            "--out" => parsed.out = Some(value("--out")?),
             "--mode" => parsed.mode = Some(value("--mode")?),
             "--start" => parsed.start = Some(value("--start")?),
             "--end" => parsed.end = Some(value("--end")?),

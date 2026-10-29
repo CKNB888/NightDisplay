@@ -40,6 +40,8 @@ pub mod autostart;
 #[cfg(windows)]
 pub mod brightness;
 #[cfg(windows)]
+pub mod diag;
+#[cfg(windows)]
 pub mod gamma;
 #[cfg(windows)]
 pub mod hardware;
