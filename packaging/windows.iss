@@ -8,7 +8,7 @@
 
 #define AppName "NightDisplay"
 #ifndef AppVersion
-  #define AppVersion "4.0.0"
+  #define AppVersion "4.0.1"
 #endif
 #define AppExe "NightDisplay.exe"
 #define RepoURL "https://github.com/CKNB888/NightDisplay"

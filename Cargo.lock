@@ -2094,7 +2094,7 @@ dependencies = [
 
 [[package]]
 name = "nd-core"
-version = "4.0.0"
+version = "4.0.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2111,7 +2111,7 @@ dependencies = [
 
 [[package]]
 name = "nd-gui"
-version = "4.0.0"
+version = "4.0.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2129,7 +2129,7 @@ dependencies = [
 
 [[package]]
 name = "nd-win"
-version = "4.0.0"
+version = "4.0.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2181,7 +2181,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nightdisplay"
-version = "4.0.0"
+version = "4.0.1"
 dependencies = [
  "anyhow",
  "chrono",

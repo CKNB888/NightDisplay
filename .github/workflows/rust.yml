@@ -107,6 +107,22 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: 读取版本号（来自 Cargo.toml）
+        shell: pwsh
+        run: |
+          # 版本号只在 Cargo.toml 的 [workspace.package] 里写一次，后面全部读它，
+          # 这样下次升版只要改那一行。
+          $lines = Get-Content Cargo.toml
+          $start = [array]::IndexOf($lines, '[workspace.package]')
+          if ($start -lt 0) { throw "Cargo.toml 里没有 [workspace.package]" }
+          $version = $null
+          for ($i = $start + 1; $i -lt $lines.Length; $i++) {
+            if ($lines[$i] -match '^\s*\[') { break }
+            if ($lines[$i] -match '^\s*version\s*=\s*"([^"]+)"\s*$') { $version = $Matches[1]; break }
+          }
+          if (-not $version) { throw "Cargo.toml 的 [workspace.package] 里没有 version" }
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+          Write-Host "APP_VERSION=$version"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -131,12 +147,12 @@ jobs:
           Write-Host "exe 版本: $version"
           $out = & $exe --version | Out-String
           Write-Host $out
-          $ver = (Select-String -InputObject $out -Pattern '4\.0\.0').Matches.Count
-          if ($ver -eq 0) { throw "版本号不是 4.0.0：$out" }
+          $ver = (Select-String -InputObject $out -Pattern ([regex]::Escape($env:APP_VERSION))).Matches.Count
+          if ($ver -eq 0) { throw "版本号不是 $env:APP_VERSION：$out" }
           # 标签必须和代码版本一致，避免发出一个"标签写 v4 但里面是 3.9"的包。
           if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
             $tag = "${{ github.ref_name }}".Substring(1)
-            if ($tag -ne "4.0.0") { throw "标签 $tag 与代码版本 4.0.0 不一致" }
+            if ($tag -ne $env:APP_VERSION) { throw "标签 $tag 与代码版本 $env:APP_VERSION 不一致" }
           }
       - name: 便携版 zip
         shell: pwsh
@@ -155,8 +171,8 @@ jobs:
           if (-not (Get-ChildItem "$root\resources\vdd" -Recurse -Filter MttVDD.inf)) {
             throw "便携版里没有 MttVDD.inf"
           }
-          Compress-Archive -Path "$root\*" -DestinationPath "dist\NightDisplay-4.0.0-portable.zip" -Force
-          Get-Item dist\NightDisplay-4.0.0-portable.zip | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+          Compress-Archive -Path "$root\*" -DestinationPath "dist\NightDisplay-${env:APP_VERSION}-portable.zip" -Force
+          Get-Item "dist\NightDisplay-${env:APP_VERSION}-portable.zip" | Select-Object Name, Length | Format-Table | Out-String | Write-Host
       - name: 装 Inno Setup
         shell: pwsh
         run: choco install innosetup --version=6.7.1 -y --no-progress
@@ -167,16 +183,16 @@ jobs:
           if (-not (Test-Path $iscc)) { throw "找不到 ISCC.exe" }
           # .iss 里的 OutputDir 是 ..\dist，相对 packaging\ 就是仓库根的 dist。
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          & $iscc "/DAppVersion=4.0.0" "packaging\windows.iss"
+          & $iscc "/DAppVersion=${env:APP_VERSION}" "packaging\windows.iss"
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup 退出码 $LASTEXITCODE" }
-          if (-not (Test-Path "dist\NightDisplay-4.0.0-Setup.exe")) { throw "没有生成安装器" }
+          if (-not (Test-Path "dist\NightDisplay-${env:APP_VERSION}-Setup.exe")) { throw "没有生成安装器" }
           Get-Item dist\*.exe | Select-Object Name, Length | Format-Table | Out-String | Write-Host
       - name: 安装器静默安装检查
         shell: pwsh
         run: |
           # 真的装一遍（当前用户目录，不需要管理员），确认文件都在，
           # 再静默卸载，确认收尾干净。安装器本身不写自启，所以不会污染 runner。
-          $setup = "dist\NightDisplay-4.0.0-Setup.exe"
+          $setup = "dist\NightDisplay-${env:APP_VERSION}-Setup.exe"
           $dir = "$env:LOCALAPPDATA\Programs\NightDisplay"
           Start-Process -FilePath $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
           if (-not (Test-Path "$dir\NightDisplay.exe")) { throw "安装后没有 NightDisplay.exe" }
@@ -201,13 +217,13 @@ jobs:
         with:
           name: NightDisplay-windows-x64
           path: |
-            dist/NightDisplay-4.0.0-Setup.exe
-            dist/NightDisplay-4.0.0-portable.zip
+            dist/NightDisplay-${{ env.APP_VERSION }}-Setup.exe
+            dist/NightDisplay-${{ env.APP_VERSION }}-portable.zip
           if-no-files-found: error
       - name: 产物摘要
         shell: pwsh
         run: |
-          $lines = @("## NightDisplay 4.0.0 安装包", "")
+          $lines = @("## NightDisplay ${env:APP_VERSION} 安装包", "")
           Get-ChildItem dist -File | ForEach-Object {
             $mb = [math]::Round($_.Length / 1MB, 2)
             $sha = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
@@ -234,6 +250,21 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      - name: 读取版本号（来自 Cargo.toml）
+        shell: pwsh
+        run: |
+          # 和 package 作业同一份来源：这里只需要拼出 Setup.exe 的文件名。
+          $lines = Get-Content Cargo.toml
+          $start = [array]::IndexOf($lines, '[workspace.package]')
+          if ($start -lt 0) { throw "Cargo.toml 里没有 [workspace.package]" }
+          $version = $null
+          for ($i = $start + 1; $i -lt $lines.Length; $i++) {
+            if ($lines[$i] -match '^\s*\[') { break }
+            if ($lines[$i] -match '^\s*version\s*=\s*"([^"]+)"\s*$') { $version = $Matches[1]; break }
+          }
+          if (-not $version) { throw "Cargo.toml 的 [workspace.package] 里没有 version" }
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+          Write-Host "APP_VERSION=$version"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -246,7 +277,7 @@ jobs:
         shell: pwsh
         run: |
           Get-ChildItem dist | Format-Table Name, Length | Out-String | Write-Host
-          if (-not (Test-Path "dist\NightDisplay-4.0.0-Setup.exe")) { throw "没有 Setup.exe" }
+          if (-not (Test-Path "dist\NightDisplay-${env:APP_VERSION}-Setup.exe")) { throw "没有 Setup.exe" }
       - name: 允许安装未签名的测试驱动
         shell: pwsh
         run: |
@@ -283,6 +314,22 @@ jobs:
     permissions:
       contents: write
     steps:
+      # 要读 Cargo.toml 里的版本号（发布名、产物文件名、release note 都按它来），
+      # 所以先拿一份代码；`body_path` 也需要仓库里的文件才读得到。
+      - uses: actions/checkout@v4
+      - name: 读取版本号（来自 Cargo.toml）
+        shell: bash
+        run: |
+          # 与 package / deep-qa 同一份来源；失败就立刻退出，不要发一个版本不明的包。
+          version="$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+            | sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+            | head -n1)"
+          if [ -z "$version" ]; then
+            echo "Cargo.toml 的 [workspace.package] 里读不到版本号" >&2
+            exit 1
+          fi
+          echo "APP_VERSION=$version" >> "$GITHUB_ENV"
+          echo "APP_VERSION=$version"
       - uses: actions/download-artifact@v4
         with:
           name: NightDisplay-windows-x64
@@ -294,13 +341,13 @@ jobs:
           cat SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
-          name: NightDisplay 4.0.0
+          name: NightDisplay ${{ env.APP_VERSION }}
           tag_name: ${{ github.ref_name }}
           draft: false
           prerelease: false
           generate_release_notes: false
-          body_path: docs/release-4.0.0.md
+          body_path: docs/release-${{ env.APP_VERSION }}.md
           files: |
-            dist/NightDisplay-4.0.0-Setup.exe
-            dist/NightDisplay-4.0.0-portable.zip
+            dist/NightDisplay-${{ env.APP_VERSION }}-Setup.exe
+            dist/NightDisplay-${{ env.APP_VERSION }}-portable.zip
             dist/SHA256SUMS.txt
