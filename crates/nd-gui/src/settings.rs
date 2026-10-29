@@ -175,15 +175,7 @@ mod tests {
 
     /// 每个测试用自己的数据目录，互不干扰。
     fn with_home<T>(f: impl FnOnce() -> T) -> T {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = tempfile::tempdir().unwrap();
-        std::env::set_var("NIGHTDISPLAY_HOME", dir.path());
-        let out = f();
-        std::env::remove_var("NIGHTDISPLAY_HOME");
-        out
+        crate::test_home::with_temp_home(|_| f())
     }
 
     fn seed() {

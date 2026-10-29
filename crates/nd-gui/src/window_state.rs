@@ -291,10 +291,9 @@ mod tests {
 
     #[test]
     fn save_ignores_insane_geometry() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("NIGHTDISPLAY_HOME", dir.path());
-        save(Geometry::default());
-        assert!(!file().exists(), "坏数据不该落盘");
-        std::env::remove_var("NIGHTDISPLAY_HOME");
+        crate::test_home::with_temp_home(|_| {
+            save(Geometry::default());
+            assert!(!file().exists(), "坏数据不该落盘");
+        });
     }
 }

@@ -158,17 +158,16 @@ mod tests {
 
     #[test]
     fn geometry_roundtrip() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("NIGHTDISPLAY_HOME", dir.path());
-        let g = window_state::Geometry {
-            x: 40,
-            y: 60,
-            width: 1080,
-            height: 720,
-            maximized: true,
-        };
-        window_state::save(g);
-        assert_eq!(last_geometry(), g);
-        std::env::remove_var("NIGHTDISPLAY_HOME");
+        crate::test_home::with_temp_home(|_| {
+            let g = window_state::Geometry {
+                x: 40,
+                y: 60,
+                width: 1080,
+                height: 720,
+                maximized: true,
+            };
+            window_state::save(g);
+            assert_eq!(last_geometry(), g);
+        });
     }
 }

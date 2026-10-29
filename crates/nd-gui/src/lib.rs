@@ -120,6 +120,30 @@ pub fn run() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// 测试专用的数据目录隔离。
+///
+/// `NIGHTDISPLAY_HOME` 是**进程级**环境变量，而 cargo 默认并行跑测试 ——
+/// 三个模块各设各的目录时，后设的会把先设的覆盖掉，于是 `save()` 写进了
+/// 别人的临时目录、`load()` 读到的是空的（这就是 `geometry_roundtrip`
+/// 在 CI 上偶发失败的原因）。所以整个 crate 只留一把锁，所有要动这个变量
+/// 的测试都走 [`with_temp_home`]，保证同一时刻只有一个测试拥有它。
+#[cfg(test)]
+pub(crate) mod test_home {
+    use std::sync::{Mutex, PoisonError};
+
+    static LOCK: Mutex<()> = Mutex::new(());
+
+    /// 在一个独占的临时数据目录里跑 `f`；结束后恢复成"未设置"。
+    pub(crate) fn with_temp_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
+        let _guard = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        let dir = tempfile::tempdir().expect("临时目录");
+        std::env::set_var("NIGHTDISPLAY_HOME", dir.path());
+        let out = f(dir.path());
+        std::env::remove_var("NIGHTDISPLAY_HOME");
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
