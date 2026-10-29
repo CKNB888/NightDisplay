@@ -839,12 +839,23 @@ def _after_watchdog():
     cfg["override_until"] = None
     cfg["hold_night_until"] = None
     (HOME / "config.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+    # `--action reconcile` 在"计划已启用但没有常驻进程"时**只负责把常驻进程拉起来
+    # 就返回**（见 actions.rs 的 reconcile）。真正按时间重新判定在常驻进程里异步
+    # 进行，所以要等状态落定，不能读完配置就下结论 —— 之前就是这么误判的。
     code, out = run(["--action", "reconcile"], timeout=300, check_code=False)
-    cfg = read_config()
-    p = probe()
+    deadline = time.monotonic() + 45
+    cfg, p = read_config(), probe()
+    while time.monotonic() < deadline:
+        cfg = read_config()
+        p = probe()
+        if cfg.get("state") == "night":
+            break
+        time.sleep(1)
+    note("reentry_wait_s", round(45 - (deadline - time.monotonic()), 1))
     if CAN_USE_VIRTUAL_SCREEN:
-        reentry_ok = cfg.get("state") == "night" and p["virtual_holding"]
-        detail = f"state={cfg.get('state')} holding={p['virtual_holding']} range={start}-{end}"
+        holding = (p or {}).get("virtual_holding")
+        reentry_ok = cfg.get("state") == "night" and holding
+        detail = f"state={cfg.get('state')} holding={holding} range={start}-{end}"
     else:
         # overlay 下没有"虚拟屏接管"这回事，只断言状态机自己回到夜间。
         reentry_ok = cfg.get("state") == "night"
