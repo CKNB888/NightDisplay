@@ -238,6 +238,39 @@ impl Schedule {
             _ => 0,
         }
     }
+
+    /// 上一次状态翻转过去了多少秒。用来算"这一段已经走了多少"。
+    ///
+    /// 和 [`Self::next_switch`] 一样按分钟粒度回看，最多 24 小时。全天被覆盖、
+    /// 或者没有任何有效段（永远不翻转）时返回 `None`。
+    #[must_use]
+    pub fn previous_switch(&self, now: DateTime<Local>) -> Option<i64> {
+        let current = self.is_night_at(now);
+        let base = now.with_second(0)?.with_nanosecond(0)?;
+        for step in 1..=1440i64 {
+            let t = base - Duration::minutes(step);
+            if self.is_night_at(t) != current {
+                // t 之后的那一分钟就是这一段的第一分钟。
+                let secs = (now - (t + Duration::minutes(1))).num_seconds();
+                return Some(secs.max(0));
+            }
+        }
+        None
+    }
+
+    /// 当前这一段（白天或夜间）的总长度，单位秒。
+    ///
+    /// 界面上的倒计时圆环要按"这一段走了多少 / 这一段有多长"来画，
+    /// 所以长度必须在同一个位置一次算出来，不能拿"剩余"当分母。
+    /// 找不到翻转点（例如全天都在夜间）时返回 `None`。
+    #[must_use]
+    pub fn current_segment_secs(&self, now: DateTime<Local>) -> Option<(bool, i64, i64)> {
+        let (night, remaining) = self.next_switch(now)?;
+        // next_switch 的布尔是"下一段是不是夜间"，取反才是当前段。
+        let current_night = !night;
+        let elapsed = self.previous_switch(now)?;
+        Some((current_night, elapsed, elapsed + remaining))
+    }
 }
 
 /// 取某个时刻的“时:分”。
@@ -336,6 +369,59 @@ mod tests {
         let (go_night, secs) = s.next_switch(at(9, 0, 0)).unwrap();
         assert!(!go_night);
         assert_eq!(secs, 90 * 60);
+    }
+
+    #[test]
+    fn segment_length_is_the_sum_of_elapsed_and_remaining() {
+        let s = default_schedule();
+        // 白天段 10:30 → 20:00，正好 9.5 小时 = 34 200 秒。
+        let (night, elapsed, total) = s.current_segment_secs(at(18, 0, 0)).unwrap();
+        assert!(!night);
+        assert_eq!(total, 34_200);
+        assert_eq!(elapsed, (18 * 3600) - (10 * 3600 + 30 * 60));
+        // 夜间段 20:00 → 10:30，14.5 小时。
+        let (night, elapsed, total) = s.current_segment_secs(at(23, 30, 0)).unwrap();
+        assert!(night);
+        assert_eq!(total, 14 * 3600 + 30 * 60);
+        assert_eq!(elapsed, 3 * 3600 + 30 * 60);
+    }
+
+    #[test]
+    fn segment_length_covers_every_minute_of_the_day() {
+        let s = default_schedule();
+        for minute in 0..1440 {
+            let t = Local
+                .with_ymd_and_hms(2026, 10, 29, 0, 0, 0)
+                .single()
+                .unwrap()
+                + Duration::minutes(minute);
+            let (_, elapsed, total) = s
+                .current_segment_secs(t)
+                .unwrap_or_else(|| panic!("{minute} 分时算不出段长"));
+            assert!(
+                (0..=total).contains(&elapsed),
+                "{minute} 分：{elapsed}/{total}"
+            );
+            // 夜间 20:00–10:30 = 52 200 秒，白天是剩下的 34 200 秒；
+            // 任何时刻都必须正好落在其中一段里。
+            assert!(
+                total == 34_200 || total == 52_200,
+                "{minute} 分：段长 {total}"
+            );
+            assert_eq!(total == 52_200, s.is_night_at(t), "{minute} 分的夜间标记");
+        }
+    }
+
+    #[test]
+    fn segment_length_is_none_when_the_schedule_never_switches() {
+        let s = Schedule::new(vec![NightRange {
+            start: "00:00".parse().unwrap(),
+            end: "23:59".parse().unwrap(),
+        }]);
+        // 一天里只有 23:59 那一分钟是白天，仍然存在翻转点。
+        assert!(s.current_segment_secs(at(12, 0, 0)).is_some());
+        let empty = Schedule::new(Vec::new());
+        assert_eq!(empty.current_segment_secs(at(12, 0, 0)), None);
     }
 
     #[test]

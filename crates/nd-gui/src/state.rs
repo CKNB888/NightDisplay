@@ -222,14 +222,13 @@ fn countdown_for(cfg: &Config, now: DateTime<Local>) -> Countdown {
             text: "没有有效的切换点".to_string(),
         };
     };
-    let remaining_in_segment = if night {
-        schedule.seconds_left_in_night(now).max(0)
-    } else {
-        schedule.seconds_until_night(now).max(0)
-    };
-    let total = remaining_in_segment + seconds;
+    // 环的进度要的是"这一段已走 / 这一段总长"，两段的长度都得从计划里算，
+    // 不能拿"剩余"当分母 —— 那样任何时刻的进度都是 50%。
+    let (_, elapsed, total) = schedule
+        .current_segment_secs(now)
+        .unwrap_or((night, 0, seconds));
     let progress = if total > 0 {
-        ((total - seconds) as f64 / total as f64).clamp(0.0, 1.0)
+        (elapsed as f64 / total as f64).clamp(0.0, 1.0)
     } else {
         0.0
     };
@@ -432,7 +431,23 @@ mod tests {
         assert_eq!(c.seconds, 2 * 3600);
         assert!(c.text.contains("进入夜间"), "{}", c.text);
         // 白天段是 10:30 → 20:00，共 9.5 小时；18:00 时已走 7.5 小时。
+        assert_eq!(c.total_secs, 9 * 3600 + 30 * 60, "段长要算整段而不是剩余");
         assert!((c.progress - 7.5 / 9.5).abs() < 0.01, "{}", c.progress);
+    }
+
+    #[test]
+    fn countdown_progress_moves_through_the_night() {
+        let cfg = enabled_cfg();
+        // 夜间段 20:00 → 10:30 共 14.5 小时：刚入夜是 0，走到一半是 0.5。
+        let start = countdown_for(&cfg, at(20, 0));
+        let middle = countdown_for(&cfg, at(3, 15));
+        let late = countdown_for(&cfg, at(10, 29));
+        assert_eq!(start.total_secs, 14 * 3600 + 30 * 60);
+        assert!(start.progress < 0.01, "{}", start.progress);
+        assert!((middle.progress - 0.5).abs() < 0.01, "{}", middle.progress);
+        assert!(late.progress > 0.99, "{}", late.progress);
+        // 进度必须单调递增，环才不会来回跳。
+        assert!(start.progress <= middle.progress && middle.progress <= late.progress);
     }
 
     #[test]

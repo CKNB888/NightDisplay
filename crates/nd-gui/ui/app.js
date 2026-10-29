@@ -165,12 +165,28 @@ function chip(text, state) {
   return node;
 }
 
+/* 环的半径写在 index.html 里（r=94），周长 2πr ≈ 590.6，和 style.css 的
+   stroke-dasharray 必须是同一个数，所以只在这里算一次。 */
+const RING_RADIUS = 94;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+
+function ringOffset(progress) {
+  const p = Math.min(1, Math.max(0, Number(progress) || 0));
+  return String(RING_CIRCUMFERENCE * (1 - p));
+}
+
+/* 把算出来的周长写回 CSS，避免两处手工填的 590.6 哪天改半径后对不上。 */
+function primeRing() {
+  const ring = $('ring-value');
+  if (!ring) return;
+  ring.style.strokeDasharray = String(RING_CIRCUMFERENCE);
+  ring.style.strokeDashoffset = String(RING_CIRCUMFERENCE);
+}
+
 function renderRing(snap) {
   const ring = $('ring-value');
-  const circumference = 590.6;
   const c = snap.countdown;
-  const offset = circumference * (1 - Math.min(1, Math.max(0, c.progress)));
-  ring.style.strokeDashoffset = String(offset);
+  ring.style.strokeDashoffset = ringOffset(c.progress);
   ring.classList.toggle('night', !!c.night);
 
   $('ring-state').textContent = snap.state === 'night' ? '夜间 · 屏幕已黑' : '白天 · 正常显示';
@@ -600,8 +616,7 @@ function startCountdown() {
         ? Math.min(1, Math.max(0, (c.total_secs - c.seconds) / c.total_secs))
         : 0;
       $('ring-time').textContent = hms(c.seconds);
-      const ring = $('ring-value');
-      ring.style.strokeDashoffset = String(590.6 * (1 - c.progress));
+      $('ring-value').style.strokeDashoffset = ringOffset(c.progress);
     }
     tickCount += 1;
     // 每 10 秒（或刚好到点）与后端对齐一次真实的计划状态。
@@ -913,6 +928,7 @@ $('wizard-finish').addEventListener('click', async () => {
 /* ------------------------------------------------------------------ */
 
 (async function boot() {
+  primeRing();
   const hash = location.hash.replace('#', '');
   showPage(hash || 'home');
   await refresh(false);
