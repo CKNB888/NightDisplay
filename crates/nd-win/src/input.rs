@@ -434,7 +434,11 @@ mod tests {
             .map(|n| ChordKey::parse(n).unwrap())
             .collect();
         let list = chord_table(&with_mods);
-        assert_eq!(list.len(), 1 + 2 + 2, "N + 左右 Ctrl + 左右 Alt");
+        // 原键保留再追加另一侧：N + Ctrl + Alt + 左右 Ctrl + 左右 Alt = 7。
+        assert_eq!(list.len(), 7, "N + Ctrl + Alt + 左右 Ctrl + 左右 Alt");
+        for vk in [0xA2, 0xA3, 0xA0, 0xA1] {
+            assert!(list.iter().any(|(v, _)| *v == vk), "缺少虚拟键码 {vk:#x}");
+        }
     }
 
     #[test]
