@@ -1,0 +1,87 @@
+name: rust
+# Rust 4.x 的 CI。Windows 是唯一目标平台，Linux 只跑纯逻辑的 nd-core 测试
+# （时间计划、组合键、配置迁移这些不需要 Windows）。
+on:
+  push:
+    branches: [rust-rewrite, main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    name: Windows（构建 + 测试 + clippy）
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: 格式检查
+        run: cargo fmt --all --check
+      - name: clippy（-D warnings）
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: 单元测试
+        run: cargo test --workspace
+      - name: 构建 release
+        run: cargo build --release --workspace
+      - name: 命令行冒烟测试
+        shell: pwsh
+        run: |
+          $exe = "target\release\NightDisplay.exe"
+          & $exe --version
+          & $exe --help
+          # 用独立数据目录，绝不碰 runner 上真实的用户配置。
+          $env:NIGHTDISPLAY_HOME = "$PWD\ci-home"
+          New-Item -ItemType Directory -Force -Path ci-home | Out-Null
+          & $exe --action status | Out-String | Write-Host
+          if ($LASTEXITCODE -ne 0) { throw "status 退出码 $LASTEXITCODE" }
+          & $exe --action env | Out-String | Write-Host
+          & $exe --action selfcheck | Out-String | Write-Host
+          # 向导状态文件必须能写、能读回；这里只跑不触权的两步。
+          & $exe --action setup --only input_guard --seconds 3
+          if ($LASTEXITCODE -ne 0) { throw "setup 退出码 $LASTEXITCODE" }
+          & $exe --action onboarding | Out-String | Write-Host
+      - name: 向导状态（诊断）
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path ci-home) {
+            Get-ChildItem -Recurse ci-home | Select-Object FullName, Length | Format-Table | Out-String | Write-Host
+            Get-ChildItem ci-home\logs -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "=== $($_.Name)"
+              Get-Content $_.FullName -Tail 200
+            }
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-home
+          path: ci-home/
+  linux-logic:
+    name: Linux（nd-core 纯逻辑测试）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: 格式检查
+        run: cargo fmt --all --check
+      - name: clippy（nd-core）
+        run: cargo clippy -p nd-core --all-targets -- -D warnings
+      - name: 单元测试（时间计划、组合键、配置、模式降级、向导状态）
+        run: cargo test -p nd-core

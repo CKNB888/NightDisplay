@@ -1,73 +1,29 @@
-name: build-and-test
+name: legacy-python
+# 3.x（Python 版）的构建与发布。代码已经整体挪到 legacy-python/，
+# 4.x 的 Rust 重写在 .github/workflows/rust.yml 里跑。
+#
+# **只在 main 和 tag 上跑**：重写分支上不占用 runner，也不产出旧版安装包。
+# 平台只保留 Windows —— 3.x 的 macOS / Linux 支持在 4.x 里已经取消。
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     tags: ['v*']
-  pull_request:
   workflow_dispatch:
 permissions:
   contents: write
-# 同一分支只留最新一次。新推送会取消还在排队的旧运行，避免 macOS 占着不放、Windows 永远不开打。
 concurrency:
-  group: build-${{ github.workflow }}-${{ github.ref }}
+  group: legacy-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 env:
   PYTHONIOENCODING: utf-8
   PYTHONUTF8: '1'
+defaults:
+  run:
+    working-directory: legacy-python
 jobs:
-  # Windows 单独成链。macos-latest 是苹果芯片托管机，排队时经常分不到机器，
-  # 任务会被取消。原先所有系统挤在一个 test 矩阵里，它一取消，Windows 打包整组跳过。
-  # 各平台只等自己的测试，完成一个就上传一个安装包。
   test-windows:
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, windows-2022]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install pytest pillow pystray
-      - name: Linux deps
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y xvfb x11-xserver-utils python3-tk
-      - name: Unit tests
-        if: runner.os != 'Linux'
-        run: python -m pytest -v tests
-      - name: Unit tests (Linux)
-        if: runner.os == 'Linux'
-        run: xvfb-run -a python -m pytest -v tests
-      - name: Integration (Windows, incl. VDD driver)
-        if: runner.os == 'Windows'
-        shell: bash
-        timeout-minutes: 12
-        run: python tools/ci_integration.py --vdd
-      - name: Integration (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          python tools/ci_integration.py
-          pmset -g | head -20
-      - name: Integration (Linux / Xvfb)
-        if: runner.os == 'Linux'
-        run: xvfb-run -a -s "-screen 0 1280x800x24" python tools/ci_integration.py
-      - name: Logs
-        if: always()
-        shell: bash
-        run: cat ci-home/logs/*.log || true
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ci-results-${{ matrix.os }}
-          path: |
-            ci-results-*.json
-            ci-home/logs/
-  # 苹果芯片和 Intel 分开。macos-latest 经常排不到机器，不能连 Intel 的包一起拖死。
-  test-macos-intel:
-    timeout-minutes: 20
-    runs-on: macos-15-intel
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -76,73 +32,6 @@ jobs:
       - run: pip install pytest pillow pystray
       - name: Unit tests
         run: python -m pytest -v tests
-      - name: Integration (macOS)
-        run: |
-          python tools/ci_integration.py
-          pmset -g | head -20
-      - name: Logs
-        if: always()
-        shell: bash
-        run: cat ci-home/logs/*.log || true
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ci-results-macos-15-intel
-          path: |
-            ci-results-*.json
-            ci-home/logs/
-  test-macos-arm:
-    timeout-minutes: 20
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install pytest pillow pystray
-      - name: Unit tests
-        run: python -m pytest -v tests
-      - name: Integration (macOS)
-        run: |
-          python tools/ci_integration.py
-          pmset -g | head -20
-      - name: Logs
-        if: always()
-        shell: bash
-        run: cat ci-home/logs/*.log || true
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ci-results-macos-latest
-          path: |
-            ci-results-*.json
-            ci-home/logs/
-  test-linux:
-    timeout-minutes: 20
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install pytest pillow pystray
-      - name: Linux deps
-        run: sudo apt-get update && sudo apt-get install -y xvfb x11-xserver-utils python3-tk
-      - name: Unit tests (Linux)
-        run: xvfb-run -a python -m pytest -v tests
-      - name: Integration (Linux / Xvfb)
-        run: xvfb-run -a -s "-screen 0 1280x800x24" python tools/ci_integration.py
-      - name: Logs
-        if: always()
-        shell: bash
-        run: cat ci-home/logs/*.log || true
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ci-results-ubuntu-latest
-          path: |
-            ci-results-*.json
-            ci-home/logs/
   build-windows:
     needs: test-windows
     runs-on: windows-latest
@@ -173,24 +62,20 @@ jobs:
       - name: Build Windows
         shell: bash
         run: |
-          python tools/download_vdd.py --dest vdd && find vdd -type f
+          python ../tools/download_vdd.py --dest vdd && find vdd -type f
           test -n "$(find vdd -iname MttVDD.inf)"
-          pyinstaller --onefile --windowed --name NightDisplay --add-data "nightdisplay/resources;nightdisplay/resources" --hidden-import PIL._tkinter_finder --hidden-import PIL._imagingtk --add-data "tools/install_vdd.ps1;tools" --add-data "vdd;vdd" --hidden-import pystray._win32 nightdisplay_main.py
+          pyinstaller --onefile --windowed --name NightDisplay --add-data "nightdisplay/resources;nightdisplay/resources" --hidden-import PIL._tkinter_finder --hidden-import PIL._imagingtk --add-data "../tools/install_vdd.ps1;tools" --add-data "vdd;vdd" --hidden-import pystray._win32 nightdisplay_main.py
           export NIGHTDISPLAY_HOME=$PWD/smoke
           ./dist/NightDisplay.exe --action status; cat smoke/status.txt || true
           ./dist/NightDisplay.exe --action displays
           ./dist/NightDisplay.exe --action gui --selftest 5; rc=$?; echo "gui rc=$rc"; test $rc -eq 0
-          python tools/collect_licenses.py
+          python ../tools/collect_licenses.py
           # 打包门禁：驱动文件必须齐全，缺一个就失败，不产出“能打开但没虚拟屏”的包。
           test -f nightdisplay/resources/install_vdd.ps1
           test -f nightdisplay/resources/vdd_settings.xml
           ./dist/NightDisplay.exe --action env
-          mkdir out && cp dist/NightDisplay.exe README.md LICENSE NOTICE.md tools/Recover.cmd out/ && cp -r third-party-licenses out/
+          mkdir out && cp dist/NightDisplay.exe ../README.md ../LICENSE ../NOTICE.md ../tools/Recover.cmd out/ && cp -r ../third-party-licenses out/
           cd out && 7z a ../NightDisplay-Windows-x64.zip .
-          # 真正产出安装包：Inno Setup 按当前用户安装（PrivilegesRequired=lowest），
-          # 驱动安装仍在首次打开时弹一次 UAC，不在安装器里偷偷提权。
-          # 注意：上面 cd out 之后当前目录还在 out/ 里，必须先 cd .. 回仓库根，
-          # 否则 iscc 找不到 packaging/windows.iss，只报“找不到路径”就退出码 2。
           cd ..
           choco install innosetup --version=6.7.1 -y --no-progress
           iscc packaging/windows.iss
@@ -198,130 +83,14 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: NightDisplay-Windows-x64
-          path: NightDisplay-Windows-x64.zip
+          path: legacy-python/NightDisplay-Windows-x64.zip
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: NightDisplay-Windows-x64-Setup
-          path: NightDisplay-Windows-x64-Setup.exe
-  build-macos-intel:
-    needs: test-macos-intel
-    runs-on: macos-15-intel
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install pyinstaller pillow pystray
-      - name: Tag matches code version
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          python -c "import sys; sys.path.insert(0, '.'); from nightdisplay import VERSION; tag='${{ github.ref_name }}'[1:]; assert tag == VERSION, f'tag {tag} != code VERSION {VERSION}'; print(f'tag {tag} == VERSION {VERSION}')"
-      - name: Build macOS Intel
-        run: |
-          pyinstaller --windowed --name NightDisplay --add-data "nightdisplay/resources:nightdisplay/resources" --hidden-import PIL._tkinter_finder --hidden-import PIL._imagingtk --osx-bundle-identifier com.nightdisplay.app nightdisplay_main.py
-          export NIGHTDISPLAY_HOME=$PWD/smoke
-          ./dist/NightDisplay.app/Contents/MacOS/NightDisplay --action status
-          ./dist/NightDisplay.app/Contents/MacOS/NightDisplay --action gui --selftest 5; rc=$?; echo "gui rc=$rc"; test $rc -eq 0
-          file dist/NightDisplay.app/Contents/MacOS/NightDisplay
-          mkdir out && cp -R dist/NightDisplay.app README.md LICENSE NOTICE.md out/
-          cd out && zip -qry ../NightDisplay-macOS-x64.zip NightDisplay.app README.md LICENSE NOTICE.md && cd .. && unzip -l NightDisplay-macOS-x64.zip | head
-          hdiutil create -volname NightDisplay -srcfolder out -ov -format UDZO NightDisplay-macOS-x64.dmg
-          test -f NightDisplay-macOS-x64.dmg
-      - uses: actions/upload-artifact@v4
-        with:
-          name: NightDisplay-macOS-x64
-          path: NightDisplay-macOS-x64.*
-  build-macos-arm:
-    needs: test-macos-arm
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install pyinstaller pillow pystray
-      - name: Tag matches code version
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          python -c "import sys; sys.path.insert(0, '.'); from nightdisplay import VERSION; tag='${{ github.ref_name }}'[1:]; assert tag == VERSION, f'tag {tag} != code VERSION {VERSION}'; print(f'tag {tag} == VERSION {VERSION}')"
-      - name: Build macOS Apple Silicon
-        run: |
-          pyinstaller --windowed --name NightDisplay --add-data "nightdisplay/resources:nightdisplay/resources" --hidden-import PIL._tkinter_finder --hidden-import PIL._imagingtk --osx-bundle-identifier com.nightdisplay.app nightdisplay_main.py
-          export NIGHTDISPLAY_HOME=$PWD/smoke
-          ./dist/NightDisplay.app/Contents/MacOS/NightDisplay --action status
-          ./dist/NightDisplay.app/Contents/MacOS/NightDisplay --action gui --selftest 5; rc=$?; echo "gui rc=$rc"; test $rc -eq 0
-          file dist/NightDisplay.app/Contents/MacOS/NightDisplay
-          mkdir out && cp -R dist/NightDisplay.app README.md LICENSE NOTICE.md out/
-          cd out && zip -qry ../NightDisplay-macOS-arm64.zip NightDisplay.app README.md LICENSE NOTICE.md && cd .. && unzip -l NightDisplay-macOS-arm64.zip | head
-          hdiutil create -volname NightDisplay -srcfolder out -ov -format UDZO NightDisplay-macOS-arm64.dmg
-          test -f NightDisplay-macOS-arm64.dmg
-      - uses: actions/upload-artifact@v4
-        with:
-          name: NightDisplay-macOS-arm64
-          path: NightDisplay-macOS-arm64.*
-  build-linux:
-    needs: test-linux
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install pyinstaller pillow pystray
-      - name: Tag matches code version
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          python -c "import sys; sys.path.insert(0, '.'); from nightdisplay import VERSION; tag='${{ github.ref_name }}'[1:]; assert tag == VERSION, f'tag {tag} != code VERSION {VERSION}'; print(f'tag {tag} == VERSION {VERSION}')"
-      - name: Build Linux
-        run: |
-          sudo apt-get update && sudo apt-get install -y xvfb x11-xserver-utils python3-tk python3-pip python3-xlib
-          /usr/bin/python3 -m pip install --user pyinstaller pillow pystray
-          /usr/bin/python3 -m PyInstaller --onefile --name NightDisplay --add-data "nightdisplay/resources:nightdisplay/resources" --hidden-import PIL._tkinter_finder --hidden-import PIL._imagingtk --hidden-import pystray._xorg nightdisplay_main.py
-          export NIGHTDISPLAY_HOME=$PWD/smoke
-          ./dist/NightDisplay --action status
-          set +e; xvfb-run -a ./dist/NightDisplay --action gui --selftest 5; rc=$?; echo "gui rc=$rc"; set -e
-          test $rc -eq 0
-          ldd --version | head -1
-          max_glibc=$(objdump -T dist/NightDisplay | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1); echo "max GLIBC=$max_glibc"; test -n "$max_glibc"
-          test "$(printf 'GLIBC_2.39\n%s\n' "$max_glibc" | sort -Vu | tail -1)" = "GLIBC_2.39"
-          mkdir out && cp dist/NightDisplay README.md LICENSE NOTICE.md out/
-          tar czf NightDisplay-Linux-x64.tar.gz -C out .
-      - uses: actions/upload-artifact@v4
-        with:
-          name: NightDisplay-Linux-x64
-          path: NightDisplay-Linux-x64.tar.gz
-  qa-windows:
-    needs: build-windows
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, windows-2022]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: actions/download-artifact@v4
-        with:
-          name: NightDisplay-Windows-x64
-      - name: Unpack built package
-        shell: bash
-        run: mkdir pkg && cd pkg && 7z x ../NightDisplay-Windows-x64.zip && ls -la
-      - name: End-to-end QA, 3 rounds on the packaged exe
-        run: python tools/qa_windows.py pkg\NightDisplay.exe 3
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: qa-${{ matrix.os }}
-          path: |
-            qa-windows.json
-            qa-evidence/
-  # 正式 Release 只等 Windows。macOS / Linux 后到的包再补进同一个 Release，不挡安装器。
+          path: legacy-python/NightDisplay-Windows-x64-Setup.exe
   release:
-    needs: [build-windows, qa-windows]
+    needs: [build-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -335,31 +104,3 @@ jobs:
           files: |
             dist/*.zip
             dist/*.exe
-  release-macos:
-    needs: [release, build-macos-intel, build-macos-arm]
-    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.release.result == 'success' && (needs.build-macos-intel.result == 'success' || needs.build-macos-arm.result == 'success') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: NightDisplay-macOS-*
-          merge-multiple: true
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/*.zip
-            dist/*.dmg
-  release-linux:
-    needs: [release, build-linux]
-    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.release.result == 'success' && needs.build-linux.result == 'success' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: NightDisplay-Linux-*
-          merge-multiple: true
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.tar.gz

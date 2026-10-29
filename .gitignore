@@ -18,3 +18,7 @@ qa-evidence/
 third-party-licenses/
 
 .build-env/
+
+# Rust
+/target/
+**/*.rs.bk
