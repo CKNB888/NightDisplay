@@ -338,12 +338,125 @@ class Stepper(tk.Frame):
 
     def _menu(self, _e=None):
         menu = tk.Menu(self, tearoff=0)
-        step = 1 if self.max < 30 else 5
-        for n in range(0, self.max + 1, step):
+        for n in range(0, self.max + 1):
             v = "%02d" % n
             menu.add_command(label=v, command=lambda v=v: (self.var.set(v), self._commit()))
         with contextlib.suppress(tk.TclError):
             menu.tk_popup(self.value.winfo_rootx(), self.value.winfo_rooty() + self.value.winfo_height())
+
+
+class Dropdown(tk.Frame):
+    """只读小时/分钟下拉：点开从列表选，不能手打，避免「19.30」「七点半」这类乱输入。
+
+    maximum=23 → 00–23（24 小时制），maximum=59 → 00–59。
+    """
+
+    def __init__(self, parent, variable, maximum, on_change=None, bg=CARD_HI, width=4):
+        super().__init__(parent, bg=bg, highlightthickness=1,
+                         highlightbackground=BORDER, highlightcolor=BORDER)
+        self.var, self.max, self.on_change = variable, maximum, on_change
+        self._popup = None
+        self.btn = tk.Label(self, textvariable=variable, font="ND.Mono", fg=TEXT, bg=bg,
+                            width=width, cursor="hand2", padx=S(6), pady=S(4))
+        self.chev = tk.Label(self, text="▾", font="ND.Small", fg=SUB, bg=bg, cursor="hand2",
+                             padx=S(4), pady=S(4))
+        self.btn.pack(side="left")
+        self.chev.pack(side="left")
+        for w in (self, self.btn, self.chev):
+            w.bind("<Button-1>", self._open)
+            w.bind("<Enter>", lambda e: self.chev.configure(fg=TEXT))
+            w.bind("<Leave>", lambda e: self.chev.configure(fg=SUB))
+
+    def _open(self, _e=None):
+        if self._popup is not None:
+            with contextlib.suppress(tk.TclError):
+                self._popup.destroy()
+            self._popup = None
+        pop = tk.Toplevel(self)
+        pop.withdraw()
+        pop.overrideredirect(True)
+        pop.attributes("-topmost", True)
+        pop.configure(bg=BORDER)
+        frame = tk.Frame(pop, bg=CARD_HI, highlightthickness=0)
+        frame.pack(padx=1, pady=1)
+        canvas = tk.Canvas(frame, bg=CARD_HI, highlightthickness=0,
+                           width=S(64), height=S(220))
+        scroll = tk.Scrollbar(frame, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg=CARD_HI)
+        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scroll.set)
+
+        def _size(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(win, width=canvas.winfo_width())
+
+        inner.bind("<Configure>", _size)
+        canvas.bind("<Configure>", _size)
+        canvas.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
+        current = self.var.get()
+        target = None
+        for n in range(0, self.max + 1):
+            v = "%02d" % n
+            row = tk.Label(inner, text=v, font="ND.Mono", fg=ACCENT if v == current else TEXT,
+                           bg=CARD_HI, width=6, cursor="hand2", pady=S(3))
+            row.pack(fill="x")
+            if v == current:
+                target = row
+
+            def pick(val=v, lab=row):
+                self.var.set(val)
+                if self.on_change:
+                    self.on_change()
+                with contextlib.suppress(tk.TclError):
+                    pop.destroy()
+                self._popup = None
+
+            def enter(e, lab=row):
+                lab.configure(bg=mix(CARD_HI, "#ffffff", 0.10))
+
+            def leave(e, lab=row, val=v):
+                lab.configure(bg=CARD_HI, fg=ACCENT if val == self.var.get() else TEXT)
+
+            row.bind("<Button-1>", lambda e, p=pick: p())
+            row.bind("<Enter>", enter)
+            row.bind("<Leave>", leave)
+
+        pop.update_idletasks()
+        x = self.winfo_rootx()
+        y = self.winfo_rooty() + self.winfo_height() + 2
+        pop.geometry("+%d+%d" % (x, y))
+        pop.deiconify()
+        pop.focus_force()
+        self._popup = pop
+        if target is not None:
+            with contextlib.suppress(tk.TclError):
+                canvas.update_idletasks()
+                # 滚到当前值附近
+                frac = max(0.0, (int(current or "0") / max(1, self.max)) - 0.15)
+                canvas.yview_moveto(frac)
+
+        def dismiss(event=None):
+            if self._popup is None:
+                return
+            w = event.widget if event else None
+            # 点在弹层里不关
+            if w is not None:
+                try:
+                    if str(w).startswith(str(pop)):
+                        return
+                except Exception:
+                    pass
+            with contextlib.suppress(tk.TclError):
+                pop.destroy()
+            self._popup = None
+
+        pop.bind("<Escape>", lambda e: dismiss())
+        pop.bind("<FocusOut>", lambda e: self.after(120, dismiss))
+        # 点别处关闭
+        self.winfo_toplevel().bind("<Button-1>", dismiss, add="+")
+
 
 
 class Ring(tk.Canvas):

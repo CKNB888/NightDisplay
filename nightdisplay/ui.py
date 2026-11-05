@@ -290,9 +290,10 @@ class MainWindow:
             T.label(row, glyph + "  " + name, font="ND.Bold").pack(side="left")
             box = tk.Frame(row, bg=T.CARD)
             box.pack(side="right")
-            T.Stepper(box, hv, 23, self._picked_time).pack(side="left")
-            T.label(box, " : ", font="ND.Mono").pack(side="left")
-            T.Stepper(box, mv, 59, self._picked_time).pack(side="left")
+            T.Dropdown(box, hv, 23, self._picked_time).pack(side="left")
+            T.label(box, "时", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(4), T.S(8)))
+            T.Dropdown(box, mv, 59, self._picked_time).pack(side="left")
+            T.label(box, "分", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(4), 0))
 
         plan = self._card(page)
         row = tk.Frame(plan, bg=T.CARD)
@@ -305,7 +306,7 @@ class MainWindow:
         self.enabled_var = tk.BooleanVar(value=bool(cfg.get("enabled")))
         self.enable_switch = T.Switch(row, self.enabled_var, lambda: self.safe(self._switch_plan))
         self.enable_switch.pack(side="right")
-        tip = T.label(page, "点 − / + 调整，按住会连续变；滚轮也行；点数字直接选。改完约 1 秒自动保存。",
+        tip = T.label(page, "点开下拉选小时和分钟（24 小时制 00–23 / 00–59），不能手打。选完立刻自动保存；可跨午夜，比如 19:30→次日 10:30。",
                       font="ND.Small", fg=T.SUB, bg=T.BG, wraplength=T.S(520))
         tip.pack(anchor="w", padx=T.S(32))
 
@@ -342,13 +343,15 @@ class MainWindow:
             line.pack(anchor="w", pady=(T.S(6), 0))
             picked = {k: tk.StringVar(value="%02d" % v) for k, v in
                       (("sh", a[0]), ("sm", a[1]), ("eh", b[0]), ("em", b[1]))}
-            T.Stepper(line, picked["sh"], 23).pack(side="left")
-            T.label(line, ":", font="ND.Mono").pack(side="left")
-            T.Stepper(line, picked["sm"], 59).pack(side="left")
-            T.label(line, "  到  ", fg=T.SUB).pack(side="left")
-            T.Stepper(line, picked["eh"], 23).pack(side="left")
-            T.label(line, ":", font="ND.Mono").pack(side="left")
-            T.Stepper(line, picked["em"], 59).pack(side="left")
+            T.Dropdown(line, picked["sh"], 23).pack(side="left")
+            T.label(line, "时", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(2), T.S(4)))
+            T.Dropdown(line, picked["sm"], 59).pack(side="left")
+            T.label(line, "分", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(2), T.S(6)))
+            T.label(line, "到", fg=T.SUB).pack(side="left", padx=(0, T.S(6)))
+            T.Dropdown(line, picked["eh"], 23).pack(side="left")
+            T.label(line, "时", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(2), T.S(4)))
+            T.Dropdown(line, picked["em"], 59).pack(side="left")
+            T.label(line, "分", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(2), 0))
             item = {"frame": line, "picked": picked}
 
             def remove(current=item):

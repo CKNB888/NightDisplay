@@ -69,15 +69,17 @@ def activate(mode, start, end):
     mode_matches = tested == real or verified_fallback
     if verified_fallback:
         real = tested
+    # 装完就要能用：不再强制「先测 15 秒」。测过更好，没测也按当前能力启用。
     if not (cfg.get("last_test_ok") and mode_matches and tested in B.available_modes()
             and cfg.get("last_recovery_mode") == tested and cfg.get("last_recovery_at")):
-        raise RuntimeError("请先点「测试 15 秒」完成一次测试，等屏幕自己亮回来，再启用每天自动黑屏。")
-    try:
-        age = (dt.datetime.now() - dt.datetime.fromisoformat(cfg["last_test_at"])).total_seconds()
-    except (ValueError, TypeError):
-        age = -1
-    if not 0 <= age <= 86400:
-        raise RuntimeError("上次测试已经超过一天。请再点一次「测试 15 秒」，等屏幕自己亮回来，然后再启用。")
+        log("启用计划前还没做过完整测试，仍按当前模式启用；建议有空点一次「测试 15 秒」。")
+    else:
+        try:
+            age = (dt.datetime.now() - dt.datetime.fromisoformat(cfg["last_test_at"])).total_seconds()
+        except (ValueError, TypeError):
+            age = -1
+        if not 0 <= age <= 86400:
+            log("上次测试已超过一天，仍启用计划；建议有空再测一次。")
     autostart = cfg.get("autostart_preference", cfg.get("autostart", True))
     scheduled = real if verified_fallback else mode
     candidate = dict(cfg, mode=scheduled, start=start, end=end, autostart=autostart)
@@ -744,12 +746,35 @@ def hotkey_toggle(dispatch):
 
 # ---------------- 托盘 + 界面 ----------------
 
+
+def ensure_default_schedule():
+    """装完 / 开机托盘：默认 19:30→次日 10:30 已启用时，把系统计划任务写好。
+
+    不要求先测 15 秒。用户暂停（enabled=False）后不会强行打开。
+    """
+    cfg = load()
+    if not cfg.get("enabled"):
+        return False
+    start = cfg.get("start") or "19:30"
+    end = cfg.get("end") or "10:30"
+    try:
+        B.schedule_install(dict(cfg, start=start, end=end, autostart=cfg.get("autostart", True)))
+    except Exception as e:
+        log("写入默认每日计划失败：%s" % e)
+        return False
+    log("每日计划已就绪：%s → %s（跨午夜按本机时区）" % (start, end))
+    return True
+
+
 def run_app(show_window=True, selftest=0):
     import tkinter as tk
 
     from . import chord, ui
-    # 正常打开/托盘自启：清掉「用户退出」标记，并确保 Windows 守护任务在。
+    # 正常打开/托盘自启：清掉「用户退出」标记，写好默认每日计划，并确保 Windows 守护任务在。
     B.clear_user_stopped()
+    if not selftest:
+        with contextlib.suppress(Exception):
+            ensure_default_schedule()
     if IS_WIN and not selftest:
         with contextlib.suppress(Exception):
             B.ensure_watchdog()
@@ -1430,6 +1455,8 @@ def ensure_environment(force=False):
     from .storage import write_json
     report = environment_report()
     _apply_autostart(report)
+    with contextlib.suppress(Exception):
+        ensure_default_schedule()
     if not IS_WIN:
         return report
     if report["virtual_display"]:

@@ -195,12 +195,14 @@ def test_activation_failure_does_not_leave_enabled(monkeypatch):
 
 @pytest.mark.parametrize("seconds", [-1, 0, 1, 3601])
 def test_invalid_test_duration_has_no_helper(seconds, monkeypatch):
+    core.update(enabled=False)
     monkeypatch.setattr(B, "spawn_detached", lambda cmd: pytest.fail("spawned helper"))
     with pytest.raises(ValueError):
         app.start_test("screen_off", seconds)
 
 
 def test_failed_test_cannot_be_marked_successful(monkeypatch):
+    core.update(enabled=False)
     monkeypatch.setattr(B, "spawn_detached", lambda cmd: None)
     monkeypatch.setattr(B, "go_night", lambda *a: (_ for _ in ()).throw(RuntimeError("no monitor")))
     with pytest.raises(RuntimeError):
@@ -433,16 +435,19 @@ def test_tray_only_starts_hidden_without_resident(monkeypatch):
     assert seen["show_window"] is False
 
 
-def test_activate_rejects_new_auto_resolution(monkeypatch):
+def test_activate_allows_untested_auto_resolution(monkeypatch):
+    """装完即可启用：分辨率/实际模式与上次测试不一致时也写入计划，不再硬挡。"""
     now = dt.datetime.now().isoformat()
     core.update(last_test_mode="screen_off", last_test_requested="auto",
                 last_recovery_mode="screen_off", last_test_at=now,
-                last_test_ok=True, last_recovery_at=now)
+                last_test_ok=True, last_recovery_at=now, enabled=False)
     monkeypatch.setattr(B, "resolve_mode", lambda mode, match="": "virtual_only" if mode == "auto" else mode)
     monkeypatch.setattr(B, "available_modes", lambda: ["auto", "virtual_only", "screen_off"])
-    monkeypatch.setattr(B, "schedule_install", lambda cfg: pytest.fail("enabled an untested mode"))
-    with pytest.raises(RuntimeError, match="完成一次测试"):
-        app.activate("auto", "20:00", "10:30")
+    seen = []
+    monkeypatch.setattr(B, "schedule_install", lambda cfg: seen.append(cfg["mode"]))
+    app.activate("auto", "20:00", "10:30")
+    assert seen == ["auto"]
+    assert core.load()["enabled"] is True
 
 
 def test_abort_test_marks_interrupted_test_unsuccessful(monkeypatch):
@@ -1207,17 +1212,20 @@ def test_verified_auto_fallback_is_saved(monkeypatch):
     assert core.load()["enabled"] is True
 
 
-def test_changed_capability_still_requires_a_new_test(monkeypatch):
+def test_changed_capability_still_activates_with_soft_warn(monkeypatch):
+    """硬件指纹变了也不挡启用；计划仍写入，建议用户有空再测。"""
     now = dt.datetime.now().isoformat()
     core.update(last_test_ok=True, last_test_mode="overlay", last_test_requested="auto",
                 last_test_capability="old", last_recovery_mode="overlay",
-                last_test_at=now, last_recovery_at=now)
+                last_test_at=now, last_recovery_at=now, enabled=False)
     monkeypatch.setattr(B, "capability_fingerprint", lambda: "new")
     monkeypatch.setattr(B, "resolve_mode", lambda mode, match="": "virtual_only" if mode == "auto" else mode)
     monkeypatch.setattr(B, "available_modes", lambda: ["auto", "virtual_only", "overlay", "screen_off"])
-    monkeypatch.setattr(B, "schedule_install", lambda cfg: pytest.fail("schedule"))
-    with pytest.raises(RuntimeError, match="完成一次测试"):
-        app.activate("auto", "20:00", "10:30")
+    seen = []
+    monkeypatch.setattr(B, "schedule_install", lambda cfg: seen.append(True))
+    app.activate("auto", "20:00", "10:30")
+    assert seen == [True]
+    assert core.load()["enabled"] is True
 
 
 def test_startup_during_scheduled_blackout_does_not_light(monkeypatch):
@@ -1402,3 +1410,38 @@ def test_overlay_go_day_still_uncovers_first(monkeypatch):
     monkeypatch.setattr(B, "keep_awake", lambda *a, **k: None)
     assert B.go_day(overlay) == "overlay"
     assert order == [("cover", False), "screen_on", "power"]
+
+
+def test_default_config_enables_overnight_1930_to_1030():
+    """全新安装：默认启用，19:30→次日 10:30，跨午夜判定正确。"""
+    cfg = core.load()
+    assert cfg["enabled"] is True
+    assert cfg["start"] == "19:30"
+    assert cfg["end"] == "10:30"
+    assert core.DEFAULT["enabled"] is True
+    assert core.is_night("19:30", "10:30", dt.datetime(2026, 1, 1, 19, 30))
+    assert core.is_night("19:30", "10:30", dt.datetime(2026, 1, 1, 0, 0))
+    assert not core.is_night("19:30", "10:30", dt.datetime(2026, 1, 1, 10, 30))
+    assert not core.is_night("19:30", "10:30", dt.datetime(2026, 1, 1, 12, 0))
+
+
+def test_ensure_default_schedule_writes_when_enabled(monkeypatch):
+    core.update(enabled=True, start="19:30", end="10:30")
+    seen = []
+    monkeypatch.setattr(B, "schedule_install", lambda cfg: seen.append((cfg["start"], cfg["end"], cfg["enabled"])))
+    assert app.ensure_default_schedule() is True
+    assert seen == [("19:30", "10:30", True)]
+
+
+def test_ensure_default_schedule_skips_when_user_paused(monkeypatch):
+    core.update(enabled=False, start="19:30", end="10:30")
+    monkeypatch.setattr(B, "schedule_install", lambda cfg: pytest.fail("must not install when paused"))
+    assert app.ensure_default_schedule() is False
+
+
+def test_format_hm_from_dropdown_values():
+    assert core.format_hm("19", "30") == "19:30"
+    assert core.format_hm("00", "00") == "00:00"
+    assert core.format_hm("23", "59") == "23:59"
+    with pytest.raises(ValueError, match="请从列表里选择时间"):
+        core.format_hm("24", "00")

@@ -70,7 +70,7 @@ def read_log_tail(n=6000):
 DEFAULT = {
     "version": 3,
     "mode": "auto",          # auto | virtual_only | overlay | screen_off
-    "enabled": False,
+    "enabled": True,  # 装完即按 19:30→次日 10:30 自动黑屏，不用再点「启用」
     "unlock_chord": ["C", "K"],
     "night_hotkey": ["C", "K"],
     "lock": True,

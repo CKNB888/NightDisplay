@@ -31,8 +31,8 @@ Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 PreparingDesc=正在清理旧版本并准备安装，请稍等几秒，不要关闭窗口……
 InstallingLabel=正在安装 NightDisplay，进度条走完就好（通常不到 30 秒）。
 ReadyLabel2a=点「安装」开始。安装器会先关掉正在运行的旧 NightDisplay，并把旧版本清理到回收站。
-WelcomeLabel2=只要 3 步，大约 1 分钟：%n%n  ① 自动清理旧版本（旧进程、旧注册表、旧文件进回收站）%n  ② 安装最新版 NightDisplay %n  ③ 打开它，点「测试 15 秒」试一下%n%n全程一直点「下一步」就行，不用改任何设置。
-FinishedLabel=装好了！接下来这样用：%n%n  1. 点「完成」，NightDisplay 会自动打开（桌面上也有图标）。%n  2. 第一次打开会弹一次「是否允许更改」，点「是」——这是安装虚拟屏，远程才能继续用。%n  3. 先点「测试 15 秒」：屏幕黑一会儿再自己亮。%n  4. 默认每天 19:30 熄屏、次日 10:30 亮屏，可在「时段」里改。%n  5. 随时同时按住 C + K 约 0.3 秒：熄屏 / 亮屏切换。%n  6. 关掉窗口它会躲到右下角托盘，开机自动运行。%n%n屏幕亮不回来？开始菜单里点「恢复并暂停 NightDisplay」。
+WelcomeLabel2=只要 3 步，大约 1 分钟：%n%n  ① 自动清理旧版本（旧进程、旧注册表、旧文件进回收站）%n  ② 安装最新版 NightDisplay %n  ③ 打开即可——默认每天 19:30 熄屏、次日 10:30 亮屏，不用再点启用%n%n全程一直点「下一步」就行，不用改任何设置。
+FinishedLabel=装好了！接下来这样用：%n%n  1. 点「完成」，NightDisplay 会自动打开（桌面上也有图标）。%n  2. 第一次打开会弹一次「是否允许更改」，点「是」——这是安装虚拟屏，远程才能继续用。%n  3. 装完即启用：默认每天 19:30 自动黑屏，次日 10:30 自动亮屏（本机时区，可在「时间」里改）。不用再点「启用」。%n  4. 有空可点「测试 15 秒」确认效果，不是启用前提。%n  5. 随时同时按住 C + K 约 0.3 秒：熄屏 / 亮屏切换。%n  6. 关掉窗口它会躲到右下角托盘，开机自动运行。%n%n屏幕亮不回来？开始菜单里点「恢复并暂停 NightDisplay」。
 [Files]
 Source: "..\dist\NightDisplay.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
