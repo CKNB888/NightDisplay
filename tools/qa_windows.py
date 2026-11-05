@@ -74,6 +74,11 @@ def round_test(source, number):
         gui = subprocess.Popen([str(exe), "--action", "gui", "--selftest", "240"])
         from nightdisplay.app import send_ipc
         wait_for(lambda: send_ipc("show") == "ok")
+        # 装完默认 enabled=True（19:30→10:30）。测试前必须先暂停，否则 start_test 会拒绝。
+        run("--action", "pause")
+        assert not load().get("enabled"), "pause did not disable schedule"
+        # 暂停不得改时段
+        assert load().get("start") and load().get("end"), "pause wiped schedule times"
         run("--action", "test", "--mode", "auto", "--seconds", "15")
         wait_for(lambda: load().get("last_test_ok"))
         assert load()["last_test_mode"] == "virtual_only", "Default silently fell back instead of testing VDD"
