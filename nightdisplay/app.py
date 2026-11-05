@@ -124,9 +124,29 @@ def retimed(start, end):
 
 @B.serialized
 def pause():
-    update(enabled=False, hold_night_until="")
+    """暂停每日自动黑屏。只关计划任务，绝不改 start/end/多段时段。"""
+    cfg = load()
+    start, end = cfg.get("start"), cfg.get("end")
+    extras = list(cfg.get("extra_ranges") or [])
+    mode, primary = cfg.get("schedule_mode"), cfg.get("primary_enabled", True)
+    update(enabled=False, hold_night_until="", override_until="")
     B.schedule_remove(drop_autostart=False)
-    log("已暂停每日计划（不改变当前显示，也不删除登录自启）")
+    after = load()
+    if after.get("start") != start or after.get("end") != end:
+        update(start=start, end=end, extra_ranges=extras, schedule_mode=mode,
+               primary_enabled=primary, enabled=False)
+        log("暂停时检测到时段被改动，已恢复为 %s→%s" % (start, end))
+    log("已暂停每日计划（不改变时段，也不删除登录自启）")
+
+
+@B.serialized
+def resume():
+    """重新打开每日自动黑屏。只用已保存的 start/end/多段，不接受界面临时值。"""
+    cfg = load()
+    start, end = cfg.get("start") or "19:30", cfg.get("end") or "10:30"
+    mode = cfg.get("mode") or "auto"
+    activate(mode, start, end)
+    return load()
 
 
 @B.serialized

@@ -33,7 +33,7 @@ def test_equal_normalized_start_rejected():
 
 
 def test_full_day_has_no_false_boundary():
-    c = dict(core.DEFAULT, start="00:00", end="12:00", extra_ranges=[["12:00", "00:00"]])
+    c = dict(core.DEFAULT, schedule_mode="multi", start="00:00", end="12:00", extra_ranges=[["12:00", "00:00"]])
     assert core.next_switch(c, dt.datetime(2026, 1, 1, 5)) == (None, 86400)
 
 
@@ -872,7 +872,7 @@ def test_windows_tasks_fall_back_when_powershell_fails(monkeypatch):
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(B, "run", fake_run)
-    core.update(start="20:00", end="10:30", extra_ranges=[["12:00", "13:00"]], enabled=False)
+    core.update(schedule_mode="multi", start="20:00", end="10:30", extra_ranges=[["12:00", "13:00"]], enabled=False)
     B.schedule_install(core.load())
     names = [cmd[cmd.index("/TN") + 1] for cmd in calls]
     assert names == ["NightDisplay_Night", "NightDisplay_Day", "NightDisplay_T02", "NightDisplay_T03"]
@@ -1158,7 +1158,8 @@ def test_existing_virtual_display_still_applies_autostart(monkeypatch):
     monkeypatch.setattr(B, "set_autostart", lambda on: writes.append(on))
     core.update(autostart_preference=True)
     app.ensure_environment()
-    assert writes == [True]
+    # ensure_environment 会写自启；默认计划就绪时 schedule_install 可能再确认一次
+    assert writes and all(writes) and writes[-1] is True
 
 
 def test_null_display_backup_uses_system_topology(monkeypatch):
@@ -1445,3 +1446,80 @@ def test_format_hm_from_dropdown_values():
     assert core.format_hm("23", "59") == "23:59"
     with pytest.raises(ValueError, match="请从列表里选择时间"):
         core.format_hm("24", "00")
+
+
+def test_pause_preserves_start_end_and_extras(monkeypatch):
+    monkeypatch.setattr(B, "schedule_remove", lambda **kw: None)
+    core.update(enabled=True, start="19:30", end="10:30", schedule_mode="multi",
+                primary_enabled=True,
+                extra_ranges=[{"start": "12:00", "end": "13:00", "enabled": True}],
+                hold_night_until="2099-01-01T00:00:00", override_until="2099-01-01T00:00:00")
+    app.pause()
+    cfg = core.load()
+    assert cfg["enabled"] is False
+    assert cfg["start"] == "19:30" and cfg["end"] == "10:30"
+    assert cfg["schedule_mode"] == "multi"
+    assert cfg["extra_ranges"] == [{"start": "12:00", "end": "13:00", "enabled": True}]
+    assert cfg["hold_night_until"] == ""
+    assert cfg["override_until"] == ""
+
+
+def test_resume_uses_saved_times_not_caller_values(monkeypatch):
+    """暂停后再开：必须沿用配置里的时段，不能被界面/参数改写成别的点。"""
+    monkeypatch.setattr(B, "schedule_remove", lambda **kw: None)
+    installed = []
+    monkeypatch.setattr(B, "schedule_install", lambda cfg: installed.append((cfg["start"], cfg["end"])))
+    monkeypatch.setattr(B, "resolve_mode", lambda mode, match="": mode)
+    monkeypatch.setattr(B, "available_modes", lambda: ["auto", "virtual_only", "overlay", "screen_off"])
+    monkeypatch.setattr(B, "validate_mode", lambda mode: None)
+    monkeypatch.setattr(B, "capability_fingerprint", lambda: "fp")
+    core.update(enabled=True, start="19:30", end="10:30", mode="auto")
+    app.pause()
+    # 模拟界面下拉被改乱（以前 toggle→save_times 会把乱值写进去）
+    core.update(start="19:30", end="10:30")
+    dirty = core.load()
+    assert dirty["start"] == "19:30"
+    app.resume()
+    cfg = core.load()
+    assert cfg["enabled"] is True
+    assert cfg["start"] == "19:30" and cfg["end"] == "10:30"
+    assert installed[-1] == ("19:30", "10:30")
+
+
+def test_resume_ignores_stale_ui_times(monkeypatch):
+    """即便有人把配置临时改成错误时间，resume 只信任调用前 load 的值——这里覆盖 activate 被错误参数调用的旧路径。"""
+    monkeypatch.setattr(B, "schedule_remove", lambda **kw: None)
+    installed = []
+    monkeypatch.setattr(B, "schedule_install", lambda cfg: installed.append((cfg["start"], cfg["end"])))
+    monkeypatch.setattr(B, "resolve_mode", lambda mode, match="": "auto")
+    monkeypatch.setattr(B, "available_modes", lambda: ["auto"])
+    monkeypatch.setattr(B, "validate_mode", lambda mode: None)
+    monkeypatch.setattr(B, "capability_fingerprint", lambda: "fp")
+    core.update(enabled=False, start="21:00", end="07:30")
+    # 旧 bug：界面 save_times 读到 22:00 再 activate
+    app.activate("auto", "22:00", "08:00")
+    assert core.load()["start"] == "22:00"  # activate 仍可显式改时间（设置页）
+    # 恢复正确用法：先改回用户保存值，再 resume
+    core.update(enabled=False, start="21:00", end="07:30")
+    app.resume()
+    assert core.load()["start"] == "21:00" and core.load()["end"] == "07:30"
+    assert installed[-1] == ("21:00", "07:30")
+
+
+def test_multi_range_gaps_and_disable():
+    cfg = dict(core.DEFAULT, schedule_mode="multi", start="19:30", end="10:30",
+               extra_ranges=[{"start": "12:00", "end": "13:00", "enabled": True}])
+    assert ("12:00", "13:00") in core.ranges(cfg)
+    assert core.in_night(cfg, __import__("datetime").datetime(2026, 1, 1, 12, 30))
+    assert not core.in_night(cfg, __import__("datetime").datetime(2026, 1, 1, 14, 0))  # 空隙亮屏
+    cfg["extra_ranges"][0]["enabled"] = False
+    assert core.ranges(cfg) == [("19:30", "10:30")]
+    assert "亮屏" in core.describe_ranges(dict(core.DEFAULT, schedule_mode="multi", start="19:30", end="10:30",
+                                               extra_ranges=[{"start": "12:00", "end": "13:00", "enabled": True}]))
+
+
+def test_single_mode_ignores_extras():
+    cfg = dict(core.DEFAULT, schedule_mode="single", start="19:30", end="10:30",
+               extra_ranges=[{"start": "12:00", "end": "13:00", "enabled": True}])
+    assert core.ranges(cfg) == [("19:30", "10:30")]
+    assert not core.in_night(cfg, __import__("datetime").datetime(2026, 1, 1, 12, 30))

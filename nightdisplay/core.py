@@ -87,6 +87,8 @@ DEFAULT = {
     "last_test_mode": "", "last_test_at": "", "last_test_ok": False,
     "last_test_requested": "", "last_test_capability": "", "last_test_night_ok": False,
     "last_recovery_at": "", "last_recovery_mode": "",
+    "schedule_mode": "single",  # single=只要主时段；multi=主时段+额外时段
+    "primary_enabled": True,    # 多段模式下可关掉主时段，不影响其它段
     "extra_ranges": [], "night_mode": "", "test_id": "", "test_aborted": False,
     "awake_token": "", "recovery_pending": False,
     "theme": "light",
@@ -153,14 +155,14 @@ def validate_config(cfg):
         raise ValueError("配置内容必须是 JSON 对象")
     parse_hm(cfg.get("start", DEFAULT["start"]))
     parse_hm(cfg.get("end", DEFAULT["end"]))
+    if cfg.get("schedule_mode", "single") not in ("single", "multi"):
+        raise ValueError("时段模式应为 single 或 multi")
     extra = cfg.get("extra_ranges", [])
     if not isinstance(extra, (list, tuple)):
         raise ValueError("额外时间段必须是列表")
-    for pair in extra:
-        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
-            raise ValueError("额外时间段应包含开始和结束时间")
-        a, b = pair
-        if parse_hm(a) == parse_hm(b):
+    cfg["extra_ranges"] = [normalize_range_item(x) for x in extra]
+    for item in cfg["extra_ranges"]:
+        if parse_hm(item["start"]) == parse_hm(item["end"]):
             raise ValueError("额外时间段开始和结束不能相同")
     if cfg.get("mode", "auto") not in ("auto", "virtual_only", "overlay", "screen_off"):
         raise ValueError("未知显示模式")
@@ -202,6 +204,7 @@ def validate_config(cfg):
             raise ValueError("黑屏快捷键应为按键列表")
         cfg["night_hotkey"] = validate_hotkey(cfg["night_hotkey"])
     for key in ("enabled", "lock", "keep_awake", "autostart", "autostart_preference",
+                "primary_enabled",
                 "last_test_ok", "last_test_night_ok", "test_aborted", "recovery_pending"):
         if key in cfg and not isinstance(cfg[key], bool):
             raise ValueError("%s 必须为 true 或 false" % key)
@@ -290,12 +293,71 @@ def parse_ranges(text):
     return out
 
 
+def normalize_range_item(item):
+    """额外时段统一成 {start,end,enabled}。旧版 [start,end] 也能读。"""
+    if isinstance(item, dict):
+        start = item.get("start") or item.get("begin")
+        end = item.get("end") or item.get("finish")
+        if start is None or end is None:
+            raise ValueError("额外时间段应包含开始和结束时间")
+        a, b = "%02d:%02d" % parse_hm(start), "%02d:%02d" % parse_hm(end)
+        return {"start": a, "end": b, "enabled": bool(item.get("enabled", True))}
+    if isinstance(item, (list, tuple)) and len(item) == 2:
+        a, b = "%02d:%02d" % parse_hm(item[0]), "%02d:%02d" % parse_hm(item[1])
+        return {"start": a, "end": b, "enabled": True}
+    raise ValueError("额外时间段应包含开始和结束时间")
+
+
+def schedule_mode(cfg):
+    """单段 / 多段。装完默认单段。
+
+    配置里明确写了 single/multi 就听配置（单段时额外时段留着但不生效）。
+    老配置没写这个字段、却已有 extra_ranges：当作多段，免得午休段突然消失。
+    """
+    mode = cfg.get("schedule_mode")
+    if mode in ("single", "multi"):
+        return mode
+    if cfg.get("extra_ranges"):
+        return "multi"
+    return "single"
+
+
 def ranges(cfg):
-    """全部夜间时间段：主时间段 + 额外时间段（每段都可跨午夜）。"""
-    r = [(cfg["start"], cfg["end"])]
-    for x in cfg.get("extra_ranges") or []:
-        r.append(tuple(x))
-    return r
+    """当前会生效的夜间时间段（已关掉的段不算）。每段都可跨午夜。
+
+    单段：只要主时段 start→end。
+    多段：主时段（可关）+ 额外时段（可关）；段与段之间是亮屏间隙。
+    """
+    mode = schedule_mode(cfg)
+    if mode == "single":
+        return [(cfg["start"], cfg["end"])]
+    out = []
+    if cfg.get("primary_enabled", True):
+        out.append((cfg["start"], cfg["end"]))
+    for item in cfg.get("extra_ranges") or []:
+        try:
+            norm = normalize_range_item(item)
+        except ValueError:
+            continue
+        if norm["enabled"]:
+            out.append((norm["start"], norm["end"]))
+    # 多段全关时仍保留主时段，避免「开着计划却永远不黑」的坑。
+    return out or [(cfg["start"], cfg["end"])]
+
+
+def describe_ranges(cfg):
+    """白话说明：黑屏段和中间的亮屏间隙。"""
+    active = ranges(cfg)
+    if not active:
+        return "还没有黑屏时段"
+    parts = ["%s→%s" % (a, b) for a, b in active]
+    if len(active) == 1:
+        a, b = active[0]
+        sa, ea = parse_hm(a), parse_hm(b)
+        overnight = (sa[0] * 60 + sa[1]) > (ea[0] * 60 + ea[1])
+        tip = "（次日 %s 亮）" % b if overnight else ""
+        return "黑屏 %s→%s%s" % (a, b, tip)
+    return "黑屏 " + "；".join(parts) + "。两段中间是亮屏时间。"
 
 
 def in_night(cfg, now=None):

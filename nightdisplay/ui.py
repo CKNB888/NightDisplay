@@ -21,14 +21,17 @@ from .chord import DEFAULT_CHORD, fmt
 from .core import (
     IS_MAC,
     IS_WIN,
+    describe_ranges,
     export_logs,
     format_hm,
     hm_parts,
     load,
     log,
     next_switch,
+    normalize_range_item,
     parse_hm,
     read_log_tail,
+    schedule_mode,
     update,
 )
 
@@ -273,8 +276,39 @@ class MainWindow:
     # ---------- 时间 ----------
 
     def _build_schedule(self, cfg):
-        page = self._page("schedule", "时间", "每天到点自动黑屏，到结束时间自动亮。可以跨过午夜。")
-        body = self._card(page)
+        page = self._page("schedule", "时间", "选好每天几点黑、几点亮。装完默认已经开着。")
+        # 总开关
+        plan = self._card(page)
+        row = tk.Frame(plan, bg=T.CARD)
+        row.pack(fill="x")
+        text = tk.Frame(row, bg=T.CARD)
+        text.pack(side="left", fill="x", expand=True)
+        T.label(text, "每天自动黑屏", font="ND.Bold").pack(anchor="w")
+        self.plan_text = T.label(text, "", font="ND.Small", fg=T.SUB)
+        self.plan_text.pack(anchor="w", pady=(T.S(2), 0))
+        self.enabled_var = tk.BooleanVar(value=bool(cfg.get("enabled")))
+        self.enable_switch = T.Switch(row, self.enabled_var, lambda: self.safe(self._switch_plan))
+        self.enable_switch.pack(side="right")
+
+        # 单段 / 多段
+        mode_card = self._card(page)
+        head = tk.Frame(mode_card, bg=T.CARD)
+        head.pack(fill="x")
+        T.label(head, "怎么排时间", font="ND.Bold").pack(side="left")
+        mode = schedule_mode(cfg)
+        self.schedule_mode_var = tk.StringVar(value=mode)
+        T.Segmented(head, self.schedule_mode_var,
+                    (("single", "单段"), ("multi", "多段")),
+                    on_change=lambda: self.safe(self._switch_schedule_mode)).pack(side="right")
+        self.schedule_help = T.label(
+            mode_card,
+            "",
+            font="ND.Small", fg=T.SUB, wraplength=T.S(480))
+        self.schedule_help.pack(anchor="w", pady=(T.S(8), 0))
+
+        # 单段：主时段
+        self.single_box = tk.Frame(page, bg=T.BG)
+        body = self._card(self.single_box)
         sh, sm = hm_parts(cfg.get("start"), (19, 30))
         eh, em = hm_parts(cfg.get("end"), (10, 30))
         self.start_h = tk.StringVar(value="%02d" % sh)
@@ -294,21 +328,167 @@ class MainWindow:
             T.label(box, "时", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(4), T.S(8)))
             T.Dropdown(box, mv, 59, self._picked_time).pack(side="left")
             T.label(box, "分", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(4), 0))
+        T.label(self.single_box,
+                "点开下拉选时间（24 小时制）。可以跨午夜，比如 19:30 黑 → 次日 10:30 亮。",
+                font="ND.Small", fg=T.SUB, bg=T.BG, wraplength=T.S(520)).pack(
+                    anchor="w", padx=T.S(32), pady=(0, T.S(8)))
 
-        plan = self._card(page)
-        row = tk.Frame(plan, bg=T.CARD)
-        row.pack(fill="x")
-        text = tk.Frame(row, bg=T.CARD)
-        text.pack(side="left", fill="x", expand=True)
-        T.label(text, "每天自动黑屏", font="ND.Bold").pack(anchor="w")
-        self.plan_text = T.label(text, "", font="ND.Small", fg=T.SUB)
-        self.plan_text.pack(anchor="w", pady=(T.S(2), 0))
-        self.enabled_var = tk.BooleanVar(value=bool(cfg.get("enabled")))
-        self.enable_switch = T.Switch(row, self.enabled_var, lambda: self.safe(self._switch_plan))
-        self.enable_switch.pack(side="right")
-        tip = T.label(page, "点开下拉选小时和分钟（24 小时制 00–23 / 00–59），不能手打。选完立刻自动保存；可跨午夜，比如 19:30→次日 10:30。",
-                      font="ND.Small", fg=T.SUB, bg=T.BG, wraplength=T.S(520))
-        tip.pack(anchor="w", padx=T.S(32))
+        # 多段
+        self.multi_box = tk.Frame(page, bg=T.BG)
+        multi_card = self._card(self.multi_box)
+        mhead = tk.Frame(multi_card, bg=T.CARD)
+        mhead.pack(fill="x")
+        T.label(mhead, "黑屏时段", font="ND.Bold").pack(side="left")
+        self.multi_add_btn = T.Button(
+            mhead, "＋ 再加一段",
+            lambda: self.safe(lambda: self._add_multi_row(from_user=True)), kind="ghost")
+        self.multi_add_btn.pack(side="right")
+        T.label(multi_card,
+                "每一段单独开关。关掉某一段，只是这一段不黑，其它段照旧。"
+                "两段中间的时间是亮屏（空隙）。",
+                font="ND.Small", fg=T.SUB, wraplength=T.S(480)).pack(anchor="w", pady=(T.S(6), 0))
+        self.multi_rows_host = tk.Frame(multi_card, bg=T.CARD)
+        self.multi_rows_host.pack(fill="x", pady=(T.S(8), 0))
+        self.multi_rows = []
+        # 主时段行
+        self._add_multi_row(cfg.get("start", "19:30"), cfg.get("end", "10:30"),
+                            enabled=bool(cfg.get("primary_enabled", True)), primary=True)
+        for pair in cfg.get("extra_ranges") or []:
+            try:
+                item = normalize_range_item(pair)
+            except ValueError:
+                continue
+            self._add_multi_row(item["start"], item["end"], enabled=item["enabled"], primary=False)
+        T.label(self.multi_box,
+                "时间都用下拉选（00–23 时 / 00–59 分），不能手打，免得写错。",
+                font="ND.Small", fg=T.SUB, bg=T.BG, wraplength=T.S(520)).pack(
+                    anchor="w", padx=T.S(32), pady=(0, T.S(8)))
+
+        self._show_schedule_mode(mode)
+
+    def _schedule_help_text(self, mode):
+        if mode == "multi":
+            return "多段：比如晚上黑一截、中午再黑一截。段与段之间自动亮屏。"
+        return "单段：一天只有一段黑屏。默认 19:30 黑，次日 10:30 亮。"
+
+    def _show_schedule_mode(self, mode):
+        _put(self.schedule_help, self._schedule_help_text(mode))
+        # pack_forget then pack to toggle
+        self.single_box.pack_forget()
+        self.multi_box.pack_forget()
+        if mode == "multi":
+            self.multi_box.pack(fill="x")
+        else:
+            self.single_box.pack(fill="x")
+
+    def _switch_schedule_mode(self):
+        mode = self.schedule_mode_var.get()
+        if mode not in ("single", "multi"):
+            mode = "single"
+        prev = schedule_mode(load())
+        update(schedule_mode=mode)
+        self._show_schedule_mode(mode)
+        if mode == "multi" and prev != "multi":
+            # 切到多段时，把当前单段时间同步进第一行
+            if self.multi_rows:
+                p = self.multi_rows[0]["picked"]
+                p["sh"].set(self.start_h.get())
+                p["sm"].set(self.start_m.get())
+                p["eh"].set(self.end_h.get())
+                p["em"].set(self.end_m.get())
+            self._persist_multi_ranges(note=True)
+        elif mode == "single" and prev != "single":
+            self._note("已改回单段。多出来的时段先留着但不生效；再切回「多段」还能用。")
+            if load().get("enabled"):
+                from .app import ensure_default_schedule
+                ensure_default_schedule()
+        self.refresh(schedule=False)
+
+    def _add_multi_row(self, start="12:00", end="13:30", enabled=True, primary=False, from_user=False):
+        # 主时段 1 行 + 额外最多 4 行
+        extras = [r for r in self.multi_rows if not r["primary"]]
+        if from_user and len(extras) >= 4:
+            raise RuntimeError("最多再加 4 段。不需要的段可以关掉，或点「去掉」。")
+        a, b = hm_parts(start, (12, 0)), hm_parts(end, (13, 30))
+        line = tk.Frame(self.multi_rows_host, bg=T.CARD)
+        line.pack(fill="x", pady=(T.S(6), 0))
+        title = "第 1 段（主）" if primary else ("第 %d 段" % (len(self.multi_rows) + 1))
+        T.label(line, title, font="ND.Small", fg=T.SUB, width=10).pack(side="left")
+        picked = {k: tk.StringVar(value="%02d" % v) for k, v in
+                  (("sh", a[0]), ("sm", a[1]), ("eh", b[0]), ("em", b[1]))}
+        on_var = tk.BooleanVar(value=bool(enabled))
+        T.Dropdown(line, picked["sh"], 23, lambda: self.safe(self._persist_multi_ranges)).pack(side="left")
+        T.label(line, "时", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(2), T.S(4)))
+        T.Dropdown(line, picked["sm"], 59, lambda: self.safe(self._persist_multi_ranges)).pack(side="left")
+        T.label(line, "分", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(2), T.S(6)))
+        T.label(line, "到", fg=T.SUB).pack(side="left", padx=(0, T.S(6)))
+        T.Dropdown(line, picked["eh"], 23, lambda: self.safe(self._persist_multi_ranges)).pack(side="left")
+        T.label(line, "时", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(2), T.S(4)))
+        T.Dropdown(line, picked["em"], 59, lambda: self.safe(self._persist_multi_ranges)).pack(side="left")
+        T.label(line, "分", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(2), T.S(8)))
+        sw = T.Switch(line, on_var, lambda: self.safe(self._persist_multi_ranges), bg=T.CARD)
+        sw.pack(side="left", padx=(T.S(4), 0))
+        item = {"frame": line, "picked": picked, "on": on_var, "primary": primary, "switch": sw}
+
+        def remove(current=item):
+            if current["primary"]:
+                raise RuntimeError("主时段不能去掉。不想用就关掉右边的开关，或改回「单段」。")
+            current["frame"].destroy()
+            self.multi_rows.remove(current)
+            self._renumber_multi_rows()
+            self.multi_add_btn.set_enabled(len([r for r in self.multi_rows if not r["primary"]]) < 4)
+            self.safe(self._persist_multi_ranges)
+
+        if not primary:
+            T.Button(line, "去掉", remove, kind="danger").pack(side="left", padx=(T.S(8), 0))
+        self.multi_rows.append(item)
+        self.multi_add_btn.set_enabled(len([r for r in self.multi_rows if not r["primary"]]) < 4)
+        if from_user:
+            self._persist_multi_ranges(note=True)
+
+    def _renumber_multi_rows(self):
+        for i, item in enumerate(self.multi_rows):
+            # first label child is the title
+            kids = item["frame"].winfo_children()
+            if kids:
+                title = "第 1 段（主）" if item["primary"] else ("第 %d 段" % (i + 1))
+                with contextlib.suppress(tk.TclError):
+                    kids[0].configure(text=title)
+
+    def _persist_multi_ranges(self, note=False):
+        if not getattr(self, "multi_rows", None):
+            return
+        primary = next((r for r in self.multi_rows if r["primary"]), None)
+        if primary is None:
+            return
+        p = primary["picked"]
+        start = format_hm(p["sh"].get(), p["sm"].get())
+        end = format_hm(p["eh"].get(), p["em"].get())
+        if start == end:
+            raise ValueError("每一段的开始和结束不能选同一个时间。")
+        extras = []
+        for item in self.multi_rows:
+            if item["primary"]:
+                continue
+            q = item["picked"]
+            a = format_hm(q["sh"].get(), q["sm"].get())
+            b = format_hm(q["eh"].get(), q["em"].get())
+            if a == b:
+                raise ValueError("每一段的开始和结束不能选同一个时间。")
+            extras.append({"start": a, "end": b, "enabled": bool(item["on"].get())})
+        # 同步单段下拉显示
+        self.start_h.set("%02d" % parse_hm(start)[0])
+        self.start_m.set("%02d" % parse_hm(start)[1])
+        self.end_h.set("%02d" % parse_hm(end)[0])
+        self.end_m.set("%02d" % parse_hm(end)[1])
+        update(start=start, end=end, primary_enabled=bool(primary["on"].get()),
+               extra_ranges=extras, schedule_mode="multi")
+        if load().get("enabled"):
+            from .app import ensure_default_schedule
+            ensure_default_schedule()
+        if note:
+            self._note("多段时间已保存。" + describe_ranges(load()))
+        self.refresh(schedule=False)
 
     def _switch_plan(self):
         want = self.enabled_var.get()
@@ -327,49 +507,6 @@ class MainWindow:
         page = self._page("settings", "设置", AUTHOR + "  ·  " + SPONSOR)
         scroll = tk.Frame(page, bg=T.BG)
         scroll.pack(fill="both", expand=True)
-
-        extra = self._card(scroll)
-        head = tk.Frame(extra, bg=T.CARD)
-        head.pack(fill="x")
-        T.label(head, "其他时段", font="ND.Bold").pack(side="left")
-        self.extra_rows = []
-        rows_host = tk.Frame(extra, bg=T.CARD)
-
-        def add_row(start="12:00", end="13:30", from_user=False):
-            if from_user and len(self.extra_rows) >= 4:
-                raise RuntimeError("最多再加 4 段。不需要的段点「去掉」。")
-            a, b = hm_parts(start, (12, 0)), hm_parts(end, (13, 30))
-            line = tk.Frame(rows_host, bg=T.CARD)
-            line.pack(anchor="w", pady=(T.S(6), 0))
-            picked = {k: tk.StringVar(value="%02d" % v) for k, v in
-                      (("sh", a[0]), ("sm", a[1]), ("eh", b[0]), ("em", b[1]))}
-            T.Dropdown(line, picked["sh"], 23).pack(side="left")
-            T.label(line, "时", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(2), T.S(4)))
-            T.Dropdown(line, picked["sm"], 59).pack(side="left")
-            T.label(line, "分", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(2), T.S(6)))
-            T.label(line, "到", fg=T.SUB).pack(side="left", padx=(0, T.S(6)))
-            T.Dropdown(line, picked["eh"], 23).pack(side="left")
-            T.label(line, "时", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(2), T.S(4)))
-            T.Dropdown(line, picked["em"], 59).pack(side="left")
-            T.label(line, "分", font="ND.Small", fg=T.SUB).pack(side="left", padx=(T.S(2), 0))
-            item = {"frame": line, "picked": picked}
-
-            def remove(current=item):
-                current["frame"].destroy()
-                self.extra_rows.remove(current)
-                add_btn.set_enabled(True)
-
-            T.Button(line, "去掉", remove, kind="danger").pack(side="left", padx=(T.S(10), 0))
-            self.extra_rows.append(item)
-            add_btn.set_enabled(len(self.extra_rows) < 4)
-
-        add_btn = T.Button(head, "＋ 再加一段", lambda: self.safe(lambda: add_row(from_user=True)), kind="ghost")
-        add_btn.pack(side="right")
-        T.label(extra, "主时段之外，还可以再加，比如中午。", font="ND.Small", fg=T.SUB).pack(anchor="w")
-        rows_host.pack(fill="x")
-        for pair in cfg.get("extra_ranges") or []:
-            if isinstance(pair, (list, tuple)) and len(pair) == 2:
-                add_row(pair[0], pair[1])
 
         keys = self._card(scroll)
         row = tk.Frame(keys, bg=T.CARD)
@@ -505,16 +642,8 @@ class MainWindow:
             text = hv.get().strip()
             extra["night_hotkey"] = [] if text == "关闭" else validate_hotkey(
                 [k.strip() for k in re.split(r"[+＋]", text)])
-        rs = []
-        for item in self.extra_rows:
-            p = item["picked"]
-            start = format_hm(p["sh"].get(), p["sm"].get())
-            end = format_hm(p["eh"].get(), p["em"].get())
-            if start == end:
-                raise ValueError("每一段的开始和结束不能选同一个时间。")
-            rs.append([start, end])
         B.set_autostart(self.autostart_var.get())
-        update(extra_ranges=rs, unlock_chord=keys, lock=self.lock_var.get(),
+        update(unlock_chord=keys, lock=self.lock_var.get(),
                autostart=self.autostart_var.get(), autostart_preference=self.autostart_var.get(), **extra)
         self._note("设置已保存。")
         self.show_page("home")
@@ -607,14 +736,16 @@ class MainWindow:
         return result
 
     def toggle(self):
-        from .app import activate, pause
+        from .app import pause, resume
         if load().get("enabled"):
             pause()
             self._note("每天自动黑屏已暂停。开机后程序仍会在后台运行。")
             return None
-        cfg = self.save_times()
-        activate("auto", cfg["start"], cfg["end"])
-        self._note("已经启用。到了开始时间会自动黑，到了结束时间会自动亮。")
+        # 恢复时绝不能把界面下拉的当前值写回配置（暂停前改过界面、或控件未同步都会把时段推迟/改掉）。
+        cfg = load()
+        self._show_saved_time(cfg)
+        resume()
+        self._note("已经启用。仍按保存的时间：%s。" % describe_ranges(load()))
         return self.act("reconcile")
 
     # ---------- 刷新 ----------
@@ -658,12 +789,10 @@ class MainWindow:
             self.dot.delete("all")
             self.dot.create_oval(1, 1, T.S(9), T.S(9), outline="",
                                  fill=T.ACCENT if night else (T.GREEN if cfg["enabled"] else T.FAINT))
-            span = "%s – %s" % (cfg["start"], cfg["end"])
-            if cfg.get("extra_ranges"):
-                span += "，另有 %d 段" % len(cfg["extra_ranges"])
+            span = describe_ranges(cfg)
             plan = "每天自动黑屏已开" if cfg["enabled"] else "每天自动黑屏还没开"
             _put(self.detail_text, "%s  ·  %s" % (span, plan))
-            _put(self.plan_text, ("已开：" if cfg["enabled"] else "已关：") + span)
+            _put(self.plan_text, ("已开 · " if cfg["enabled"] else "已关 · ") + span)
             if self.enabled_var.get() != bool(cfg["enabled"]):
                 self.enabled_var.set(bool(cfg["enabled"]))
             names = {

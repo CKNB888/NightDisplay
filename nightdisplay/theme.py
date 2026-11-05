@@ -345,6 +345,40 @@ class Stepper(tk.Frame):
             menu.tk_popup(self.value.winfo_rootx(), self.value.winfo_rooty() + self.value.winfo_height())
 
 
+
+class Segmented(tk.Frame):
+    """单选胶囊：比如「单段 / 多段」。点一下就切，适合新手。"""
+
+    def __init__(self, parent, variable, options, on_change=None, bg=CARD):
+        super().__init__(parent, bg=bg)
+        self.var, self.on_change = variable, on_change
+        self._btns = {}
+        row = tk.Frame(self, bg=BORDER, highlightthickness=0)
+        row.pack()
+        inner = tk.Frame(row, bg=BORDER)
+        inner.pack(padx=1, pady=1)
+        for key, label in options:
+            b = tk.Label(inner, text=label, font="ND.Bold", cursor="hand2",
+                         padx=S(14), pady=S(6))
+            b.pack(side="left")
+            b.bind("<Button-1>", lambda e, k=key: self._pick(k))
+            self._btns[key] = b
+        self.var.trace_add("write", lambda *a: self._paint())
+        self._paint()
+
+    def _pick(self, key):
+        if self.var.get() == key:
+            return
+        self.var.set(key)
+        if self.on_change:
+            self.on_change()
+
+    def _paint(self):
+        cur = self.var.get()
+        for key, b in self._btns.items():
+            on = key == cur
+            b.configure(bg=ACCENT if on else CARD_HI, fg="#ffffff" if on else SUB)
+
 class Dropdown(tk.Frame):
     """只读小时/分钟下拉：点开从列表选，不能手打，避免「19.30」「七点半」这类乱输入。
 
