@@ -26,6 +26,11 @@ def main(out):
     from nightdisplay import core, ui
     core.update(enabled=True, start="19:30", end="10:30", extra_ranges=[["12:00", "13:30"]],
                 last_test_ok=True, last_test_requested="auto", last_test_mode="virtual_only")
+    # 圆环按固定的本地时刻算，截图不受 CI 机器时区影响：白天 17:24，夜里 02:10。
+    import datetime as dt
+    real_ring = ui.ring_state
+    clock = {"t": dt.datetime.now().replace(hour=17, minute=24, second=0)}
+    ui.ring_state = lambda c, now=None: real_ring(c, clock["t"])
     root = tk.Tk()
     win = ui.MainWindow(root, lambda on, **k: True, lambda c: "ok")
     win.check_update = lambda quiet=False: None
@@ -63,6 +68,7 @@ def main(out):
     go("schedule", "schedule.png")
     go("settings", "settings.png")
     core.update(state="night", night_mode="virtual_only")
+    clock["t"] = clock["t"].replace(hour=2, minute=10)
     go("home", "home-night.png")
     win.refresh(schedule=False)
     settle()
@@ -72,6 +78,7 @@ def main(out):
     settle()
     grab("home-off.png")
     core.update(enabled=True)
+    clock["t"] = clock["t"].replace(hour=17, minute=24)
     win.refresh(schedule=False, animate_ring=True)
     settle()
     imgs = [f.quantize(colors=128) for f, _ in frames]

@@ -16,13 +16,13 @@ def cfg(**kw):
 
 def test_ring_counts_down_to_blackout_in_day():
     frac, big, small, color = ui.ring_state(cfg(), dt.datetime(2026, 1, 1, 18, 30))
-    assert (big, small, color) == ("1:00", "后黑屏", "green")
+    assert (big, small, color) == ("1:00", "1 小时 0 分后黑屏", "green")
     assert 0.85 < frac < 1.0
 
 
 def test_ring_counts_down_to_end_at_night():
     frac, big, small, color = ui.ring_state(cfg(state="night"), dt.datetime(2026, 1, 1, 22, 30))
-    assert (big, small, color) == ("12:00", "后亮回来", "accent")
+    assert (big, small, color) == ("12:00", "12 小时 0 分后亮回来", "accent")
     assert 0.0 < frac < 0.3
 
 

@@ -249,10 +249,10 @@ class Switch(tk.Canvas):
         if self._hover:
             track = mix(track, "#ffffff", 0.08)
         round_rect(self, 0, 0, self.W - 1, self.H - 1, self.H // 2, fill=track, outline="")
-        r = self.H // 2 - S(2)
-        cx = S(2) + r + p * (self.W - 2 * r - S(4))
+        r = self.H // 2 - S(3)
+        cx = S(3) + r + p * (self.W - 2 * r - S(6))
         cy = self.H // 2
-        self.create_oval(cx - r, cy - r + 1, cx + r, cy + r + 1, fill="#141414", outline="")
+        self.create_oval(cx - r, cy - r + 1, cx + r, cy + r + 1, fill=mix(track, "#000000", 0.35), outline="")
         self.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#ffffff", outline="")
 
     def _sync(self):

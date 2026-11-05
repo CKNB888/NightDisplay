@@ -60,6 +60,15 @@ def fmt_span(seconds):
     return "%d:%02d" % (m, s)
 
 
+def human_span(seconds):
+    seconds = max(0, int(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return "%d 小时 %d 分" % (h, m)
+    return "%d 分 %d 秒" % (m, s)
+
+
 def phase_length(cfg, night):
     """主时段夜间/白天各多长（秒），给圆环算比例。"""
     try:
@@ -87,8 +96,8 @@ def ring_state(cfg, now=None):
     total = phase_length(cfg, action == "day")
     frac = 1.0 - min(1.0, secs / float(total))
     if night or action == "day":
-        return frac, fmt_span(secs), "后亮回来", "accent"
-    return frac, fmt_span(secs), "后黑屏", "green"
+        return frac, fmt_span(secs), human_span(secs) + "后亮回来", "accent"
+    return frac, fmt_span(secs), human_span(secs) + "后黑屏", "green"
 
 
 def lock_hint(cfg=None):
