@@ -6,12 +6,12 @@
 
 作者：传康Kk。赞助：微信 1837620622（请备注来意）。
 
-[下载 3.0.13](https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.13) · [所有版本](https://github.com/CKNB888/NightDisplay/releases) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
+[下载 3.0.14](https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.14) · [所有版本](https://github.com/CKNB888/NightDisplay/releases) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
 
 | 下载 | 说明 |
 |---|---|
-| [NightDisplay-Windows-x64-Setup.exe](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.13/NightDisplay-Windows-x64-Setup.exe) | Windows 10 2004+/11 安装版，按当前用户安装 |
-| [NightDisplay-Windows-x64.zip](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.13/NightDisplay-Windows-x64.zip) | 免安装版，解压即用 |
+| [NightDisplay-Windows-x64-Setup.exe](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.14/NightDisplay-Windows-x64-Setup.exe) | Windows 10 2004+/11 安装版，按当前用户安装 |
+| [NightDisplay-Windows-x64.zip](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.14/NightDisplay-Windows-x64.zip) | 免安装版，解压即用 |
 
 ## 适合什么场景
 
@@ -21,13 +21,15 @@
 
 ## 界面
 
-![NightDisplay 界面巡览](docs/promo/ui-tour.gif)
+![NightDisplay 3.0.14 界面巡览（Windows 真实窗口）](docs/promo/ui-tour.gif)
 
-动图由 `docs/screenshots` 里的真实程序截图拼成（3.0.12 界面；3.0.13 在此基础上把状态和时段分成两张卡片）。
+3.0.14 换成深色、圆角卡片、左侧栏的 Mac 风格界面。上面的动图和下面的截图，都是 GitHub Actions 的 Windows 机器上运行真实程序窗口截下来的（`tools/capture_ui.py`），不是效果图。
 
-[![NightDisplay：本机纯黑，远程照常](docs/promo/poster.jpg)](docs/promo/nightdisplay.mp4)
-
-点图片播放宣传片。
+| 概览：倒计时圆环 | 黑屏中：距离亮屏 |
+|---|---|
+| ![概览](docs/screenshots/home.png) | ![黑屏中](docs/screenshots/home-night.png) |
+| **时间：步进器 + 开关** | **设置：其他时段、按键、开关** |
+| ![时间](docs/screenshots/schedule.png) | ![设置](docs/screenshots/settings.png) |
 
 ## 日常使用
 
@@ -37,9 +39,13 @@ Windows 默认优先使用常驻虚拟屏。进入夜间时，桌面只输出到
 
 NightDisplay 只负责显示、电源和时间计划。远程连接仍由 UU、ToDesk 等软件提供，不绑定设备，也不限制客户端数量；远程软件自身的会话规则继续生效。
 
-## 界面
+## 怎么用这个界面
 
-主窗口用系统自带的按钮。开始和结束各占一行，点小时和分钟选出，不用打字。每天自动黑屏开着时也能改时间，改完按新的时间走。点一次「测试 15 秒」，屏幕黑 15 秒后自己亮回来，这次测试不改已选的时间。每天自动黑屏还开着时，要先暂停再测。测好之后点右边的「启用每天自动黑屏」。
+左边三栏：**概览**、**时间**、**设置**，切换时内容轻轻滑入（约 0.18 秒）。概览的大圆环显示离黑屏还有多久；黑屏中显示离亮回来还有多久。圆环只在窗口打开时每秒更新，关掉窗口（藏到托盘）后不再重画，弱一体机上不额外占 CPU。
+
+「时间」页里开始、结束用 − / + 步进器调，按住连续变，滚轮也行，点数字直接选；改完约 1 秒自动保存。下面的开关就是「每天自动黑屏」。托盘图标右键有：现在就黑屏、现在恢复屏幕、恢复屏幕并暂停、暂停每天自动黑屏、设置…、退出。
+
+开始和结束各一行，不用打字。每天自动黑屏开着时也能改时间，改完按新的时间走。点一次「测试 15 秒」，屏幕黑 15 秒后自己亮回来，这次测试不改已选的时间。每天自动黑屏还开着时，要先暂停再测。测好之后点右边的「启用每天自动黑屏」。
 
 「现在就黑屏」会先说明怎么亮回来。「恢复屏幕并暂停」把屏幕弄亮，并暂停每天自动黑屏。开机后仍会在后台运行。
 
@@ -180,6 +186,14 @@ GitHub Actions 按平台分开跑。Windows 2022 和 Windows latest 的测试通
 云端 VM 和 CI 没有你的实际一体机、UU/ToDesk 会话及真实背光控制。它们能验证操作系统接口、恢复和打包流程，不能代替硬件兼容性测试。没有跑过的机型和平台不标注为“已保证兼容”。
 
 ## 更新记录
+
+### 3.0.14
+
+- 全新深色界面（Mac / SwiftUI 观感，三个系统同一套）：左侧栏、圆角卡片、首页倒计时圆环、自绘开关和步进器，悬停/按下有反馈，切页滑入约 180 毫秒。Windows 10 20H1+/11 标题栏也是深色。仍然只用 Tk，不加新运行库。
+- 窗口隐藏到托盘后，界面刷新完全停下；后台命令队列空闲时从每 30 毫秒改为每 100 毫秒看一次，弱机少很多唤醒。
+- 托盘菜单加「暂停每天自动黑屏」和「设置…」。
+- 进入「仅虚拟屏」失败回滚时，先在黑幕下把实体屏接回来再揭开黑幕，不再先露一下桌面。
+- README 里的界面图全部换成 Windows 上真实运行截下的 3.0.14 窗口；去掉旧界面的宣传图。
 
 ### 3.0.13
 
