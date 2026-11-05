@@ -10,12 +10,12 @@
 
 作者：传康Kk。赞助：微信 1837620622（请备注来意）。
 
-[下载 3.0.16](https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.16) · [所有版本](https://github.com/CKNB888/NightDisplay/releases) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
+[下载 3.0.17](https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.17) · [所有版本](https://github.com/CKNB888/NightDisplay/releases) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
 
 | 下载 | 说明 |
 |---|---|
-| [NightDisplay-Windows-x64-Setup.exe](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.16/NightDisplay-Windows-x64-Setup.exe) | Windows 10 2004+/11 安装版，按当前用户安装 |
-| [NightDisplay-Windows-x64.zip](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.16/NightDisplay-Windows-x64.zip) | 免安装版，解压即用 |
+| [NightDisplay-Windows-x64-Setup.exe](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.17/NightDisplay-Windows-x64-Setup.exe) | Windows 10 2004+/11 安装版，按当前用户安装 |
+| [NightDisplay-Windows-x64.zip](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.17/NightDisplay-Windows-x64.zip) | 免安装版，解压即用 |
 
 ## 适合什么场景
 
@@ -25,7 +25,7 @@
 
 ## 界面
 
-![NightDisplay 3.0.16 界面巡览（Windows 真实窗口）](docs/promo/ui-tour.gif)
+![NightDisplay 3.0.17 界面巡览（Windows 真实窗口）](docs/promo/ui-tour.gif)
 
 深色、圆角卡片、左侧栏的 Mac 风格界面。上面的动图和下面的截图，都是 GitHub Actions 的 Windows 机器上运行真实程序窗口截下来的（`tools/capture_ui.py`），不是效果图。
 
@@ -192,7 +192,7 @@ GitHub Actions 只跑 Windows：Windows 2022 和 Windows latest 单元测试 + V
 
 ## 更新记录
 
-### 3.0.16
+### 3.0.17
 
 - 仅虚拟屏回白天：先在黑幕下把实体屏接回来，再揭黑幕，减少亮屏时闪一下桌面（进夜间失败回滚本来就是这个顺序，回白天之前反了）。
 - 仅虚拟屏夜间轮询从 1 秒改为 0.5 秒，远程结束后实体屏被顶亮时更快盖回（仍可能有最多约半秒可见）。
@@ -329,3 +329,7 @@ GitHub Actions 只跑 Windows：Windows 2022 和 Windows latest 单元测试 + V
 ## 许可
 
 MIT，见 [LICENSE](LICENSE)。第三方许可见 [NOTICE.md](NOTICE.md)。NightDisplay 是独立项目，与 UU 远程、ToDesk 没有隶属关系，也不使用它们的标识或素材。
+
+## 升级 / 清理旧版本（3.0.17 起）
+
+直接运行新版 Setup.exe 即可：安装器会先结束所有 NightDisplay 进程，静默卸载其他目录里的旧版本，删除残余的卸载登记和失效的开机启动项，把旧安装目录、失效快捷方式和「下载」里的旧 NightDisplay 安装包移到**回收站**，最后只保留这一个最新版本。
