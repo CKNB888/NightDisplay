@@ -468,6 +468,11 @@ def _go_night(mode, overlay_cb=None, dry_run=False):
                 from . import win_display as W
                 if not dry_run:
                     W.plan_virtual_only(cfg.get("virtual_match", ""))
+                    if overlay_cb:
+                        # 拓扑切换时面板会重新协商，背光可能闪一下桌面。先盖黑幕再切，
+                        # 黑幕排除屏幕采集，远程看到的仍是虚拟屏。回白天时揭开。
+                        with contextlib.suppress(Exception):
+                            overlay_cb(True)
                     from . import win_power
                     # 实体屏已经离开桌面。系统保持醒着，显示器空闲仍允许，背光才能灭。
                     win_power.enter(keep_display_on=False)
@@ -484,6 +489,9 @@ def _go_night(mode, overlay_cb=None, dry_run=False):
         except Exception as e:
             log("仅虚拟屏失败，立即回滚: %s" % e)
             if not dry_run:
+                if overlay_cb:
+                    with contextlib.suppress(Exception):
+                        overlay_cb(False)
                 try:
                     restore_display()
                     if IS_WIN:

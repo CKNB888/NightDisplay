@@ -1,16 +1,33 @@
 # NightDisplay
 
-NightDisplay 在指定时段关闭本地显示输出，同时保持电脑运行，方便你继续通过 UU 远程、ToDesk 等软件连接。默认时间为每天 20:00 到次日 10:30，支持多个时间段和跨午夜计划，按电脑本地时区执行。
+**下班后让本机屏幕纯黑，远程照常用。** NightDisplay 是一个屏幕防窥工具：到了设定时间，电脑仍在运行，但本地屏幕不再显示桌面，旁边路过的人看不到你的内容；你继续通过 UU 远程、ToDesk 等软件连接、操作。
 
-作者：传康Kk。赞助及联系：1837620622。
+默认每天 **19:30 自动黑屏，次日 10:30 自动亮屏**（跨午夜，按电脑本地时区），可自行修改，也可以再加几段时间。
 
-[下载正式版本](https://github.com/CKNB888/NightDisplay/releases/latest) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
+作者：传康Kk。赞助：微信 1837620622（请备注来意）。
 
-## 宣传片
+[下载 3.0.13](https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.13) · [所有版本](https://github.com/CKNB888/NightDisplay/releases) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
+
+| 下载 | 说明 |
+|---|---|
+| [NightDisplay-Windows-x64-Setup.exe](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.13/NightDisplay-Windows-x64-Setup.exe) | Windows 10 2004+/11 安装版，按当前用户安装 |
+| [NightDisplay-Windows-x64.zip](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.13/NightDisplay-Windows-x64.zip) | 免安装版，解压即用 |
+
+## 适合什么场景
+
+- 办公室一体机下班不关机，人走后屏幕纯黑，路过的人看不到桌面，回家照常远程。
+- 公共位置的电脑：远程操作时本地不显示画面，保护屏幕隐私。
+- 只想按时黑屏、按时亮屏，不想每天手动关显示器。
+
+## 界面
+
+![NightDisplay 界面巡览](docs/promo/ui-tour.gif)
+
+动图由 `docs/screenshots` 里的真实程序截图拼成（3.0.12 界面；3.0.13 在此基础上把状态和时段分成两张卡片）。
 
 [![NightDisplay：本机纯黑，远程照常](docs/promo/poster.jpg)](docs/promo/nightdisplay.mp4)
 
-人走了，屏幕按计划变成纯黑。远程桌面照常能看、能操作。点图片播放。
+点图片播放宣传片。
 
 ## 日常使用
 
@@ -122,7 +139,7 @@ NightDisplay --action selfcheck
 NightDisplay --action night [--mode auto|virtual_only|overlay|screen_off]
 NightDisplay --action day
 NightDisplay --action test --mode auto --seconds 15
-NightDisplay --action activate --start 20:00 --end 10:30
+NightDisplay --action activate --start 19:30 --end 10:30
 NightDisplay --action pause
 NightDisplay --action emergency
 NightDisplay --action uninstall
@@ -163,6 +180,15 @@ GitHub Actions 按平台分开跑。Windows 2022 和 Windows latest 的测试通
 云端 VM 和 CI 没有你的实际一体机、UU/ToDesk 会话及真实背光控制。它们能验证操作系统接口、恢复和打包流程，不能代替硬件兼容性测试。没有跑过的机型和平台不标注为“已保证兼容”。
 
 ## 更新记录
+
+### 3.0.13
+
+- 默认时段改为每天 19:30 黑屏、10:30 亮屏。
+- 远程中进入夜间不再卡死/断开：先把虚拟屏扩展进桌面、等 1.5 秒让远程软件切过去，再移除实体屏；扩展失败时退回原来的一步切换并记日志。
+- 进入夜间时的亮一下：托盘程序在运行时，切换拓扑前先盖上黑幕（黑幕排除屏幕采集，远程看不到），切换失败回滚时揭开。
+- 远程结束后实体屏被顶亮：夜间每秒检查一次，发现实体屏回来先盖黑再收回到虚拟屏（实际仍可能有不到 1 秒的延迟）。
+- 内存与功耗：白天检查间隔从 1 秒改为 2 秒，每轮少读一次配置；关闭窗口藏到托盘时回收一次界面对象。
+- 界面：状态和每天时段改成带边框的卡片，颜色仍跟随系统主题。
 
 ### 3.0.12
 

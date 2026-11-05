@@ -955,9 +955,12 @@ def run_app(show_window=True, selftest=0):
                 log("防窥黑幕未能重新盖上：%s" % e)
 
         def tick():
+            night = False
             try:
                 reconcile(overlay, repair_cover)
-                if not load().get("enabled") and load().get("state") == "night":
+                c = load()
+                night = c.get("state") == "night"
+                if not c.get("enabled") and night:
                     B.ensure_night(cover=repair_cover)
             except Exception as e:
                 log("定时检查出错: %s" % e)
@@ -965,7 +968,9 @@ def run_app(show_window=True, selftest=0):
                 # 黑幕窗口被系统拆掉后要重新盖上。光标也要每轮再藏一次。
                 maintain_overlay()
                 sync_night_window(refresh_cursor=True)
-            root.after(1000, tick)
+            # 夜间每秒检查（远程结束后实体屏被顶亮要尽快盖回）；白天 2 秒一轮，
+            # 弱机上少一半磁盘读和唤醒。时段边界误差仍在 2 秒内。
+            root.after(1000 if night else 2000, tick)
         root.after(1000, tick)
         # A destroyed overlay cannot still be treated as active after a restart.
         if load().get("state") == "night" and load().get("night_mode") == "overlay":

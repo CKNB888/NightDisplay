@@ -65,6 +65,9 @@ def use_native_theme(root):
     # 次级说明用独立样式。Mac 才改成系统灰字；Windows 保持 vista 默认字色。
     with contextlib.suppress(tk.TclError):
         style.configure("Hint.TLabel")
+        # 卡片：细边框 + 内边距，把状态和时段分成两块，参考远程工具的卡片布局。
+        # 颜色仍跟系统主题走，深色模式不会出现一块刺眼的白底。
+        style.configure("Card.TFrame", relief="solid", borderwidth=1, padding=(14, 12))
     if IS_MAC:
         with contextlib.suppress(tk.TclError):
             style.configure("Hint.TLabel", foreground="systemSecondaryLabelColor")
@@ -227,19 +230,21 @@ class MainWindow:
         ttk.Label(head, text="v" + VERSION, style="Hint.TLabel").pack(side="right")
         ttk.Label(outer, text=SUBTITLE, style="Hint.TLabel").pack(anchor="w", pady=(4, 0))
 
-        self.state_text = ttk.Label(outer, text="屏幕正常显示", font=status_font)
-        self.state_text.pack(anchor="w", pady=(16, 0))
-        self.detail_text = ttk.Label(outer, text="", style="Hint.TLabel")
+        status_card = ttk.Frame(outer, style="Card.TFrame")
+        status_card.pack(fill="x", pady=(14, 0))
+        self.state_text = ttk.Label(status_card, text="屏幕正常显示", font=status_font)
+        self.state_text.pack(anchor="w")
+        self.detail_text = ttk.Label(status_card, text="", style="Hint.TLabel")
         self.detail_text.pack(anchor="w", pady=(4, 0))
-        self.hint_text = ttk.Label(outer, text="", style="Hint.TLabel", wraplength=420)
+        self.hint_text = ttk.Label(status_card, text="", style="Hint.TLabel", wraplength=400)
         self.hint_text.pack(anchor="w", pady=(2, 0))
 
         # 开始、结束各占一行。挤在一行里，时间按钮会贴在一起，点不中。
-        section = ttk.Frame(outer)
-        section.pack(fill="x", pady=(18, 0))
+        section = ttk.Frame(outer, style="Card.TFrame")
+        section.pack(fill="x", pady=(12, 0))
         ttk.Label(section, text="每天", font=self._section_font).pack(anchor="w", pady=(0, 8))
         cfg = load()
-        sh, sm = hm_parts(cfg.get("start"), (20, 0))
+        sh, sm = hm_parts(cfg.get("start"), (19, 30))
         eh, em = hm_parts(cfg.get("end"), (10, 30))
         self.start_h = tk.StringVar(value="%02d" % sh)
         self.start_m = tk.StringVar(value="%02d" % sm)
@@ -321,7 +326,7 @@ class MainWindow:
             messagebox.showerror(APP, str(e), parent=self.root)
 
     def _show_saved_time(self, cfg):
-        sh, sm = hm_parts(cfg.get("start"), (20, 0))
+        sh, sm = hm_parts(cfg.get("start"), (19, 30))
         eh, em = hm_parts(cfg.get("end"), (10, 30))
         self.start_h.set("%02d" % sh)
         self.start_m.set("%02d" % sm)
@@ -692,6 +697,9 @@ class MainWindow:
             self.root.withdraw()
         except tk.TclError:
             return
+        # 窗口藏起来后只剩托盘，回收一次界面临时对象，弱机上常驻内存更低。
+        import gc
+        gc.collect()
         if not self._hide_noted:
             self._hide_noted = True
             log("窗口已隐藏到右下角。每天的时间和开机登录都还在。")

@@ -77,7 +77,7 @@ DEFAULT = {
     "hold_night_until": "",
     "autostart": True,
     "autostart_preference": True,
-    "start": "20:00",
+    "start": "19:30",
     "end": "10:30",
     "keep_awake": True,
     "virtual_match": "",     # 虚拟屏名称关键字，空=自动识别

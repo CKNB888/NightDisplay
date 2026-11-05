@@ -8,9 +8,9 @@ from nightdisplay import core
 def D(h, m):
     return dt.datetime(2026, 1, 1, h, m)
 
-@pytest.mark.parametrize("h,m,exp", [(0, 0, 1), (10, 29, 1), (10, 30, 0), (19, 59, 0), (20, 0, 1), (23, 59, 1)])
+@pytest.mark.parametrize("h,m,exp", [(0, 0, 1), (10, 29, 1), (10, 30, 0), (19, 29, 0), (19, 30, 1), (23, 59, 1)])
 def test_overnight(h, m, exp):
-    assert core.is_night("20:00", "10:30", D(h, m)) == bool(exp)
+    assert core.is_night("19:30", "10:30", D(h, m)) == bool(exp)
 
 def test_sameday_and_equal():
     assert core.is_night("09:00", "17:00", D(12, 0))
@@ -19,7 +19,7 @@ def test_sameday_and_equal():
 
 def test_next_switch():
     cfg = dict(core.DEFAULT)
-    assert core.next_switch(cfg, D(19, 0)) == ("night", 3600)
+    assert core.next_switch(cfg, D(19, 0)) == ("night", 1800)
     assert core.next_switch(cfg, D(23, 0)) == ("day", 11.5 * 3600)
 
 def test_bad_time():

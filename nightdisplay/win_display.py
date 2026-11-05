@@ -287,7 +287,45 @@ def plan_virtual_only(match=""):
     return [build_path(b)], named[(p["tgt_adapter"], p["tgt_id"])], len(physical)
 
 
+def _attach_virtual_first(match, log):
+    """先把虚拟屏接进当前桌面（扩展），再去掉实体屏。
+
+    一步从"只有实体屏"切到"只有虚拟屏"时，远程软件正在采集的那块屏幕会瞬间消失，
+    UU/ToDesk 会卡死或断开。先扩展出虚拟屏，远程采集面始终有一块活着的显示器。
+    失败只记日志，后面仍按原来的一步切换走。
+    """
+    paths, _ = query(QDC_ALL_PATHS)
+    infos = [(b, parse_path(b)) for b in paths]
+    active = [(b, p) for b, p in infos if p["active"]]
+
+    def virtual(p):
+        fn, dp = target_name(p["tgt_adapter"], p["tgt_id"])
+        return is_virtual(dict(name=fn, device_path=dp, adapter_path=adapter_name(p["tgt_adapter"]), tech=p["tech"]), match)
+
+    virt = [(b, p) for b, p in infos if p["available"] and virtual(p)]
+    if not virt or not active or any(virtual(p) for _, p in active):
+        return False  # 没有虚拟屏，或虚拟屏已经在桌面上
+    used = {(p["src_adapter"], p["src_id"]) for _, p in active}
+    vb = next((b for b, p in virt if (p["src_adapter"], p["src_id"]) not in used), None)
+    if vb is None:
+        return False
+    supplied = [build_path(b) for b, _ in active] + [build_path(vb)]
+    fl = SDC_TOPOLOGY_SUPPLIED | SDC_ALLOW_PATH_ORDER_CHANGES
+    r = set_config(supplied, [], SDC_VALIDATE | fl)
+    if r == 0:
+        r = set_config(supplied, [], SDC_APPLY | fl)
+    log("先扩展出虚拟屏（保住远程采集面）：%s" % _err(r))
+    return r == 0
+
+
 def apply_virtual_only(match="", log=print, dry_run=False):
+    if not dry_run:
+        try:
+            if _attach_virtual_first(match, log):
+                import time
+                time.sleep(1.5)  # 等远程软件把采集切到虚拟屏
+        except Exception as e:  # noqa: BLE001
+            log("先扩展虚拟屏未成功，改为一步切换：%s" % e)
     paths, info, nphys = plan_virtual_only(match)
     r = -1
     for fl in (SDC_TOPOLOGY_SUPPLIED | SDC_ALLOW_PATH_ORDER_CHANGES,
