@@ -40,6 +40,15 @@ jobs:
       - name: Unit tests (Linux)
         if: runner.os == 'Linux'
         run: xvfb-run -a python -m pytest -v tests
+      - name: Real UI screenshots (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        run: python tools/capture_ui.py ui-shots
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: ui-shots-${{ matrix.os }}
+          path: ui-shots/
       - name: Integration (Windows, incl. VDD driver)
         if: runner.os == 'Windows'
         shell: bash

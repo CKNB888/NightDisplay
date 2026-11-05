@@ -882,6 +882,18 @@ def run_app(show_window=True, selftest=0):
             ui.fade_in(root)
             root.deiconify()
             root.lift()
+        elif name == "pause":
+            pause()
+        elif name == "settings":
+            if IS_WIN and load().get("state") == "night":
+                log("夜间不打开设置窗口")
+                return "ok"
+            appearance["restore"] = False
+            if win is not None:
+                win.open_settings()
+            ui.fade_in(root)
+            root.deiconify()
+            root.lift()
         elif name == "uninstall":
             # 卸载器在程序开着时走这里。必须先关登录项再退出，不能只做应急恢复。
             uninstall(overlay)
@@ -906,6 +918,7 @@ def run_app(show_window=True, selftest=0):
         return box.get("result", "error: 程序正在退出")
 
     def drain():
+        busy = not pending.empty()
         while not pending.empty():
             command, done, box = pending.get_nowait()
             try:
@@ -914,9 +927,11 @@ def run_app(show_window=True, selftest=0):
             finally:
                 done.set()
         if not closing.is_set():
-            root.after(30, drain)
+            # 有命令时 30 毫秒再看一次；空闲时 100 毫秒一轮，弱机上每秒少 20 多次唤醒。
+            root.after(30 if busy else 100, drain)
 
     server = ipc.Server(dispatch)
+    win = None
     tray = None
     watcher = None
     started = False

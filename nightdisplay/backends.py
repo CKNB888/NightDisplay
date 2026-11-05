@@ -489,9 +489,7 @@ def _go_night(mode, overlay_cb=None, dry_run=False):
         except Exception as e:
             log("仅虚拟屏失败，立即回滚: %s" % e)
             if not dry_run:
-                if overlay_cb:
-                    with contextlib.suppress(Exception):
-                        overlay_cb(False)
+                # 先在黑幕下把实体屏接回来，再揭开黑幕。先揭再改拓扑会让桌面闪一下。
                 try:
                     restore_display()
                     if IS_WIN:
@@ -501,6 +499,10 @@ def _go_night(mode, overlay_cb=None, dry_run=False):
                 except Exception as recovery:
                     update(state="night", night_mode=real)
                     raise RuntimeError("切换失败且回滚失败：%s；%s" % (e, recovery)) from e
+                finally:
+                    if overlay_cb:
+                        with contextlib.suppress(Exception):
+                            overlay_cb(False)
             raise
     elif real == "overlay":
         if overlay_cb is None:
