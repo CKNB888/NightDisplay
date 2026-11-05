@@ -28,8 +28,11 @@ UninstallDisplayIcon={app}\NightDisplay.exe
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 [Messages]
-WelcomeLabel2=安装完成后，桌面上会出现 NightDisplay，双击就能打开。%n%n它会在你选好的时间把这台电脑的屏幕变黑，远程的人还能继续用。开机以后它会自己在后台运行，不用每次再去找。
-FinishedLabel=装好了。桌面上的 NightDisplay 可以直接双击打开。%n%n第一次打开，先点「测试 15 秒」。屏幕会黑一小会儿，然后自己亮回来。
+PreparingDesc=正在清理旧版本并准备安装，请稍等几秒，不要关闭窗口……
+InstallingLabel=正在安装 NightDisplay，进度条走完就好（通常不到 30 秒）。
+ReadyLabel2a=点「安装」开始。安装器会先关掉正在运行的旧 NightDisplay，并把旧版本清理到回收站。
+WelcomeLabel2=只要 3 步，大约 1 分钟：%n%n  ① 自动清理旧版本（旧进程、旧注册表、旧文件进回收站）%n  ② 安装最新版 NightDisplay %n  ③ 打开它，点「测试 15 秒」试一下%n%n全程一直点「下一步」就行，不用改任何设置。
+FinishedLabel=装好了！接下来这样用：%n%n  1. 点「完成」，NightDisplay 会自动打开（桌面上也有图标）。%n  2. 第一次打开会弹一次「是否允许更改」，点「是」——这是安装虚拟屏，远程才能继续用。%n  3. 先点「测试 15 秒」：屏幕黑一会儿再自己亮。%n  4. 默认每天 19:30 熄屏、次日 10:30 亮屏，可在「时段」里改。%n  5. 随时同时按住 C + K 约 0.3 秒：熄屏 / 亮屏切换。%n  6. 关掉窗口它会躲到右下角托盘，开机自动运行。%n%n屏幕亮不回来？开始菜单里点「恢复并暂停 NightDisplay」。
 [Files]
 Source: "..\dist\NightDisplay.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
@@ -52,6 +55,9 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var Code: Integer;
 begin
   Result := '';
+  WizardForm.PreparingLabel.Caption := '第 1 步：正在关闭旧进程、清理旧版本……';
+  WizardForm.PreparingLabel.Visible := True;
+  WizardForm.Repaint;
   ExtractTemporaryFile('cleanup_old.ps1');
   Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
     '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + ExpandConstant('{tmp}\cleanup_old.ps1') +
