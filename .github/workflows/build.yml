@@ -56,6 +56,7 @@ jobs:
   build-windows:
     needs: test-windows
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -107,6 +108,7 @@ jobs:
           iscc packaging/windows.iss
           test -f NightDisplay-Windows-x64-Setup.exe
       - name: Installer cleans old versions (silent upgrade)
+        timeout-minutes: 8
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -122,13 +124,22 @@ jobs:
           Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' 'NightDisplay_old' "`"$old\gone.exe`" --tray"
           $dl = "$env:USERPROFILE\Downloads"; New-Item -ItemType Directory -Force $dl | Out-Null
           Set-Content "$dl\NightDisplay-3.0.1-Setup.exe" 'x'
-          $p = Start-Process "$old\NightDisplay.exe" -ArgumentList '/t','600','/nobreak' -PassThru -WindowStyle Hidden
+          # 假进程只挂 60 秒，避免清理失败时整步干等 10 分钟
+          $p = Start-Process "$old\NightDisplay.exe" -ArgumentList '/t','60','/nobreak' -PassThru -WindowStyle Hidden
           Start-Sleep 1
           foreach ($round in 1..2) {
-            $i = Start-Process .\NightDisplay-Windows-x64-Setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LOG=setup.log' -PassThru -Wait
-            Get-Content setup.log | Select-String 'cleanup|Exit code' | Out-Host
+            $i = Start-Process .\NightDisplay-Windows-x64-Setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LOG=setup.log' -PassThru
+            if (-not $i.WaitForExit(240000)) {
+              Stop-Process -Id $i.Id -Force -ErrorAction SilentlyContinue
+              Get-Content setup.log -ErrorAction SilentlyContinue | Select-Object -Last 40 | Out-Host
+              throw "setup hung >4min on round $round"
+            }
+            Get-Content setup.log -ErrorAction SilentlyContinue | Select-String 'cleanup|Exit code' | Out-Host
             if ($i.ExitCode -ne 0) { throw "setup exit $($i.ExitCode)" }
             if (-not (Test-Path "$env:LOCALAPPDATA\Programs\NightDisplay\NightDisplay.exe")) { throw 'not installed' }
+            # 安装后若托盘/主程序被拉起，先杀掉再进下一轮，避免文件锁拖死第二轮
+            Get-Process NightDisplay -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep 1
           }
           if (Get-Process -Id $p.Id -ErrorAction SilentlyContinue) { throw 'old process alive' }
           if (Test-Path $old) { throw 'old dir left' }

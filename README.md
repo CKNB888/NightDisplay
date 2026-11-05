@@ -202,7 +202,11 @@ GitHub Actions 只跑 Windows：Windows 2022 和 Windows latest 单元测试 + V
 
 ### 3.0.19
 
-- README 界面图换成 Windows CI 真实 **3.0.19** 窗口（Actions run [42018348119](https://github.com/CKNB888/NightDisplay/actions/runs/42018348119) `ui-shots-windows-latest`），侧栏为 v3.0.19，设置页含 C+K 快捷键；不是 3.0.15/3.0.18 旧图。
+- **装完即用**：默认开启每天自动黑屏，19:30 → 次日 10:30（本机时区），不用再点「启用」。
+- **时间页**：单段 / 多段切换；小时、分钟用 24 小时下拉选，不能手打；多段可单独开关，段与段之间是亮屏空隙。
+- **暂停不再改时间**：暂停后再启用，仍按已保存的 start/end，不会把到点时间推迟。
+- 关窗口进托盘 + Windows 守护任务；静默更新会先跑 cleanup_old.ps1 再 /VERYSILENT 安装。
+- README 界面图为 Windows CI 真实窗口（Actions run [42018348119](https://github.com/CKNB888/NightDisplay/actions/runs/42018348119) `ui-shots-windows-latest`）；发版前会再换成含单段/多段的最新截图。
 - **自动检查更新（Windows）**：启动约 3 秒后查 GitHub Releases Latest；有新版只问一次「立即更新？」。确认后自动下载官方 Setup、复用 `cleanup_old.ps1` 清旧进程/注册表/残留，再 `/VERYSILENT` 静默安装并拉起新版。设置里「检查更新」同样。
 - **点 X 强制后台**：关闭窗口只进托盘；托盘起不来时不会把窗口藏死。Windows 注册 `NightDisplay_Watchdog`（每 5 分钟）：常驻进程挂了会再拉 `--tray`；托盘「退出」会写标记，守护不再拉起，直到你再次打开。
 
