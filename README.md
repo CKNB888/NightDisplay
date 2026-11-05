@@ -10,12 +10,12 @@
 
 作者：传康Kk。赞助：微信 1837620622（请备注来意）。
 
-[下载 3.0.17](https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.17) · [所有版本](https://github.com/CKNB888/NightDisplay/releases) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
+[下载 3.0.18](https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.18) · [所有版本](https://github.com/CKNB888/NightDisplay/releases) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
 
 | 下载 | 说明 |
 |---|---|
-| [NightDisplay-Windows-x64-Setup.exe](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.17/NightDisplay-Windows-x64-Setup.exe) | Windows 10 2004+/11 安装版，按当前用户安装 |
-| [NightDisplay-Windows-x64.zip](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.17/NightDisplay-Windows-x64.zip) | 免安装版，解压即用 |
+| [NightDisplay-Windows-x64-Setup.exe](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.18/NightDisplay-Windows-x64-Setup.exe) | Windows 10 2004+/11 安装版，按当前用户安装 |
+| [NightDisplay-Windows-x64.zip](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.18/NightDisplay-Windows-x64.zip) | 免安装版，解压即用 |
 
 ## 适合什么场景
 
@@ -25,14 +25,14 @@
 
 ## 界面
 
-![NightDisplay 3.0.17 界面巡览（Windows 真实窗口）](docs/promo/ui-tour.gif)
+![NightDisplay 3.0.18 界面巡览（Windows 真实窗口）](docs/promo/ui-tour.gif)
 
-深色、圆角卡片、左侧栏的 Mac 风格界面。上面的动图和下面的截图，都是 GitHub Actions 的 Windows 机器上运行真实程序窗口截下来的（`tools/capture_ui.py`），不是效果图。
+深色、圆角卡片、左侧栏的 Mac 风格界面。上面的动图和下面的截图，都是 GitHub Actions 的 Windows 机器上运行 **3.0.18** 真实程序窗口截下来的（`tools/capture_ui.py`），不是效果图。侧栏版本号、设置里的「黑屏快捷键」等，都和当前安装包一致。
 
 | 概览：倒计时圆环 | 黑屏中：距离亮屏 |
 |---|---|
 | ![概览](docs/screenshots/home.png) | ![黑屏中](docs/screenshots/home-night.png) |
-| **时间：步进器 + 开关** | **设置：其他时段、按键、开关** |
+| **时间：步进器 + 开关** | **设置：其他时段、C+K 快捷键、开关** |
 | ![时间](docs/screenshots/schedule.png) | ![设置](docs/screenshots/settings.png) |
 
 ## 日常使用
@@ -191,6 +191,10 @@ GitHub Actions 只跑 Windows：Windows 2022 和 Windows latest 单元测试 + V
 云端 VM 和 CI 没有你的实际一体机、UU/ToDesk 会话及真实背光控制。它们能验证操作系统接口、恢复和打包流程，不能代替硬件兼容性测试。没有跑过的机型和平台不标注为“已保证兼容”。
 
 ## 更新记录
+
+### 3.0.18
+
+- README 界面图全部换成 Windows CI 上真实运行截下的 **3.0.18** 窗口（概览 / 黑屏中 / 时间 / 设置 + 巡览 GIF），设置页能看到「黑屏快捷键」C + K。不是 3.0.15 那批旧图。
 
 ### 3.0.17
 
