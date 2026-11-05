@@ -1,6 +1,6 @@
 [project]
 name = "nightdisplay"
-version = "3.0.16"
+version = "3.0.17"
 description = "Windows 10/11 屏幕防窥：到点本地纯黑、远程照常用（虚拟显示器 VDD）"
 readme = "README.md"
 license = "MIT"

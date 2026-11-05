@@ -1,5 +1,7 @@
-#define AppVersion "3.0.16"
+#define AppVersion "3.0.17"
 [Setup]
+CloseApplications=force
+RestartApplications=no
 MinVersion=10.0
 AppId={{C777459D-E0F3-45A3-96D4-83DC47EE3562}
 AppName=NightDisplay
@@ -35,6 +37,7 @@ Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\NOTICE.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\tools\Recover.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\third-party-licenses\*"; DestDir: "{app}\third-party-licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "cleanup_old.ps1"; Flags: dontcopy
 [Icons]
 Name: "{group}\NightDisplay"; Filename: "{app}\NightDisplay.exe"
 Name: "{group}\恢复并暂停 NightDisplay"; Filename: "{app}\Recover.cmd"
@@ -44,6 +47,26 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [Run]
 Filename: "{app}\NightDisplay.exe"; Description: "打开 NightDisplay"; Flags: nowait postinstall skipifsilent
 [Code]
+const AppIdStr = '{C777459D-E0F3-45A3-96D4-83DC47EE3562}';
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var Code: Integer;
+begin
+  Result := '';
+  ExtractTemporaryFile('cleanup_old.ps1');
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + ExpandConstant('{tmp}\cleanup_old.ps1') +
+    '" -NewDir "' + WizardDirValue + '" -SetupExe "' + ExpandConstant('{srcexe}') + '" -AppId "' + AppIdStr + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, Code);
+  if Code = 3 then
+    Result := '旧的 NightDisplay 进程没能结束。请重启电脑后再安装。';
+end;
+procedure CurStepChanged(CurStep: TSetupStep);
+var Code: Integer;
+begin
+  { 计划任务按新路径重建，旧目录被删后也不会留下指向旧 exe 的任务。 }
+  if CurStep = ssPostInstall then
+    Exec(ExpandConstant('{app}\NightDisplay.exe'), '--action reconcile', '', SW_HIDE, ewNoWait, Code);
+end;
 function InitializeUninstall(): Boolean;
 var Code: Integer;
 begin

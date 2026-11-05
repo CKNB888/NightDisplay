@@ -105,6 +105,39 @@ jobs:
           choco install innosetup --version=6.7.1 -y --no-progress
           iscc packaging/windows.iss
           test -f NightDisplay-Windows-x64-Setup.exe
+      - name: Installer cleans old versions (silent upgrade)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # 伪造一个旧版本：另一个目录 + 卸载登记 + 正在运行的进程 + 失效 Run 值 + 下载目录旧安装包
+          $old = "$env:LOCALAPPDATA\Programs\NightDisplay-3.0.1"
+          New-Item -ItemType Directory -Force $old | Out-Null
+          Copy-Item C:\Windows\System32\timeout.exe "$old\NightDisplay.exe"
+          $k = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\NightDisplayOld_is1'
+          New-Item -Force $k | Out-Null
+          Set-ItemProperty $k DisplayName 'NightDisplay 3.0.1'
+          Set-ItemProperty $k InstallLocation $old
+          Set-ItemProperty $k UninstallString "`"$old\missing-unins000.exe`""
+          Set-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' 'NightDisplay_old' "`"$old\gone.exe`" --tray"
+          $dl = "$env:USERPROFILE\Downloads"; New-Item -ItemType Directory -Force $dl | Out-Null
+          Set-Content "$dl\NightDisplay-3.0.1-Setup.exe" 'x'
+          $p = Start-Process "$old\NightDisplay.exe" -ArgumentList '/t','600','/nobreak' -PassThru -WindowStyle Hidden
+          Start-Sleep 1
+          foreach ($round in 1..2) {
+            $i = Start-Process .\NightDisplay-Windows-x64-Setup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LOG=setup.log' -PassThru -Wait
+            Get-Content setup.log | Select-String 'cleanup|Exit code' | Out-Host
+            if ($i.ExitCode -ne 0) { throw "setup exit $($i.ExitCode)" }
+            if (-not (Test-Path "$env:LOCALAPPDATA\Programs\NightDisplay\NightDisplay.exe")) { throw 'not installed' }
+          }
+          if (Get-Process -Id $p.Id -ErrorAction SilentlyContinue) { throw 'old process alive' }
+          if (Test-Path $old) { throw 'old dir left' }
+          if (Test-Path $k) { throw 'old uninstall key left' }
+          if ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run').NightDisplay_old) { throw 'stale Run left' }
+          if (Test-Path "$dl\NightDisplay-3.0.1-Setup.exe") { throw 'old setup left' }
+          $n = @(Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' | Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -like 'NightDisplay*' }).Count
+          if ($n -ne 1) { throw "uninstall entries = $n" }
+          Get-Process NightDisplay -ErrorAction SilentlyContinue | Stop-Process -Force
+          Write-Output 'cleanup OK'
       - uses: actions/upload-artifact@v4
         with:
           name: NightDisplay-Windows-x64
