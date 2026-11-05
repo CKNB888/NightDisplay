@@ -422,7 +422,7 @@ class MainWindow:
             hl = tk.Frame(hrow, bg=T.CARD)
             hl.pack(side="left")
             T.label(hl, "黑屏快捷键", font="ND.Bold").pack(anchor="w")
-            T.label(hl, "白天同时按住立刻黑屏，再按一次恢复。藏到托盘也有效。", font="ND.Small",
+            T.label(hl, "按一次黑屏，再按一次亮屏。", font="ND.Small",
                     fg=T.SUB).pack(anchor="w")
             cur = cfg.get("night_hotkey", ["C", "K"])
             self.hotkey_var = tk.StringVar(value=chord.fmt(cur) if cur else "关闭")
