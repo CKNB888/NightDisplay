@@ -202,6 +202,7 @@ GitHub Actions 只跑 Windows：Windows 2022 和 Windows latest 单元测试 + V
 
 ### 3.0.19
 
+- README 界面图换成 Windows CI 真实 **3.0.19** 窗口（Actions run [42018348119](https://github.com/CKNB888/NightDisplay/actions/runs/42018348119) `ui-shots-windows-latest`），侧栏为 v3.0.19，设置页含 C+K 快捷键；不是 3.0.15/3.0.18 旧图。
 - **自动检查更新（Windows）**：启动约 3 秒后查 GitHub Releases Latest；有新版只问一次「立即更新？」。确认后自动下载官方 Setup、复用 `cleanup_old.ps1` 清旧进程/注册表/残留，再 `/VERYSILENT` 静默安装并拉起新版。设置里「检查更新」同样。
 - **点 X 强制后台**：关闭窗口只进托盘；托盘起不来时不会把窗口藏死。Windows 注册 `NightDisplay_Watchdog`（每 5 分钟）：常驻进程挂了会再拉 `--tray`；托盘「退出」会写标记，守护不再拉起，直到你再次打开。
 
