@@ -18,6 +18,6 @@ ZIP SHA-256：`e24210692b442b39af763536330ce78b423f19342b7a7792c26de3944e418b3a`
 
 ## 设计与商标
 
-RustDesk 的虚拟屏和隐私模式只作为思路参考。Windows 接口依据微软公开文档实现。UUyc-companion 仅作为 macOS 显示方案的调研参考；当前 macOS 路径使用系统基础关屏。
+RustDesk 的虚拟屏和隐私模式只作为思路参考。Windows 接口依据微软公开文档实现。UUyc-companion 曾作为 macOS 显示方案的调研参考；macOS / Linux 已放弃，正式产品只做 Windows 10/11。
 
 NightDisplay 与 UU 远程、ToDesk、RustDesk 没有隶属关系，不使用它们的标识或素材，也不注入或修改其客户端。

@@ -543,7 +543,10 @@ def go_day(overlay_cb=None, mode=None, raise_errors=True):
     real = real or "screen_off"
     log("恢复白天显示（上次夜间模式=%s）" % real)
     errors = []
-    if overlay_cb:
+    # 仅虚拟屏：先接回实体屏，再揭黑幕。先揭再改拓扑时，实体屏亮起会先闪一下桌面。
+    # 防窥黑幕模式仍先揭（黑幕本身就是夜间画面）。
+    defer_uncover = bool(overlay_cb) and real == "virtual_only"
+    if overlay_cb and not defer_uncover:
         try:
             if overlay_cb(False) is not True:
                 raise RuntimeError("黑幕未确认关闭")
@@ -557,6 +560,18 @@ def go_day(overlay_cb=None, mode=None, raise_errors=True):
             restore_display()
         except Exception as e:
             errors.append(str(e))
+        if defer_uncover:
+            try:
+                # 拓扑变了，按新桌面尺寸再盖一次，实体屏全程盖着，再揭开。
+                with contextlib.suppress(Exception):
+                    try:
+                        overlay_cb(True, hide_cursor=False)
+                    except TypeError:
+                        overlay_cb(True)
+                if overlay_cb(False) is not True:
+                    raise RuntimeError("黑幕未确认关闭")
+            except Exception as e:
+                errors.append(str(e))
     try:
         screen_on()
     except Exception as e:

@@ -1,10 +1,10 @@
-﻿#define AppVersion "3.0.15"
+#define AppVersion "3.0.16"
 [Setup]
 MinVersion=10.0
 AppId={{C777459D-E0F3-45A3-96D4-83DC47EE3562}
 AppName=NightDisplay
 AppVersion={#AppVersion}
-; Windows 文件属性要四段数字。向导和关于里仍显示 3.0.11。
+; Windows 文件属性要四段数字。向导和关于里显示 AppVersion。
 VersionInfoVersion={#AppVersion}.0
 VersionInfoProductVersion={#AppVersion}.0
 AppPublisher=传康Kk

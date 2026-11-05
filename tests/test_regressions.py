@@ -1353,3 +1353,45 @@ def test_hotkey_toggle_respects_lock(monkeypatch):
     monkeypatch.setattr(app, "load", lambda: {"state": "day"})
     app.hotkey_toggle(calls.append)
     assert calls == ["day", {"action": "night", "mode": "auto"}]
+
+
+def test_virtual_go_day_restores_under_cover(monkeypatch):
+    """仅虚拟屏回白天：先接实体屏，再揭黑幕，避免实体屏先闪桌面。"""
+    monkeypatch.setattr(B, "IS_WIN", True)
+    core.update(state="night", night_mode="virtual_only", keep_awake=False)
+    order = []
+
+    def restore():
+        order.append("restore")
+
+    def overlay(on, hide_cursor=True):
+        del hide_cursor
+        order.append(("cover", on))
+        return True
+
+    monkeypatch.setattr(B, "restore_display", restore)
+    monkeypatch.setattr(B, "screen_on", lambda: order.append("screen_on"))
+    monkeypatch.setattr("nightdisplay.win_power.restore", lambda: order.append("power"))
+    monkeypatch.setattr(B, "keep_awake", lambda *a, **k: None)
+    assert B.go_day(overlay) == "virtual_only"
+    assert order == ["restore", ("cover", True), ("cover", False), "screen_on", "power"]
+    assert core.load()["state"] == "day"
+
+
+def test_overlay_go_day_still_uncovers_first(monkeypatch):
+    """防窥黑幕回白天：黑幕就是夜间画面，仍先揭再唤醒。"""
+    monkeypatch.setattr(B, "IS_WIN", True)
+    core.update(state="night", night_mode="overlay", keep_awake=False)
+    order = []
+
+    def overlay(on, hide_cursor=True):
+        del hide_cursor
+        order.append(("cover", on))
+        return True
+
+    monkeypatch.setattr(B, "restore_display", lambda: order.append("restore"))
+    monkeypatch.setattr(B, "screen_on", lambda: order.append("screen_on"))
+    monkeypatch.setattr("nightdisplay.win_power.restore", lambda: order.append("power"))
+    monkeypatch.setattr(B, "keep_awake", lambda *a, **k: None)
+    assert B.go_day(overlay) == "overlay"
+    assert order == [("cover", False), "screen_on", "power"]

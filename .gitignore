@@ -18,3 +18,8 @@ qa-evidence/
 third-party-licenses/
 
 .build-env/
+
+# Leftover from abandoned Rust/Tauri experiments — do not resurrect.
+crates/
+target/
+uv.lock

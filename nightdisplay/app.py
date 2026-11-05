@@ -731,8 +731,6 @@ def hotkey_toggle(dispatch):
     """黑屏快捷键：白天立刻黑屏，黑屏中恢复。锁定时交给解锁组合键处理，避免两边同时动作。"""
     if is_locked():
         return None
-    if is_locked():
-        return None  # 锁定时交给解锁组合键处理，避免两边同时动作
     if load().get("state") == "night":
         return dispatch("day")
     return dispatch({"action": "night", "mode": "auto"})
@@ -970,10 +968,12 @@ def run_app(show_window=True, selftest=0):
 
         def tick():
             night = False
+            night_mode = ""
             try:
                 reconcile(overlay, repair_cover)
                 c = load()
                 night = c.get("state") == "night"
+                night_mode = c.get("night_mode") or ""
                 if not c.get("enabled") and night:
                     B.ensure_night(cover=repair_cover)
             except Exception as e:
@@ -982,9 +982,15 @@ def run_app(show_window=True, selftest=0):
                 # 黑幕窗口被系统拆掉后要重新盖上。光标也要每轮再藏一次。
                 maintain_overlay()
                 sync_night_window(refresh_cursor=True)
-            # 夜间每秒检查（远程结束后实体屏被顶亮要尽快盖回）；白天 2 秒一轮，
-            # 弱机上少一半磁盘读和唤醒。时段边界误差仍在 2 秒内。
-            root.after(1000 if night else 2000, tick)
+            # 仅虚拟屏夜间 0.5 秒一轮：远程结束后实体屏被顶亮时更快盖回。
+            # 其他夜间 1 秒；白天 2 秒，弱机上少一半磁盘读和唤醒。
+            if night and night_mode == "virtual_only":
+                delay = 500
+            elif night:
+                delay = 1000
+            else:
+                delay = 2000
+            root.after(delay, tick)
         root.after(1000, tick)
         # A destroyed overlay cannot still be treated as active after a restart.
         if load().get("state") == "night" and load().get("night_mode") == "overlay":

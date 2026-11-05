@@ -10,12 +10,12 @@
 
 作者：传康Kk。赞助：微信 1837620622（请备注来意）。
 
-[下载 3.0.15](https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.15) · [所有版本](https://github.com/CKNB888/NightDisplay/releases) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
+[下载 3.0.16](https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.16) · [所有版本](https://github.com/CKNB888/NightDisplay/releases) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
 
 | 下载 | 说明 |
 |---|---|
-| [NightDisplay-Windows-x64-Setup.exe](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.15/NightDisplay-Windows-x64-Setup.exe) | Windows 10 2004+/11 安装版，按当前用户安装 |
-| [NightDisplay-Windows-x64.zip](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.15/NightDisplay-Windows-x64.zip) | 免安装版，解压即用 |
+| [NightDisplay-Windows-x64-Setup.exe](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.16/NightDisplay-Windows-x64-Setup.exe) | Windows 10 2004+/11 安装版，按当前用户安装 |
+| [NightDisplay-Windows-x64.zip](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.16/NightDisplay-Windows-x64.zip) | 免安装版，解压即用 |
 
 ## 适合什么场景
 
@@ -25,9 +25,9 @@
 
 ## 界面
 
-![NightDisplay 3.0.14 界面巡览（Windows 真实窗口）](docs/promo/ui-tour.gif)
+![NightDisplay 3.0.16 界面巡览（Windows 真实窗口）](docs/promo/ui-tour.gif)
 
-3.0.14 换成深色、圆角卡片、左侧栏的 Mac 风格界面。上面的动图和下面的截图，都是 GitHub Actions 的 Windows 机器上运行真实程序窗口截下来的（`tools/capture_ui.py`），不是效果图。
+深色、圆角卡片、左侧栏的 Mac 风格界面。上面的动图和下面的截图，都是 GitHub Actions 的 Windows 机器上运行真实程序窗口截下来的（`tools/capture_ui.py`），不是效果图。
 
 | 概览：倒计时圆环 | 黑屏中：距离亮屏 |
 |---|---|
@@ -75,23 +75,14 @@ NightDisplay 只负责显示、电源和时间计划。远程连接仍由 UU、T
 |---|---|---|
 | Windows 10/11 x64 | `NightDisplay-Windows-x64-Setup.exe` | 双击安装。向导是中文，第一次不用选文件夹。装完后桌面有 NightDisplay，安装结束会自己打开。驱动随包内置，首次打开自动装好；驱动进系统才弹一次管理员确认，点了取消也照常打开、自动用黑幕模式。开机登录后会在右下角自己运行，到了设定时间就黑屏。点窗口右上角的关闭只是藏起来。 |
 | Windows 免安装 | `NightDisplay-Windows-x64.zip` | 解压到固定目录，运行 `NightDisplay.exe`。这个包不会在桌面建图标。开启计划后不要移动程序。 |
-| macOS Apple 芯片 | `NightDisplay-macOS-arm64.dmg` | 打开后拖入 Applications。也提供应用 ZIP。这个文件只在 Apple 芯片托管机完成构建后才会出现在 Release；正式版里没有它时，这一平台不算已发布。 |
-| macOS Intel | `NightDisplay-macOS-x64.dmg` | 同上。 |
-| Linux x64 | `NightDisplay-Linux-x64.tar.gz` | 解压后运行 `./NightDisplay`，需要 X11。构建基线为 Ubuntu 22.04，glibc 至少 2.35。 |
 
-安装包尚未使用商业代码签名或 Apple 公证证书。源码、构建日志和校验值应一并核对，不能把未签名当成已经通过平台认证。
+安装包尚未使用商业代码签名。源码、构建日志和校验值应一并核对，不能把未签名当成已经通过平台认证。**不提供 macOS / Linux 安装包**：没有可用的内置虚拟屏路径，这两个平台已放弃。
 
-源码运行：
+源码运行（Windows）：
 
 ```bash
 python -m pip install '.[tray]'
 python -m nightdisplay
-```
-
-Linux 另外需要 tkinter、X11 工具和中文字体，例如 Ubuntu：
-
-```bash
-sudo apt install python3-tk x11-xserver-utils fonts-noto-cjk
 ```
 
 ## 第一次配置
@@ -122,20 +113,20 @@ Windows 夜间使用临时电源计划，关闭该计划下的自动睡眠、自
 
 常驻进程定时检查显示输出和唤醒进程。虚拟输出发生改变时尝试修复，唤醒进程失效时重新启动；无法确认成功时报告错误并尝试恢复。断电、关机、低电量强制保护及系统或组织策略无法由应用保证。
 
-## 各平台能力
+## Windows 能力
 
-| 能力 | Windows | macOS | Linux |
-|---|---|---|---|
-| 每日多个时间段 | 计划任务 + 常驻检查 | LaunchAgent + 常驻检查 | systemd 用户定时器 + 常驻检查 |
-| 常驻虚拟屏 | 包含安装器，首次需要管理员权限 | 暂无内置虚拟显示驱动 | 使用已连接的 X11 虚拟输出 |
-| 防窥黑幕 | Windows 10 2004 及以上 | 未实现 | 未实现 |
-| 基础关屏 | 支持，输入会唤醒 | `pmset`，输入会唤醒 | X11 DPMS，输入会唤醒 |
-| 防睡眠 | 临时电源计划 + Windows 唤醒请求 | `caffeinate` | `systemd-inhibit`，需要 logind |
-| 显示备份与还原 | 支持，带多级恢复与目标校验 | 基础关屏不修改显示布局 | 支持 xrandr 备份与还原 |
-| 后台入口 | 系统托盘 | 菜单栏，需 macOS 真机复核 | 取决于桌面托盘支持 |
-| 本地组合键 | 支持 | 需要输入监控权限 | 需要 X11 |
+| 能力 | 说明 |
+|---|---|
+| 每日多个时间段 | 计划任务 + 常驻检查 |
+| 常驻虚拟屏 | 安装器内置 IddCx VDD，首次需要管理员权限 |
+| 防窥黑幕 | Windows 10 2004（19041）及以上；更老的 Win10 自动跳过 |
+| 基础关屏 | 支持，输入会唤醒（虚拟屏不可用时的降级） |
+| 防睡眠 | 临时电源计划 + Windows 唤醒请求 |
+| 显示备份与还原 | 支持，带多级恢复与目标校验 |
+| 后台入口 | 系统托盘 |
+| 黑屏快捷键 / 解锁组合键 | 默认 C + K，可自定义；`GetAsyncKeyState` 轮询，不装钩子 |
 
-macOS 当前自动降级为基础关屏，不能承诺本地动鼠标也不亮。Linux Wayland 不提供通用的真实输出控制，程序会明确报错，避免误把 XWayland 虚拟布局当成实体屏控制。
+**不支持 macOS / Linux / Windows 7 / 8 / 8.1。** macOS 没有对等的内置虚拟屏；Win7/8 装不上 Python 3.12 与 IddCx VDD。
 
 Windows 防窥黑幕依赖系统的 `WDA_EXCLUDEFROMCAPTURE`。设置成功只能说明 Windows 接受了请求，不能证明每一种远程采集方式都兼容。使用 UU、ToDesk 的实际画面仍需分别验证。
 
@@ -180,8 +171,6 @@ NightDisplay --action uninstall-vdd
 | 平台 | 默认目录 |
 |---|---|
 | Windows | `%LOCALAPPDATA%\NightDisplay` |
-| macOS | `~/Library/Application Support/NightDisplay` |
-| Linux | `$XDG_STATE_HOME/nightdisplay`，未设置时为 `~/.local/state/nightdisplay` |
 
 包含 `config.json`、`backups`、`logs` 及运行时会话文件。日志保留最近三十天。报告问题时可以提供版本、`selfcheck` 输出和对应日志，无需提供远程账号或密码。
 
@@ -197,13 +186,21 @@ python -m build --wheel
 
 Windows 集成检查增加 `--vdd`。打包后的 EXE 由 `tools/qa_windows.py` 进行实际测试、组合键解锁、应急恢复、计划注册和卸载检查，不预填成功记录。
 
-GitHub Actions 按平台分开跑。Windows 2022 和 Windows latest 的测试通过后，马上构建安装器与免安装包，并做打包产物 QA，不等 macOS，也不等 Linux。macOS Intel、macOS Apple 芯片、Ubuntu 各自测试通过后各自上传安装包；某一台分不到机器，只影响那一个平台。推送 `v*` 标签且 Windows QA 通过后，正式 Release 先发布 Windows 安装包。macOS 或 Linux 若随后构建成功，再把各自的包补进同一个 Release。工作流也支持手动运行。
+GitHub Actions 只跑 Windows：Windows 2022 和 Windows latest 单元测试 + VDD 集成测试 → 打包安装器与免安装包 → 对打包产物做 3 轮 QA。全部通过后，推送 `v*` 标签才会发正式 Release（只含 Windows）。macOS / Linux 构建和发版已从工作流移除。工作流也支持手动运行。
 
 云端 VM 和 CI 没有你的实际一体机、UU/ToDesk 会话及真实背光控制。它们能验证操作系统接口、恢复和打包流程，不能代替硬件兼容性测试。没有跑过的机型和平台不标注为“已保证兼容”。
 
 ## 更新记录
 
+### 3.0.16
+
+- 仅虚拟屏回白天：先在黑幕下把实体屏接回来，再揭黑幕，减少亮屏时闪一下桌面（进夜间失败回滚本来就是这个顺序，回白天之前反了）。
+- 仅虚拟屏夜间轮询从 1 秒改为 0.5 秒，远程结束后实体屏被顶亮时更快盖回（仍可能有最多约半秒可见）。
+- CI 改为只跑 Windows 测试 / 打包 / QA / Release；macOS / Linux 构建与发版已去掉，避免无关红灯挡视线。
+- README、安装说明、仓库描述与产品一致：只支持 Windows 10/11；快捷键重复判断清理。
+
 ### 3.0.15
+
 
 - 新增黑屏快捷键：默认同时按住 C + K，按一次黑屏，再按一次亮屏；托盘后台也有效。可以在设置里改成别的组合或关掉，保存后马上生效。锁定时不绕过解锁按键。
 - 虚拟屏修复：“仅虚拟屏”模式切换前先盖上黑幕，以前这一步会把系统光标也藏起来，远程画面里可能看不到鼠标指针，直到下一次检查。现在这一步只盖黑，不藏光标。

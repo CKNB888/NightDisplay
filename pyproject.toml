@@ -1,7 +1,7 @@
 [project]
 name = "nightdisplay"
-version = "3.0.15"
-description = "每天定时让本地屏幕变黑、远程照常可用（Windows/macOS/Linux）"
+version = "3.0.16"
+description = "Windows 10/11 屏幕防窥：到点本地纯黑、远程照常用（虚拟显示器 VDD）"
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "传康Kk", email = "CKNB888@users.noreply.github.com" }]
