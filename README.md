@@ -4,14 +4,18 @@
 
 默认每天 **19:30 自动黑屏，次日 10:30 自动亮屏**（跨午夜，按电脑本地时区），可自行修改，也可以再加几段时间。
 
+> **只支持 Windows。** 远程照常用、本地纯黑，靠的是 Windows 的虚拟显示器驱动（IddCx VDD）和 `SetDisplayConfig` 显示拓扑。macOS 没有同样的虚拟屏方案，Linux 也没有通用的做法，所以这两个平台只剩“基础关屏”，不提供虚拟屏防窥，也不提供 C + K 快捷键，不再投入开发。
+>
+> **系统要求：** Windows 10 或 11，64 位（安装器会拒绝更老的系统）。黑幕模式需要 Windows 10 2004（19041）及以上，老一点的 Win10 会自动跳过黑幕模式，只用虚拟屏或关屏。**Windows 7 / 8 / 8.1 不支持**：程序基于 Python 3.12，而虚拟显示器驱动（IddCx）要 Windows 10 才有，这两样在 Win7 上都装不上，所以不会假装兼容。
+
 作者：传康Kk。赞助：微信 1837620622（请备注来意）。
 
-[下载 3.0.14](https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.14) · [所有版本](https://github.com/CKNB888/NightDisplay/releases) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
+[下载 3.0.15](https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.15) · [所有版本](https://github.com/CKNB888/NightDisplay/releases) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
 
 | 下载 | 说明 |
 |---|---|
-| [NightDisplay-Windows-x64-Setup.exe](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.14/NightDisplay-Windows-x64-Setup.exe) | Windows 10 2004+/11 安装版，按当前用户安装 |
-| [NightDisplay-Windows-x64.zip](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.14/NightDisplay-Windows-x64.zip) | 免安装版，解压即用 |
+| [NightDisplay-Windows-x64-Setup.exe](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.15/NightDisplay-Windows-x64-Setup.exe) | Windows 10 2004+/11 安装版，按当前用户安装 |
+| [NightDisplay-Windows-x64.zip](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.15/NightDisplay-Windows-x64.zip) | 免安装版，解压即用 |
 
 ## 适合什么场景
 
@@ -38,6 +42,18 @@ Windows 默认优先使用常驻虚拟屏。进入夜间时，桌面只输出到
 如果虚拟屏无法使用，程序先回滚，再按系统能力尝试防窥黑幕和基础关屏。界面和日志会记录实际使用的方式。基础关屏兼容性较好，但输入会唤醒屏幕；它无法提供虚拟屏相同的效果。
 
 NightDisplay 只负责显示、电源和时间计划。远程连接仍由 UU、ToDesk 等软件提供，不绑定设备，也不限制客户端数量；远程软件自身的会话规则继续生效。
+
+## 快捷键（Windows）
+
+| 按键 | 作用 |
+|---|---|
+| 同时按住 **C + K**（约 0.3 秒） | 默认的黑屏快捷键：白天按一下立刻黑屏，黑屏中再按一次亮屏。窗口藏到托盘也有效。 |
+| **Ctrl + Alt + Shift + R** | 应急恢复：不管什么状态都把显示恢复过来。 |
+
+- 在「设置 → 黑屏快捷键」里点「改快捷键」，同时按下 2～3 个键（可以带 Ctrl / Alt / Shift），再点「保存设置」，马上生效、写进配置，重启后还在。点「关闭」可以停用。
+- 开着“黑屏锁定”时，快捷键不会绕过锁定：亮屏仍然靠「亮回来的按键」（默认也是 C + K，按住约半秒）。
+- 系统在用的组合（Alt + F4、Alt + Tab、Win + L 等）和应急恢复键不能设成黑屏快捷键，设置时会提示换一个。键检测不可用时会写进运行日志。
+- 实现方式：每 50 毫秒读一次按键状态（`GetAsyncKeyState`）。不装键盘钩子，不拦截输入，打字照常；按住 0.3 秒才触发，打字时碰巧同时按到 C 和 K 不会黑屏。
 
 ## 怎么用这个界面
 
@@ -186,6 +202,12 @@ GitHub Actions 按平台分开跑。Windows 2022 和 Windows latest 的测试通
 云端 VM 和 CI 没有你的实际一体机、UU/ToDesk 会话及真实背光控制。它们能验证操作系统接口、恢复和打包流程，不能代替硬件兼容性测试。没有跑过的机型和平台不标注为“已保证兼容”。
 
 ## 更新记录
+
+### 3.0.15
+
+- 新增黑屏快捷键：默认同时按住 C + K，按一次黑屏，再按一次亮屏；托盘后台也有效。可以在设置里改成别的组合或关掉，保存后马上生效。锁定时不绕过解锁按键。
+- 虚拟屏修复：“仅虚拟屏”模式切换前先盖上黑幕，以前这一步会把系统光标也藏起来，远程画面里可能看不到鼠标指针，直到下一次检查。现在这一步只盖黑，不藏光标。
+- 明确只支持 Windows 10/11 x64。安装器加了最低系统检查，README 写清 Win7/8 不支持的原因。macOS / Linux 不再承诺虚拟屏防窥。
 
 ### 3.0.14
 

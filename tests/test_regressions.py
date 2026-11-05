@@ -1326,3 +1326,30 @@ def test_load_retries_transient_windows_permission_error(tmp_path, monkeypatch):
     monkeypatch.setattr(builtins, "open", flaky)
     assert core.load()["start"] == "19:30"
     assert calls["n"] == 3
+
+
+def test_night_hotkey_defaults_and_validation():
+    import pytest as _pt
+
+    from nightdisplay import core
+    from nightdisplay.hotkey import DEFAULT_NIGHT_HOTKEY, validate_hotkey
+    assert core.DEFAULT["night_hotkey"] == ["C", "K"] == DEFAULT_NIGHT_HOTKEY
+    assert validate_hotkey(["c", "k"]) == ["C", "K"]
+    assert validate_hotkey(["ctrl", "alt", "k"]) == ["Ctrl", "Alt", "K"]
+    assert validate_hotkey([]) == []
+    for bad in (["C"], ["Ctrl", "Alt"], ["Alt", "F4"]):
+        with _pt.raises(ValueError):
+            validate_hotkey(bad)
+
+
+def test_hotkey_toggle_respects_lock(monkeypatch):
+    from nightdisplay import app
+    calls = []
+    monkeypatch.setattr(app, "is_locked", lambda: True)
+    assert app.hotkey_toggle(calls.append) is None and calls == []
+    monkeypatch.setattr(app, "is_locked", lambda: False)
+    monkeypatch.setattr(app, "load", lambda: {"state": "night"})
+    app.hotkey_toggle(calls.append)
+    monkeypatch.setattr(app, "load", lambda: {"state": "day"})
+    app.hotkey_toggle(calls.append)
+    assert calls == ["day", {"action": "night", "mode": "auto"}]

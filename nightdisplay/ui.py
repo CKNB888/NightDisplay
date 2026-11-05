@@ -414,6 +414,52 @@ class MainWindow:
                     self.chord_var.set(chord.fmt(held))
                 return "break"
 
+        if IS_WIN:
+            # 黑屏快捷键（只在 Windows 上有虚拟屏方案，所以只在 Windows 上显示）。
+            hk = self._card(scroll)
+            hrow = tk.Frame(hk, bg=T.CARD)
+            hrow.pack(fill="x")
+            hl = tk.Frame(hrow, bg=T.CARD)
+            hl.pack(side="left")
+            T.label(hl, "黑屏快捷键", font="ND.Bold").pack(anchor="w")
+            T.label(hl, "白天同时按住立刻黑屏，再按一次恢复。藏到托盘也有效。", font="ND.Small",
+                    fg=T.SUB).pack(anchor="w")
+            cur = cfg.get("night_hotkey", ["C", "K"])
+            self.hotkey_var = tk.StringVar(value=chord.fmt(cur) if cur else "关闭")
+            hheld = []
+            T.Button(hrow, "关闭", lambda: self.hotkey_var.set("关闭"), kind="secondary").pack(side="right")
+            T.Button(hrow, "改快捷键", lambda: hrecord(), kind="secondary").pack(side="right", padx=(0, T.S(8)))
+            tk.Label(hrow, textvariable=self.hotkey_var, font="ND.Mono", fg=T.ACCENT, bg=T.CARD).pack(
+                side="right", padx=T.S(12))
+
+            def hrecord():
+                hheld.clear()
+                self._recording["on"] = True
+                self.hotkey_var.set("请同时按下两个键")
+                self.root.bind("<KeyPress>", hdown)
+                self.root.bind("<KeyRelease>", hup)
+                self.root.focus_set()
+
+            def hdown(event):
+                if self._recording["on"]:
+                    with contextlib.suppress(ValueError):
+                        key = chord.normalize(event.keysym)
+                        if key not in hheld and len(hheld) < 3:
+                            hheld.append(key)
+                        self.hotkey_var.set(chord.fmt(hheld))
+                    return "break"
+
+            def hup(_event):
+                if self._recording["on"]:
+                    stop()
+                    if len(hheld) < 2:
+                        old = load().get("night_hotkey", ["C", "K"])
+                        self.hotkey_var.set(chord.fmt(old) if old else "关闭")
+                        messagebox.showinfo(APP, "按得太少了。请同时按住两个键，比如 C 和 K。", parent=self.root)
+                    else:
+                        self.hotkey_var.set(chord.fmt(hheld))
+                    return "break"
+
         opts = self._card(scroll)
         self.lock_var = tk.BooleanVar(value=cfg.get("lock", True))
         self.autostart_var = tk.BooleanVar(value=cfg.get("autostart_preference", cfg.get("autostart", True)))
@@ -447,6 +493,15 @@ class MainWindow:
             self._stop_recording()
             raise RuntimeError("按键还没设好。请点「改按键」，同时按住两个键，比如 C 和 K。")
         keys = chord.validate([k.strip() for k in re.split(r"[+＋]", self.chord_var.get())])
+        extra = {}
+        hv = getattr(self, "hotkey_var", None)
+        if hv is not None:
+            from .hotkey import validate_hotkey
+            if "请同时" in hv.get():
+                raise RuntimeError("黑屏快捷键还没设好。请点「改快捷键」，同时按住两个键，比如 C 和 K。")
+            text = hv.get().strip()
+            extra["night_hotkey"] = [] if text == "关闭" else validate_hotkey(
+                [k.strip() for k in re.split(r"[+＋]", text)])
         rs = []
         for item in self.extra_rows:
             p = item["picked"]
@@ -457,7 +512,7 @@ class MainWindow:
             rs.append([start, end])
         B.set_autostart(self.autostart_var.get())
         update(extra_ranges=rs, unlock_chord=keys, lock=self.lock_var.get(),
-               autostart=self.autostart_var.get(), autostart_preference=self.autostart_var.get())
+               autostart=self.autostart_var.get(), autostart_preference=self.autostart_var.get(), **extra)
         self._note("设置已保存。")
         self.show_page("home")
 

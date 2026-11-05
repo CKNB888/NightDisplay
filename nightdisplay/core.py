@@ -72,6 +72,7 @@ DEFAULT = {
     "mode": "auto",          # auto | virtual_only | overlay | screen_off
     "enabled": False,
     "unlock_chord": ["C", "K"],
+    "night_hotkey": ["C", "K"],
     "lock": True,
     "override_until": "",
     # 白天手动进入夜间后，保持到下一段计划夜间结束，避免定时检查立刻拉回白天。
@@ -195,6 +196,11 @@ def validate_config(cfg):
         # Store the normalized form so a hand-edited config such as
         # ["ctrl", "k"] works in the global key reader as well.
         cfg["unlock_chord"] = validate(cfg["unlock_chord"])
+    if "night_hotkey" in cfg:
+        from .hotkey import validate_hotkey
+        if not isinstance(cfg["night_hotkey"], list):
+            raise ValueError("黑屏快捷键应为按键列表")
+        cfg["night_hotkey"] = validate_hotkey(cfg["night_hotkey"])
     for key in ("enabled", "lock", "keep_awake", "autostart", "autostart_preference",
                 "last_test_ok", "last_test_night_ok", "test_aborted", "recovery_pending"):
         if key in cfg and not isinstance(cfg[key], bool):

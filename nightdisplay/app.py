@@ -727,24 +727,16 @@ def make_overlay(root, on_cover=None, on_fail=None):
     return cb
 
 
-def start_hotkey(root, on_hotkey):
-    if not IS_WIN:
-        return False
-    import ctypes
-    from ctypes import wintypes
+def hotkey_toggle(dispatch):
+    """黑屏快捷键：白天立刻黑屏，黑屏中恢复。锁定时交给解锁组合键处理，避免两边同时动作。"""
+    if is_locked():
+        return None
+    if is_locked():
+        return None  # 锁定时交给解锁组合键处理，避免两边同时动作
+    if load().get("state") == "night":
+        return dispatch("day")
+    return dispatch({"action": "night", "mode": "auto"})
 
-    def loop():
-        u = ctypes.windll.user32
-        if not u.RegisterHotKey(None, 1, 0x2 | 0x1 | 0x4 | 0x4000, 0x52):  # Ctrl+Alt+Shift+R
-            log("警告：全局快捷键 Ctrl+Alt+Shift+R 注册失败（可能被占用）")
-            return
-        log("全局快捷键 Ctrl+Alt+Shift+R 已注册（应急恢复）")
-        msg = wintypes.MSG()
-        while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-            if msg.message == 0x0312:
-                on_hotkey()
-    threading.Thread(target=loop, daemon=True).start()
-    return True
 
 # ---------------- 托盘 + 界面 ----------------
 
@@ -797,7 +789,7 @@ def run_app(show_window=True, selftest=0):
 
     def reveal_settings():
         # 夜间重新盖黑幕失败时，不能把设置窗口亮出来。
-        if load().get("state") == "night":
+        if is_locked():
             return
         _hide, deiconify, remembered = settings_visibility(_viewable(), False, appearance["restore"])
         appearance["restore"] = remembered
@@ -932,6 +924,8 @@ def run_app(show_window=True, selftest=0):
 
     server = ipc.Server(dispatch)
     win = None
+    hotkeys = None
+    night_key = None
     tray = None
     watcher = None
     started = False
@@ -939,7 +933,11 @@ def run_app(show_window=True, selftest=0):
         server.start()
         started = True
         root.after(0, drain)
-        start_hotkey(root, lambda: dispatch("emergency"))
+        from .hotkey import Hotkeys, NightKey
+        hotkeys = Hotkeys(lambda: dispatch("emergency"), lambda: None)
+        hotkeys.apply([])
+        night_key = NightKey(lambda: load().get("night_hotkey", ["C", "K"]),
+                             lambda: hotkey_toggle(dispatch))
         watcher = chord.Watcher(lambda: load().get("unlock_chord") or chord.DEFAULT_CHORD,
                                 lambda: dispatch("unlock"))
 
@@ -1011,6 +1009,9 @@ def run_app(show_window=True, selftest=0):
         closing.set()
         if watcher:
             watcher.stop()
+        with contextlib.suppress(Exception):
+            hotkeys.stop()
+            night_key.stop()
         if tray:
             with contextlib.suppress(Exception):
                 tray.stop()

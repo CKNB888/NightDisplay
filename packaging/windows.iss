@@ -1,5 +1,6 @@
-﻿#define AppVersion "3.0.14"
+﻿#define AppVersion "3.0.15"
 [Setup]
+MinVersion=10.0
 AppId={{C777459D-E0F3-45A3-96D4-83DC47EE3562}
 AppName=NightDisplay
 AppVersion={#AppVersion}
