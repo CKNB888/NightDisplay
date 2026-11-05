@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import time
 
 from . import APP
 from .storage import file_lock, write_json
@@ -96,11 +97,26 @@ def config_path():
     return os.path.join(home(), "config.json")
 
 
+def _read_config(path, attempts=40):
+    """读配置。Windows 上另一个进程正在替换文件时，打开会短暂拒绝访问(13)，
+    退回直接覆盖写时还可能读到半截内容。都等一下重读，不当成损坏，也不让定时检查报错。"""
+    for i in range(attempts):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except PermissionError:
+            if i == attempts - 1:
+                raise
+        except ValueError:
+            if i >= 5:
+                raise
+        time.sleep(0.025)
+
+
 def load():
     cfg = copy.deepcopy(DEFAULT)
     try:
-        with open(config_path(), encoding="utf-8") as f:
-            data = json.load(f)
+        data = _read_config(config_path())
         if not isinstance(data, dict):
             raise ValueError("配置内容必须是 JSON 对象")
         cfg.update(data)

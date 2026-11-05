@@ -1308,3 +1308,21 @@ def test_linux_bad_output_records_fall_through(monkeypatch):
     monkeypatch.setattr(L, "_run", lambda cmd: None)
     monkeypatch.setattr(L, "query", lambda: [{"name": "HDMI-1", "active": True, "connected": True}])
     assert L.restore({"outputs": [None]}, lambda *_args: None) == 2
+
+
+def test_load_retries_transient_windows_permission_error(tmp_path, monkeypatch):
+    import builtins
+
+    from nightdisplay import core
+    monkeypatch.setenv("NIGHTDISPLAY_HOME", str(tmp_path))
+    core.save(core.load())
+    real_open, calls = builtins.open, {"n": 0}
+
+    def flaky(path, *a, **k):
+        if str(path).endswith("config.json") and calls["n"] < 3:
+            calls["n"] += 1
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, *a, **k)
+    monkeypatch.setattr(builtins, "open", flaky)
+    assert core.load()["start"] == "19:30"
+    assert calls["n"] == 3
