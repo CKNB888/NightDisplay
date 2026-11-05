@@ -172,3 +172,93 @@ def test_update_url_cannot_redirect_to_arbitrary_download(monkeypatch):
     data = updates.check()
     assert data["newer"]
     assert data["url"] == "https://github.com/CKNB888/NightDisplay/releases/tag/" + tag
+
+
+def test_update_check_picks_windows_setup_asset(monkeypatch):
+    current = updates.version_tuple("v" + VERSION)
+    tag = "v%d.%d.%d" % (current[0], current[1], current[2] + 1)
+    payload = {
+        "tag_name": tag,
+        "prerelease": False,
+        "draft": False,
+        "assets": [
+            {"name": "notes.txt", "browser_download_url": "https://github.com/CKNB888/NightDisplay/releases/download/%s/notes.txt" % tag, "size": 10},
+            {"name": updates.SETUP_NAME,
+             "browser_download_url": "https://github.com/CKNB888/NightDisplay/releases/download/%s/%s" % (tag, updates.SETUP_NAME),
+             "size": 1234567},
+        ],
+    }
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self, limit):
+            return json.dumps(payload).encode()
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", lambda *a, **kw: Response())
+    data = updates.check()
+    assert data["newer"]
+    assert data["setup_url"].endswith(updates.SETUP_NAME)
+    assert data["setup_size"] == 1234567
+
+
+def test_download_rejects_non_github_url(tmp_path):
+    import pytest
+    with pytest.raises(RuntimeError, match="GitHub"):
+        updates.download_setup("https://evil.example/NightDisplay-Windows-x64-Setup.exe", dest_dir=str(tmp_path))
+
+
+def test_allowed_url_hosts():
+    assert updates._allowed_url("https://github.com/CKNB888/NightDisplay/releases/download/v1/x.exe")
+    assert updates._allowed_url("https://objects.githubusercontent.com/github-production-release-asset-2e65be/x")
+    assert not updates._allowed_url("http://github.com/CKNB888/NightDisplay/x.exe")
+    assert not updates._allowed_url("https://evil.example/x.exe")
+
+
+def test_user_stopped_flag(tmp_path, monkeypatch):
+    monkeypatch.setenv("NIGHTDISPLAY_HOME", str(tmp_path))
+    assert not B.user_stopped()
+    B.mark_user_stopped()
+    assert B.user_stopped()
+    B.clear_user_stopped()
+    assert not B.user_stopped()
+
+
+def test_cleanup_script_is_shipped():
+    path = updates.cleanup_script_path()
+    assert path and Path(path).is_file()
+    assert Path(path).name == "cleanup_old.ps1"
+    text = Path(path).read_text(encoding="utf-8")
+    assert "Kill-All" in text and "Recycle" in text
+
+
+def test_install_silent_rejects_non_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr(updates.sys, "platform", "linux")
+    setup = tmp_path / updates.SETUP_NAME
+    setup.write_bytes(b"x" * 200)
+    import pytest
+    with pytest.raises(RuntimeError, match="Windows"):
+        updates.install_silent(str(setup))
+
+
+def test_install_silent_builds_helper(monkeypatch, tmp_path):
+    monkeypatch.setattr(updates.sys, "platform", "win32")
+    setup = tmp_path / updates.SETUP_NAME
+    setup.write_bytes(b"x" * 200)
+    seen = {}
+    import subprocess as sp
+
+    class FakePopen:
+        def __init__(self, cmd, **kw):
+            seen["cmd"] = cmd
+            seen["kw"] = kw
+
+    monkeypatch.setattr(sp, "Popen", FakePopen)
+    assert updates.install_silent(str(setup)) is True
+    assert "powershell" in seen["cmd"][0].lower()
+    helper = Path(seen["cmd"][-1])
+    assert helper.name == "apply_update.ps1"
+    body = helper.read_text(encoding="utf-8")
+    assert "/VERYSILENT" in body
+    assert "cleanup_old.ps1" in body or "$Cleanup" in body
+    assert "--tray" in body

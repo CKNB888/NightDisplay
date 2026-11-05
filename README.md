@@ -10,12 +10,12 @@
 
 作者：传康Kk。赞助：微信 1837620622（请备注来意）。
 
-[下载 3.0.18](https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.18) · [所有版本](https://github.com/CKNB888/NightDisplay/releases) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
+[下载 3.0.19](https://github.com/CKNB888/NightDisplay/releases/tag/v3.0.19) · [所有版本](https://github.com/CKNB888/NightDisplay/releases) · [反馈问题](https://github.com/CKNB888/NightDisplay/issues)
 
 | 下载 | 说明 |
 |---|---|
-| [NightDisplay-Windows-x64-Setup.exe](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.18/NightDisplay-Windows-x64-Setup.exe) | Windows 10 2004+/11 安装版，按当前用户安装 |
-| [NightDisplay-Windows-x64.zip](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.18/NightDisplay-Windows-x64.zip) | 免安装版，解压即用 |
+| [NightDisplay-Windows-x64-Setup.exe](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.19/NightDisplay-Windows-x64-Setup.exe) | Windows 10 2004+/11 安装版，按当前用户安装 |
+| [NightDisplay-Windows-x64.zip](https://github.com/CKNB888/NightDisplay/releases/download/v3.0.19/NightDisplay-Windows-x64.zip) | 免安装版，解压即用 |
 
 ## 适合什么场景
 
@@ -25,9 +25,9 @@
 
 ## 界面
 
-![NightDisplay 3.0.18 界面巡览（Windows 真实窗口）](docs/promo/ui-tour.gif)
+![NightDisplay 3.0.19 界面巡览（Windows 真实窗口）](docs/promo/ui-tour.gif)
 
-深色、圆角卡片、左侧栏的 Mac 风格界面。上面的动图和下面的截图，都是 GitHub Actions 的 Windows 机器上运行 **3.0.18** 真实程序窗口截下来的（`tools/capture_ui.py`），不是效果图。侧栏版本号、设置里的「黑屏快捷键」等，都和当前安装包一致。
+深色、圆角卡片、左侧栏的 Mac 风格界面。上面的动图和下面的截图，都是 GitHub Actions 的 Windows 机器上运行 **3.0.19** 真实程序窗口截下来的（`tools/capture_ui.py`），不是效果图。侧栏版本号、设置里的「黑屏快捷键」等，都和当前安装包一致。
 
 | 概览：倒计时圆环 | 黑屏中：距离亮屏 |
 |---|---|
@@ -42,6 +42,14 @@ Windows 默认优先使用常驻虚拟屏。进入夜间时，桌面只输出到
 如果虚拟屏无法使用，程序先回滚，再按系统能力尝试防窥黑幕和基础关屏。界面和日志会记录实际使用的方式。基础关屏兼容性较好，但输入会唤醒屏幕；它无法提供虚拟屏相同的效果。
 
 NightDisplay 只负责显示、电源和时间计划。远程连接仍由 UU、ToDesk 等软件提供，不绑定设备，也不限制客户端数量；远程软件自身的会话规则继续生效。
+
+## 检查更新（Windows）
+
+程序打开约 3 秒后会自动查一次 [GitHub Releases Latest](https://github.com/CKNB888/NightDisplay/releases/latest)。有新正式版时只问一次「立即更新？」：点是就自动下载官方 Setup、跑 `cleanup_old.ps1` 清旧进程/注册表/残留，再 `/VERYSILENT` 静默安装并拉起新版托盘。设置页「检查更新」同样。**不会在未确认时自动安装。**
+
+## 点 X 进托盘 / 后台守护（Windows）
+
+点窗口右上角关闭，程序进托盘后台，计划与开机自启都还在；真正退出请用托盘菜单「退出 NightDisplay」。Windows 还会注册每 5 分钟一次的 `NightDisplay_Watchdog`：常驻进程异常退出后会再拉起托盘；你主动退出后不会强行拉起。
 
 ## 快捷键（Windows）
 
@@ -191,6 +199,11 @@ GitHub Actions 只跑 Windows：Windows 2022 和 Windows latest 单元测试 + V
 云端 VM 和 CI 没有你的实际一体机、UU/ToDesk 会话及真实背光控制。它们能验证操作系统接口、恢复和打包流程，不能代替硬件兼容性测试。没有跑过的机型和平台不标注为“已保证兼容”。
 
 ## 更新记录
+
+### 3.0.19
+
+- **自动检查更新（Windows）**：启动约 3 秒后查 GitHub Releases Latest；有新版只问一次「立即更新？」。确认后自动下载官方 Setup、复用 `cleanup_old.ps1` 清旧进程/注册表/残留，再 `/VERYSILENT` 静默安装并拉起新版。设置里「检查更新」同样。
+- **点 X 强制后台**：关闭窗口只进托盘；托盘起不来时不会把窗口藏死。Windows 注册 `NightDisplay_Watchdog`（每 5 分钟）：常驻进程挂了会再拉 `--tray`；托盘「退出」会写标记，守护不再拉起，直到你再次打开。
 
 ### 3.0.18
 

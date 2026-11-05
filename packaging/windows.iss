@@ -1,4 +1,4 @@
-#define AppVersion "3.0.18"
+#define AppVersion "3.0.19"
 [Setup]
 CloseApplications=force
 RestartApplications=no

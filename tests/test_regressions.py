@@ -831,6 +831,7 @@ def test_windows_tasks_catch_up_after_sleep(monkeypatch):
     monkeypatch.setattr(B, "IS_WIN", True)
     monkeypatch.setattr(B, "_win_delete_tasks", lambda: 0)
     monkeypatch.setattr(B, "set_autostart", lambda on: None)
+    monkeypatch.setattr(B, "ensure_watchdog", lambda: True)
     calls = []
 
     def fake_run(cmd, check=True, timeout=60, env=None):
@@ -856,6 +857,7 @@ def test_windows_tasks_fall_back_when_powershell_fails(monkeypatch):
     monkeypatch.setattr(B, "IS_WIN", True)
     monkeypatch.setattr(B, "_win_delete_tasks", lambda: 0)
     monkeypatch.setattr(B, "set_autostart", lambda on: None)
+    monkeypatch.setattr(B, "ensure_watchdog", lambda: True)
     calls = []
 
     def fake_run(cmd, check=True, timeout=60, env=None):
@@ -1061,6 +1063,7 @@ def test_pause_does_not_delete_the_login_entry(monkeypatch):
     monkeypatch.setattr(B, "IS_WIN", True)
     monkeypatch.setattr(B, "IS_MAC", False)
     monkeypatch.setattr(B, "_win_delete_tasks", lambda: 1)
+    monkeypatch.setattr(B, "ensure_watchdog", lambda: True)
     calls = []
     monkeypatch.setattr(B, "set_autostart", lambda on: calls.append(on))
     monkeypatch.setattr(B, "autostart_status", lambda: True)
@@ -1078,6 +1081,8 @@ def test_emergency_keeps_the_login_entry_when_preference_stays_on(monkeypatch):
     monkeypatch.setattr(B, "IS_WIN", True)
     monkeypatch.setattr(B, "IS_MAC", False)
     monkeypatch.setattr(B, "_win_delete_tasks", lambda: 0)
+    monkeypatch.setattr(B, "ensure_watchdog", lambda: True)
+    monkeypatch.setattr(B, "remove_watchdog", lambda: False)
     monkeypatch.setattr(B, "go_day", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "apply_cursor", lambda hidden: None)
     monkeypatch.setattr(B, "autostart_status", lambda: True)
@@ -1094,6 +1099,8 @@ def test_emergency_removes_the_login_entry_when_preference_is_off(monkeypatch):
     monkeypatch.setattr(B, "IS_WIN", True)
     monkeypatch.setattr(B, "IS_MAC", False)
     monkeypatch.setattr(B, "_win_delete_tasks", lambda: 0)
+    monkeypatch.setattr(B, "ensure_watchdog", lambda: True)
+    monkeypatch.setattr(B, "remove_watchdog", lambda: True)
     monkeypatch.setattr(B, "go_day", lambda *args, **kwargs: None)
     monkeypatch.setattr(app, "apply_cursor", lambda hidden: None)
     calls = []

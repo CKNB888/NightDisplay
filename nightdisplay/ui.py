@@ -768,12 +768,62 @@ class MainWindow:
                 if not quiet:
                     messagebox.showerror(APP, result, parent=self.root)
             elif result["newer"]:
-                if messagebox.askyesno(APP, "发现新版本 %s，打开下载页？" % result["version"], parent=self.root):
-                    webbrowser.open(result["url"])
+                self._offer_update(result, quiet=quiet)
             elif not quiet:
                 messagebox.showinfo(APP, "当前已是最新正式版本。", parent=self.root)
 
         self.root.after(100, poll)
+
+    def _offer_update(self, result, quiet=False):
+        """发现新版本：一点确认 → 下载 → cleanup_old → 静默安装 → 拉起新版。"""
+        from . import updates
+        ver = result["version"]
+        setup = (result.get("setup_url") or "") if IS_WIN else ""
+        if not setup:
+            if messagebox.askyesno(APP, "发现新版本 %s，打开下载页？" % ver, parent=self.root):
+                webbrowser.open(result["url"])
+            return
+        msg = ("发现新版本 %s。\n\n立即更新？\n（自动下载、清理旧版、静默安装，完成后自己打开）"
+               % ver)
+        if not messagebox.askyesno(APP, msg, parent=self.root):
+            return
+        self._note("正在下载并安装 %s…" % ver)
+        # 藏到托盘，少打扰；安装脚本会结束本进程再拉新版。
+        with contextlib.suppress(Exception):
+            self.root.withdraw()
+        box = queue.Queue()
+
+        def work():
+            try:
+                path = updates.download_setup(setup)
+                updates.install_silent(path)
+                box.put((True, path))
+            except Exception as e:
+                box.put((False, str(e)))
+
+        threading.Thread(target=work, daemon=True).start()
+
+        def poll():
+            try:
+                ok, payload = box.get_nowait()
+            except queue.Empty:
+                self.root.after(200, poll)
+                return
+            if not ok:
+                log("自动更新失败：%s" % payload)
+                with contextlib.suppress(Exception):
+                    self.root.deiconify()
+                messagebox.showerror(
+                    APP,
+                    "更新失败：%s\n\n可到设置里再点「检查更新」，或手动打开下载页。" % payload,
+                    parent=self.root)
+                if messagebox.askyesno(APP, "打开下载页？", parent=self.root):
+                    webbrowser.open(result["url"])
+                return
+            log("已启动静默安装：%s（cleanup_old + /VERYSILENT）" % payload)
+            self._note("正在安装新版本，稍后会自动打开…")
+
+        self.root.after(200, poll)
 
 
     def remove(self):
@@ -784,8 +834,20 @@ class MainWindow:
         self.root.destroy()
 
     def on_close(self):
-        # 右上角关闭只藏窗口。进程继续按设定时间黑屏，开机登录项也不动。
-        # 真正退出在托盘图标的「退出 NightDisplay」。
+        # 点窗口 X：强制进托盘后台，不退出。计划、开机自启、守护任务都还在。
+        # 真正退出只在托盘「退出 NightDisplay」。
+        if not self.has_tray:
+            icon = start_tray(self.root, self.act)
+            self.has_tray = bool(icon)
+            if icon:
+                self._tray_icon = icon
+        if not self.has_tray:
+            # 托盘起不来就别把窗口藏死，否则用户找不到入口。
+            messagebox.showwarning(
+                APP,
+                "托盘图标没起来，窗口不能藏到后台。\n请留着这个窗口，或再开一次程序。",
+                parent=self.root)
+            return
         try:
             self.root.withdraw()
         except tk.TclError:
@@ -798,7 +860,7 @@ class MainWindow:
         gc.collect()
         if not self._hide_noted:
             self._hide_noted = True
-            log("窗口已隐藏到托盘。每天的时间和开机登录都还在。")
+            log("窗口已隐藏到托盘（点 X 强制后台）。每天的时间和开机登录都还在。")
             if self._on_user_hide:
                 self._on_user_hide()
 

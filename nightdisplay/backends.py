@@ -594,6 +594,8 @@ def go_day(overlay_cb=None, mode=None, raise_errors=True):
 
 # ---------- 系统计划任务 ----------
 TASKS = ("NightDisplay_Night", "NightDisplay_Day")
+WATCHDOG_TASK = "NightDisplay_Watchdog"
+STOP_FLAG = "user_stopped"  # 用户点托盘「退出」后，守护任务不再把进程拉起来
 LA_LABEL = "com.nightdisplay.agent"
 SD_UNIT = "nightdisplay"
 
@@ -685,6 +687,7 @@ def schedule_install(cfg):
                 run(["schtasks", "/Create", "/F", "/TN", task["name"], "/SC", "DAILY",
                      "/ST", task["time"], "/TR", tr, "/IT"])
         set_autostart(cfg.get("autostart", True))
+        ensure_watchdog()
     elif IS_MAC:
         import plistlib
         path = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % LA_LABEL)
@@ -716,6 +719,68 @@ def _win_delete_tasks():
         if run(["schtasks", "/Delete", "/F", "/TN", name], check=False).returncode == 0:
             n += 1
     return n
+
+
+
+def stop_flag_path():
+    return os.path.join(home(), STOP_FLAG)
+
+
+def mark_user_stopped():
+    """托盘「退出」：写标记，守护任务不再自动拉起进程。下次正常启动会清掉。"""
+    path = stop_flag_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("1\n")
+
+
+def clear_user_stopped():
+    with contextlib.suppress(OSError):
+        os.remove(stop_flag_path())
+
+
+def user_stopped():
+    return os.path.exists(stop_flag_path())
+
+
+def ensure_watchdog():
+    """Windows：每 5 分钟跑一次 --action watchdog，进程没了就再拉托盘。"""
+    if not IS_WIN or sys.platform != "win32":
+        # IS_WIN 可能在 Linux 单测里被打开；真正建任务只在 Windows 主机。
+        return False
+    cmd = self_cmd() + ["--action", "watchdog"]
+    tr = subprocess.list2cmdline(cmd)
+    try:
+        p = run(["schtasks", "/Create", "/F", "/TN", WATCHDOG_TASK, "/SC", "MINUTE", "/MO", "5",
+                 "/TR", tr, "/IT"], check=False)
+    except Exception as e:
+        log("注册后台守护失败：%s" % e)
+        return False
+    if p.returncode != 0:
+        log("注册后台守护失败：%s" % ((p.stderr or p.stdout or "").strip() or p.returncode))
+        return False
+    return True
+
+
+def remove_watchdog():
+    if not IS_WIN or sys.platform != "win32":
+        return False
+    try:
+        p = run(["schtasks", "/Delete", "/F", "/TN", WATCHDOG_TASK], check=False)
+    except Exception:
+        return False
+    return p.returncode == 0
+
+
+def watchdog_status():
+    if not IS_WIN or sys.platform != "win32":
+        return False
+    try:
+        p = run(["schtasks", "/Query", "/TN", WATCHDOG_TASK], check=False)
+    except Exception:
+        return False
+    return p.returncode == 0
+
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -823,6 +888,12 @@ def schedule_remove(drop_autostart=True):
         n = _win_delete_tasks()
         if n:
             removed.append("计划任务 %d 个" % n)
+        if drop_autostart:
+            if remove_watchdog():
+                removed.append("后台守护")
+        else:
+            # 暂停每日计划仍要托盘常驻，守护任务留下。
+            ensure_watchdog()
         if drop_autostart and autostart_status():
             set_autostart(False); removed.append("开机自启(注册表 Run)")
     elif IS_MAC:
@@ -874,6 +945,7 @@ def status_text():
         "上次测试：%s %s 成功=%s 自动恢复=%s" % (cfg["last_test_mode"], cfg["last_test_at"][:19], cfg["last_test_ok"], cfg["last_recovery_at"][:19]),
         schedule_status(),
         "开机自启：配置=%s，实际=%s" % ("开" if cfg.get("autostart", True) else "关", "已注册" if autostart_status() else "未注册"),
+        "后台守护：%s" % ("已注册" if watchdog_status() else "未注册"),
         "数据目录：%s" % home()])
 
 

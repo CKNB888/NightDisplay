@@ -50,6 +50,7 @@ def resident_action(command):
 
 @B.serialized
 def activate(mode, start, end):
+    B.clear_user_stopped()
     start, end = ["%02d:%02d" % parse_hm(t) for t in (start, end)]
     if parse_hm(start) == parse_hm(end):
         raise RuntimeError("开始和结束时间不能相同")
@@ -279,6 +280,11 @@ def uninstall(overlay_cb=None):
         B.set_autostart(False)
     except Exception as e:
         log("卸载时关闭开机自启失败：%s" % e)
+    try:
+        B.remove_watchdog()
+    except Exception as e:
+        log("卸载时删除后台守护失败：%s" % e)
+    B.mark_user_stopped()
     log("已卸载计划任务和自启项；日志与备份保留在 %s" % home())
 
 
@@ -742,6 +748,11 @@ def run_app(show_window=True, selftest=0):
     import tkinter as tk
 
     from . import chord, ui
+    # 正常打开/托盘自启：清掉「用户退出」标记，并确保 Windows 守护任务在。
+    B.clear_user_stopped()
+    if IS_WIN and not selftest:
+        with contextlib.suppress(Exception):
+            B.ensure_watchdog()
     if IS_WIN:
         try:
             import ctypes
@@ -889,6 +900,8 @@ def run_app(show_window=True, selftest=0):
             uninstall(overlay)
             root.after(50, root.destroy)
         elif name == "quit":
+            # 用户主动退出：写标记，避免 5 分钟守护又把进程拉起来。
+            B.mark_user_stopped()
             root.after(50, root.destroy)
         else:
             raise ValueError("未知操作：%s" % name)
@@ -1041,6 +1054,28 @@ def run_app(show_window=True, selftest=0):
             with contextlib.suppress(tk.TclError):
                 root.destroy()
 
+
+def run_watchdog():
+    """计划任务每几分钟调用：若用户未主动退出且常驻进程挂了，就再拉托盘。"""
+    if not IS_WIN:
+        return 0
+    if B.user_stopped():
+        return 0
+    cfg = load()
+    # 开机自启关着、每日计划也关着：不拉进程。用户主动退出后标记还在则上面已返回。
+    if not cfg.get("autostart", True) and not cfg.get("enabled"):
+        return 0
+    try:
+        r = send_ipc("ping", timeout=3)
+    except Exception:
+        r = None
+    if r == "ok":
+        return 0
+    log("后台守护：常驻进程无响应，重新启动托盘")
+    B.spawn_detached(B.self_cmd() + ["--tray"])
+    return 0
+
+
 # ---------------- 入口 ----------------
 
 def _fix_stdout():
@@ -1055,7 +1090,7 @@ def main(argv=None):
     ap.add_argument("--action", default="gui", choices=[
         "gui", "tray", "night", "day", "reconcile", "test", "activate", "pause", "emergency", "uninstall",
         "status", "awake", "backup", "restore", "displays", "plan-virtual", "install-vdd", "uninstall-vdd", "selfcheck",
-        "env", "setup"])
+        "env", "setup", "watchdog"])
     ap.add_argument("--tray", action="store_true", help="开机自启：只显示托盘")
     ap.add_argument("--home", help="指定数据目录（计划与辅助进程继承此路径）")
     ap.add_argument("--mode")
@@ -1087,6 +1122,8 @@ def main(argv=None):
             return run_app(show_window=not tray_only, selftest=a.selftest)
         if a.delay:
             time.sleep(a.delay)
+        if a.action == "watchdog":
+            return run_watchdog()
         if a.action == "status":
             update()
             status = B.status_text()

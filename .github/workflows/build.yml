@@ -94,6 +94,7 @@ jobs:
           # 打包门禁：驱动文件必须齐全，缺一个就失败，不产出“能打开但没虚拟屏”的包。
           test -f nightdisplay/resources/install_vdd.ps1
           test -f nightdisplay/resources/vdd_settings.xml
+          test -f nightdisplay/resources/cleanup_old.ps1
           ./dist/NightDisplay.exe --action env
           mkdir out && cp dist/NightDisplay.exe README.md LICENSE NOTICE.md tools/Recover.cmd out/ && cp -r third-party-licenses out/
           cd out && 7z a ../NightDisplay-Windows-x64.zip .
