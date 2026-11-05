@@ -194,7 +194,7 @@ GitHub Actions 只跑 Windows：Windows 2022 和 Windows latest 单元测试 + V
 
 ### 3.0.18
 
-- README 界面图全部换成 Windows CI 上真实运行截下的 **3.0.18** 窗口（概览 / 黑屏中 / 时间 / 设置 + 巡览 GIF），设置页能看到「黑屏快捷键」C + K。不是 3.0.15 那批旧图。
+- README 界面图全部换成 Windows CI 上真实运行截下的 **3.0.18** 窗口（概览 / 黑屏中 / 时间 / 设置 + 巡览 GIF；来自 Actions run [42015681585](https://github.com/CKNB888/NightDisplay/actions/runs/42015681585) 的 `ui-shots-windows-latest`），设置页能看到「黑屏快捷键」C + K。不是 3.0.15 那批旧图。
 
 ### 3.0.17
 
