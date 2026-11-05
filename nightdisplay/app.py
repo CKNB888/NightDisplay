@@ -879,6 +879,7 @@ def run_app(show_window=True, selftest=0):
                 log("夜间不打开设置窗口")
                 return "ok"
             appearance["restore"] = False
+            ui.fade_in(root)
             root.deiconify()
             root.lift()
         elif name == "uninstall":
@@ -986,6 +987,7 @@ def run_app(show_window=True, selftest=0):
         tray = ui.start_tray(root, dispatch)
         win.has_tray = bool(tray)
         if not show_window and not tray:
+            ui.fade_in(root)
             root.deiconify()
         if selftest:
             root.after(selftest * 1000, root.destroy)

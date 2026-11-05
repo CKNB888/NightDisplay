@@ -75,6 +75,22 @@ def use_native_theme(root):
     return style
 
 
+def fade_in(window, steps=8, interval=18):
+    """窗口淡入：约 150 毫秒，从透明到不透明。只用 Tk 自带的 -alpha，
+    不开线程、不加载图片，弱机上几乎不占内存。系统不支持透明时直接显示。"""
+    try:
+        window.attributes("-alpha", 0.0)
+    except tk.TclError:
+        return
+
+    def step(i=1):
+        with contextlib.suppress(tk.TclError):
+            window.attributes("-alpha", min(1.0, i / steps))
+            if i < steps:
+                window.after(interval, step, i + 1)
+    window.after(0, step)
+
+
 def _mac_window(window):
     """Mac 窗口底色用系统窗口色。深色模式会跟着变。其他系统不改。"""
     if not IS_MAC:
